@@ -2197,10 +2197,22 @@ registerProcessor('pcm-capture', PcmCapture);`;
     onSttStart();
     try {
       const key = await fetchKey();
+
+      // Get mic + AudioContext first so we know the real sample rate before connecting
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (e) {
+        flashError('mic denied: ' + e.message.slice(0, 30));
+        active = false; onSttStop(); return;
+      }
+      audioCtxDg = new AudioContext();
+      const actualRate = audioCtxDg.sampleRate;
+      flashError('DG rate=' + actualRate);
+
       const params = new URLSearchParams({
         model:            DG_MODEL,
         encoding:         DG_ENCODING,
-        sample_rate:      DG_SAMPLE_RATE,
+        sample_rate:      actualRate,        // use real device rate
         language:         DG_LANGUAGE,
         interim_results:  DG_INTERIM_RESULTS,
         punctuate:        DG_PUNCTUATE,
@@ -2211,14 +2223,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
                            ['token', key]);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
-        flashError('DG open — getting mic');
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        } catch (e) {
-          flashError('mic denied: ' + e.message.slice(0, 30));
-          stopDg(); onSttStop(); return;
-        }
-        audioCtxDg = new AudioContext({ sampleRate: DG_SAMPLE_RATE });
+        flashError('DG open — wiring audio');
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
 
         // Try AudioWorklet first; fall back to ScriptProcessorNode for iOS Safari
