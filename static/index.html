@@ -2207,7 +2207,6 @@ registerProcessor('pcm-capture', PcmCapture);`;
       }
       audioCtxDg = new AudioContext();
       const actualRate = audioCtxDg.sampleRate;
-      flashError('DG rate=' + actualRate);
 
       const params = new URLSearchParams({
         model:              DG_MODEL,
@@ -2224,7 +2223,6 @@ registerProcessor('pcm-capture', PcmCapture);`;
                            ['token', key]);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
-        flashError('DG open — wiring audio');
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
 
         // Try AudioWorklet first; fall back to ScriptProcessorNode for iOS Safari
@@ -2238,17 +2236,15 @@ registerProcessor('pcm-capture', PcmCapture);`;
           workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
           source.connect(workletNode);
           usedWorklet = true;
-          flashError('DG using AudioWorklet');
         } catch (_) {}
 
         if (!usedWorklet) {
-          // ScriptProcessorNode fallback (512 samples, stereo ignored)
+          // ScriptProcessorNode fallback for browsers without AudioWorklet support
           const spn = audioCtxDg.createScriptProcessor(4096, 1, 1);
           spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
           source.connect(spn);
           spn.connect(audioCtxDg.destination); // required to keep spn alive (silent output)
-          workletNode = spn; // reuse slot for cleanup
-          flashError('DG using ScriptProcessor');
+          workletNode = spn;
         }
       };
 
@@ -2264,7 +2260,6 @@ registerProcessor('pcm-capture', PcmCapture);`;
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
-        flashError('DG msg: ' + msg.type);
         if (msg.type === 'Metadata') return;
         if (msg.type === 'UtteranceEnd') {
           // utterance_end_ms fired — submit whatever we've accumulated
@@ -2290,9 +2285,9 @@ registerProcessor('pcm-capture', PcmCapture);`;
           }
         }
       };
-      dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); onSttStop(); };
+      dgWs.onerror = () => { flashError('DG WS error'); stopDg(); onSttStop(); };
       dgWs.onclose = (ev) => {
-        flashError('DG closed code=' + ev.code);
+        if (ev.code !== 1000) flashError('DG closed ' + ev.code);
         if (active) { active = false; stopDg(); onSttStop(); }
       };
     } catch (err) {
