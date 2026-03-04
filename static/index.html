@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>SAMARITAN</title>
+  <style>
+    /* ─── Google Fonts fallback (closest free mono to FF Magda Clean Mono) ─── */
+    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Nova+Mono&display=swap');
+
+    /* ─── Reset & base ─── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #ffffff;
+      --bg-edge:    #b0b0b0;
+      --bg-mid:     #d8d8d8;
+      --text:       #000000;
+      --red:        #fe2d2d;
+      --red-dark:   #330000;
+      --red-mid:    #cc0000;
+      --bar:        #000000;
+      --bar-text:   #ffffff;
+      --font: 'Share Tech Mono', 'Nova Mono', 'Courier New', monospace;
+    }
+
+    /* ─── Dark mode theme (toggled by #screen_mode dark) ─── */
+    /* NOTE: transition duration below must match THEME_TRANSITION_MS in JS */
+    [data-theme="dark"] {
+      --bg:         #000000;
+      --bg-edge:    #1a1a1a;
+      --bg-mid:     #0d0d0d;
+      --text:       #ffffff;
+      --bar:        #111111;
+      --bar-text:   #ffffff;
+      /* red accents unchanged in dark mode */
+    }
+
+    /* ─── Theme transition — applied to all elements using CSS vars ─── */
+    body,
+    .sidebar, .sidebar-line, .sidebar-block, .sidebar-dot, .sidebar-small-text,
+    #status-bar, #control-bar,
+    #word-display, #word-rule,
+    #response-panel,
+    #text-input, #text-input-panel,
+    #kbd-btn, #mic-btn, #send-btn,
+    #error-flash {
+      transition:
+        background-color 1s ease,
+        background 1s ease,
+        color 1s ease,
+        border-color 1s ease,
+        opacity 1s ease;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: radial-gradient(ellipse at center,
+        var(--bg) 0%,
+        var(--bg-mid) 55%,
+        var(--bg-edge) 100%
+      );
+      font-family: var(--font);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      cursor: none; /* Samaritan hides the cursor */
+    }
+
+    /* ─── Scanline overlay ─── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0,0,0,0.03) 3px,
+        rgba(0,0,0,0.03) 4px
+      );
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    /* ─── Three-column layout ─── */
+    #layout {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0; left: 0;
+    }
+
+    .sidebar {
+      width: 17.5%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding-top: 40px;
+      gap: 18px;
+      opacity: 0.35;
+    }
+
+    .sidebar-line {
+      width: 60%;
+      height: 1px;
+      background: var(--text);
+    }
+
+    .sidebar-block {
+      width: 60%;
+      height: 6px;
+      background: var(--text);
+    }
+
+    .sidebar-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text);
+    }
+
+    .sidebar-small-text {
+      font-size: 9px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--text);
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      transform: rotate(180deg);
+    }
+
+    /* ─── Center stage ─── */
+    #center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    /* ─── Status bar (top) ─── */
+    #status-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      background: var(--bar);
+      color: var(--bar-text);
+      font-size: 11px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      padding: 6px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--red);
+      animation: blink-dot 1200ms ease-in-out infinite;
+    }
+
+    @keyframes blink-dot {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.1; }
+    }
+
+    /* ─── Main display area ─── */
+    #display {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 160px;
+      width: 100%;
+      position: relative;
+    }
+
+    /* ─── Red triangle marker ─── */
+    #triangle {
+      width: 0;
+      height: 0;
+      border-left: 12px solid transparent;
+      border-right: 12px solid transparent;
+      border-top: 20px solid var(--red);
+      margin-bottom: 20px;
+      animation: triangle-pulse 1000ms ease-in-out infinite alternate;
+    }
+
+    @keyframes triangle-pulse {
+      from { border-top-color: var(--red-dark); }
+      to   { border-top-color: var(--red); }
+    }
+
+    /* ─── Word display ─── */
+    #word-display {
+      font-size: 2.4em;
+      font-weight: bold;
+      letter-spacing: 8px;
+      text-transform: uppercase;
+      text-align: center;
+      color: var(--text);
+      min-height: 1.4em;
+      opacity: 0;
+      transition: opacity 180ms ease-in-out;
+      user-select: none;
+      padding: 0 20px;
+      max-width: 80%;
+      word-break: break-all;
+    }
+
+    #word-display.visible {
+      opacity: 1;
+    }
+
+    /* ─── Horizontal rule below word ─── */
+    #word-rule {
+      height: 2px;
+      background: var(--text);
+      margin-top: 14px;
+      width: 0;
+      transition: width 200ms ease-out;
+    }
+
+    /* ─── Terminal panel (long responses) ─── */
+    #terminal-panel {
+      display: none;
+      position: absolute;
+      top: 30px;      /* below status bar */
+      bottom: 204px;  /* above bottom-zone (160px) + control bar (44px) */
+      left: 0; right: 0;
+      padding: 18px 24px;
+      overflow-y: auto;
+      font-size: 0.88em;
+      letter-spacing: 2px;
+      line-height: 1.8;
+      color: var(--text);
+      text-align: left;
+      text-transform: uppercase;
+      scrollbar-width: thin;
+      scrollbar-color: var(--red-mid) transparent;
+      white-space: pre-wrap;
+      word-break: break-word;
+      z-index: 10;   /* above #display triangle/word-display */
+    }
+
+    #terminal-panel.active { display: block; }
+
+    #terminal-panel::-webkit-scrollbar { width: 4px; }
+    #terminal-panel::-webkit-scrollbar-thumb { background: var(--red-mid); }
+    #terminal-panel::-webkit-scrollbar-track { background: transparent; }
+
+    /* blinking cursor at end of terminal output */
+    #terminal-cursor {
+      display: inline-block;
+      width: 8px;
+      height: 1em;
+      background: var(--red);
+      vertical-align: text-bottom;
+      animation: blink-cursor 600ms step-end infinite;
+    }
+
+    @keyframes blink-cursor {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* ─── Idle message ─── */
+    #idle {
+      font-size: 1.1em;
+      letter-spacing: 6px;
+      color: #000000;
+      background: #ffffff;
+      border: 2px solid #ffffff;
+      padding: 4px 14px 5px;
+      display: inline-block;
+    }
+
+    [data-theme="dark"] #idle {
+      color: #ffffff;
+      background: #000000;
+      border: 2px solid #ffffff;
+    }
+
+    #idle.blink {
+      animation: blink-idle 900ms step-end infinite;
+    }
+
+    @keyframes blink-idle {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       KEYWORD CARDS — stacked on right side of center column
+       ═══════════════════════════════════════════════════════════ */
+
+    /* Container that holds up to 3 visible cards */
+    #card-stack {
+      position: absolute;
+      top: 36px;
+      right: 8px;
+      width: 220px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    /* Base card shell */
+    .kw-card {
+      font-family: 'Barlow Semi Condensed', var(--font);
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      display: none;       /* hidden cards take no space */
+      opacity: 0;
+      transform: translateX(30px);
+      width: 100%;
+    }
+
+    /* shown = in DOM and animating in */
+    .kw-card.shown {
+      display: block;
+      transition: opacity 400ms ease, transform 400ms ease;
+    }
+
+    .kw-card.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    /* ── INITIATIVE card (Dominant Mandate style) ── */
+    .kw-initiative {
+      background: #000000;
+      border: 2px solid #ffffff;
+      padding: 0 0 4px 0;
+      color: #ffffff;
+    }
+
+    .kw-initiative .kw-title-bar {
+      background: #717171;
+      color: #000000;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 6px;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+      letter-spacing: 2px;
+    }
+
+    .kw-initiative .kw-label-row {
+      display: flex;
+      align-items: center;
+      padding: 5px 6px 2px;
+      gap: 6px;
+    }
+
+    .kw-initiative .kw-keyword-badge {
+      background: #cc0000;
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+
+    .kw-initiative .kw-body {
+      color: #ffffff;
+      font-size: 11px;
+      padding: 4px 8px 4px;
+      line-height: 1.6;
+      min-height: 1.4em;
+    }
+
+    .kw-initiative .kw-footer-bar {
+      background: #555555;
+      height: 5px;
+      margin: 4px -0px 0;
+    }
+
+    /* ── ASSET card (Subject Identified style) ── */
+    .kw-asset {
+      color: #ffffff;
+    }
+
+    .kw-asset .kw-title-bar {
+      background: #000000;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 6px;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+      letter-spacing: 2px;
+      display: inline-block;
+      width: 100%;
+    }
+
+    .kw-asset .kw-subtitle-row {
+      background: #606060;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-top: 2px solid #aaa;
+    }
+
+    .kw-asset .kw-subtitle-label {
+      color: #ffffff;
+      font-size: 10px;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+    }
+
+    .kw-asset .kw-keyword-badge {
+      background: #cc0000;
+      color: #ffffff;
+      font-size: 10px;
+      padding: 1px 5px;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+    }
+
+    .kw-asset .kw-content {
+      background: #000000;
+      border-bottom: 2px solid #aaa;
+      padding: 5px 8px;
+      color: #ffffff;
+      font-size: 11px;
+      line-height: 1.6;
+      min-height: 1.4em;
+    }
+
+    /* ── TASK card (Subtitle-Task style) ── */
+    .kw-task {
+      color: #ffffff;
+    }
+
+    .kw-task .kw-title-bar {
+      background: #000000;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 6px;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+      letter-spacing: 2px;
+      display: inline-block;
+      width: 100%;
+    }
+
+    .kw-task .kw-subtitle-row {
+      background: #606060;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-top: 2px solid #aaa;
+    }
+
+    .kw-task .kw-subtitle-label {
+      color: #ffffff;
+      font-size: 10px;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+    }
+
+    .kw-task .kw-keyword-badge {
+      background: #000000;
+      color: rgba(255,0,0,0.9);
+      font-size: 10px;
+      padding: 1px 5px;
+      text-shadow: 1px 1px 2px rgba(255,0,0,0.8);
+    }
+
+    .kw-task .kw-content {
+      background: #000000;
+      border-bottom: 2px solid #aaa;
+      padding: 5px 8px;
+      color: rgba(255,0,0,0.9);
+      font-size: 11px;
+      line-height: 1.6;
+      min-height: 1.4em;
+      text-shadow: 0 0 6px rgba(255,0,0,0.5);
+    }
+
+    /* ── THREAT card (Primary Threat style) ── */
+    .kw-threat {
+      background: #606060;
+      padding: 0;
+    }
+
+    .kw-threat .kw-deviant-bar {
+      background: #232323;
+      color: #ffffff;
+      font-size: 9px;
+      padding: 2px 6px;
+      letter-spacing: 3px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .kw-threat .kw-deviant-icon {
+      width: 8px; height: 8px;
+      background: #cc0000;
+      border-radius: 50%;
+      animation: threat-pulse 800ms ease-in-out infinite alternate;
+      flex-shrink: 0;
+    }
+
+    @keyframes threat-pulse {
+      from { background: #b40000; box-shadow: none; }
+      to   { background: #ff0000; box-shadow: 0 0 6px rgba(255,0,0,0.8); }
+    }
+
+    .kw-threat .kw-title-bar {
+      background: #cc0000;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 6px;
+      text-align: center;
+      text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+      letter-spacing: 3px;
+      width: 100%;
+    }
+
+    .kw-threat .kw-rows {
+      padding: 4px 6px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .kw-threat .kw-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 22px;
+      border: 2px solid #787878;
+    }
+
+    .kw-threat .kw-row-label {
+      color: #ffffff;
+      font-size: 9px;
+      padding: 0 5px;
+      flex-shrink: 0;
+      width: 70px;
+    }
+
+    .kw-threat .kw-row-value {
+      background: #cc0000;
+      color: #ffffff;
+      font-size: 9px;
+      padding: 0 6px;
+      flex: 1;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      letter-spacing: 2px;
+    }
+
+    .kw-threat .kw-content {
+      padding: 4px 8px 5px;
+      color: #ffffff;
+      font-size: 10px;
+      line-height: 1.6;
+      min-height: 1.2em;
+      border-top: 1px solid rgba(180,180,180,0.3);
+    }
+
+    /* ─── Loader dots ─── */
+    #loader {
+      display: none;
+      gap: 6px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    #loader.active { display: flex; }
+
+    .loader-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text);
+      animation: loader-wave 1.2s ease-in-out infinite;
+    }
+
+    .loader-dot:nth-child(1) { animation-delay: 0ms; }
+    .loader-dot:nth-child(2) { animation-delay: 120ms; }
+    .loader-dot:nth-child(3) { animation-delay: 240ms; }
+    .loader-dot:nth-child(4) { animation-delay: 360ms; }
+    .loader-dot:nth-child(5) { animation-delay: 480ms; }
+    .loader-dot:nth-child(6) { animation-delay: 600ms; }
+    .loader-dot:nth-child(7) { animation-delay: 720ms; }
+
+    @keyframes loader-wave {
+      0%, 100% { transform: scaleY(1);   opacity: 0.3; }
+      50%       { transform: scaleY(2.2); opacity: 1; }
+    }
+
+    /* ─── Bottom zone: shared by response panel and text input panel ─── */
+    /* Both panels sit above the control bar, occupying the same space.   */
+    /* Only one is visible at a time.                                      */
+
+    #bottom-zone {
+      position: absolute;
+      bottom: 44px;   /* height of control bar */
+      left: 0; right: 0;
+      height: 160px;
+      display: flex;
+      align-items: stretch;
+      z-index: 30;   /* above #card-stack (z-index:20) */
+    }
+
+    /* ─── Response panel ─── */
+    #response-panel {
+      display: none;
+      position: absolute;
+      top: 30px;      /* below status bar */
+      bottom: 204px;  /* above bottom-zone + control bar */
+      left: 0; right: 0;
+      padding: 18px 24px;
+      overflow-y: auto;
+      font-size: 0.82em;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      line-height: 1.8;
+      color: var(--text);
+      opacity: 0.55;
+      text-align: left;
+      scrollbar-width: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      z-index: 9;   /* below terminal-panel (z-index:10) */
+    }
+
+    #response-panel.active { display: block; }
+    #response-panel::-webkit-scrollbar { display: none; }
+
+    /* ─── Text input panel (full-width, same zone) ─── */
+    #text-input-panel {
+      display: none;   /* shown only in kbd mode */
+      flex: 1;
+      flex-direction: column;
+      align-items: stretch;
+      padding: 16px 20px 10px;
+      background: var(--bg);
+      border-top: 1px solid rgba(128,128,128,0.4);
+    }
+
+    #text-input-panel.open {
+      display: flex;
+    }
+
+    #text-input-label {
+      color: var(--red);
+      font-size: 10px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    #text-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid var(--red-mid);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 1.5em;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      outline: none;
+      padding: 4px 0;
+      caret-color: var(--red);
+      width: 100%;
+    }
+
+    #text-input::placeholder {
+      color: var(--text);
+      opacity: 0.2;
+      letter-spacing: 3px;
+    }
+
+    #send-btn {
+      align-self: flex-end;
+      margin-top: 10px;
+      background: transparent;
+      border: 1px solid var(--red-mid);
+      color: var(--red-mid);
+      cursor: pointer;
+      padding: 6px 20px;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: all 200ms;
+    }
+
+    #send-btn:hover  { background: var(--red-dark); color: #fff; border-color: var(--red); }
+    #send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* ─── Control bar (bottom strip) ─── */
+    #control-bar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: var(--bar);
+      height: 44px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 10px;
+      z-index: 30;   /* above #card-stack (z-index:20) */
+    }
+
+    #prompt-label {
+      color: var(--red);
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    /* voice transcript fills the middle */
+    #voice-preview {
+      flex: 1;
+      font-size: 10px;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      font-style: italic;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    /* ─── Keyboard toggle button ─── */
+    #kbd-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 4px 10px;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      transition: all 200ms;
+      height: 28px;
+    }
+
+    #kbd-btn:hover, #kbd-btn.active {
+      border-color: var(--red-mid);
+      color: var(--bar-text);
+    }
+
+    /* ─── Mic button ─── */
+    #mic-btn {
+      background: transparent;
+      border: 1px solid var(--red-mid);
+      color: var(--bar-text);
+      cursor: pointer;
+      padding: 4px 16px;
+      font-family: var(--font);
+      font-size: 13px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: all 200ms;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+    }
+
+    #mic-btn:hover { background: var(--red-dark); border-color: var(--red); }
+
+    #mic-btn.listening {
+      background: var(--red);
+      border-color: var(--red);
+      color: #fff;
+      animation: mic-pulse 600ms ease-in-out infinite alternate;
+    }
+
+    @keyframes mic-pulse {
+      from { box-shadow: 0 0 4px var(--red); }
+      to   { box-shadow: 0 0 20px var(--red), 0 0 40px rgba(254,45,45,0.3); }
+    }
+
+    #mic-icon { font-size: 15px; }
+    #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
+
+    /* ─── Full-voice toggle button ─── */
+    #full-voice-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 4px 10px;
+      font-family: var(--font);
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      transition: all 200ms;
+      height: 28px;
+    }
+
+    #full-voice-btn:hover {
+      border-color: var(--red-mid);
+      color: var(--bar-text);
+    }
+
+    #full-voice-btn.active {
+      border-color: var(--red);
+      color: var(--red);
+      animation: fv-pulse 1.2s ease-in-out infinite alternate;
+    }
+
+    @keyframes fv-pulse {
+      from { box-shadow: 0 0 2px var(--red); }
+      to   { box-shadow: 0 0 12px var(--red), 0 0 24px rgba(254,45,45,0.25); }
+    }
+
+    /* ─── Corner decorations ─── */
+    .corner {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      opacity: 0.4;
+    }
+
+    .corner-tl { top: 40px; left: 0; border-top: 2px solid var(--text); border-left: 2px solid var(--text); }
+    .corner-tr { top: 40px; right: 0; border-top: 2px solid var(--text); border-right: 2px solid var(--text); }
+    .corner-bl { bottom: 48px; left: 0; border-bottom: 2px solid var(--text); border-left: 2px solid var(--text); }
+    .corner-br { bottom: 48px; right: 0; border-bottom: 2px solid var(--text); border-right: 2px solid var(--text); }
+
+    /* ─── Error flash ─── */
+    #error-flash {
+      position: absolute;
+      top: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--red);
+      opacity: 0;
+      transition: opacity 300ms;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    #error-flash.show { opacity: 1; }
+
+    /* ─── Session ID (top right sidebar) ─── */
+    #session-id {
+      position: absolute;
+      top: 10px;
+      right: 20px;
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: rgba(0,0,0,0.3);
+      text-transform: uppercase;
+    }
+
+    /* ─── Voice transcript preview ─── */
+    #voice-preview {
+      font-size: 10px;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 1;
+      font-style: italic;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      text-align: center;
+    }
+
+    /* ─── Keyboard toggle button ─── */
+    #kbd-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 5px 10px;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      transition: all 200ms;
+    }
+
+    #kbd-btn:hover, #kbd-btn.active {
+      border-color: var(--red-mid);
+      color: var(--bar-text);
+    }
+
+
+    /* ─── Send button ─── */
+    #send-btn {
+      background: transparent;
+      border: 1px solid var(--red-mid);
+      color: var(--red);
+      cursor: pointer;
+      padding: 5px 14px;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: all 200ms;
+      flex-shrink: 0;
+    }
+
+    #send-btn:hover {
+      background: var(--red-dark);
+      color: #fff;
+      border-color: var(--red);
+    }
+
+    #send-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Three-column layout -->
+<div id="layout">
+
+  <!-- Left sidebar -->
+  <div class="sidebar" id="sidebar-left">
+    <div class="sidebar-block"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-block"></div>
+    <div class="sidebar-small-text">SAMARITAN</div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-block"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+  </div>
+
+  <!-- Center -->
+  <div id="center">
+
+    <!-- Status bar -->
+    <div id="status-bar">
+      <div id="status-indicator">
+        <div id="status-dot"></div>
+        <span id="status-text">STANDBY</span>
+      </div>
+      <span>SAMARITAN // INTERFACE v2.0</span>
+      <span id="clock"></span>
+    </div>
+
+    <!-- Corner decorations -->
+    <div class="corner corner-tl"></div>
+    <div class="corner corner-tr"></div>
+    <div class="corner corner-bl"></div>
+    <div class="corner corner-br"></div>
+
+    <!-- Error flash -->
+    <div id="error-flash"></div>
+
+    <!-- Long response terminal (covers full center area) -->
+    <div id="terminal-panel"><span id="terminal-text"></span><span id="terminal-cursor"></span></div>
+
+    <!-- Short/streaming response text — top-left, scrollable -->
+    <div id="response-panel"></div>
+
+    <!-- Main display -->
+    <div id="display">
+      <div id="triangle"></div>
+      <div id="word-display"></div>
+      <div id="word-rule"></div>
+      <div id="idle">CONNECTION ESTABLISHED.</div>
+      <div id="loader">
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+        <div class="loader-dot"></div>
+      </div>
+    </div>
+
+    <!-- Session ID -->
+    <div id="session-id">SES: <span id="session-id-value">—</span></div>
+
+    <!-- Bottom zone: text input panel -->
+    <div id="bottom-zone">
+
+      <!-- Full-width text input (shown when kbd mode active) -->
+      <div id="text-input-panel">
+        <div id="text-input-label">&#9654; INPUT QUERY</div>
+        <input id="text-input" type="text" inputmode="text"
+               placeholder="ENTER QUERY..." autocomplete="off"
+               spellcheck="false" enterkeyhint="send" />
+        <button id="send-btn">SEND</button>
+      </div>
+
+    </div>
+
+    <!-- Control bar (always visible at very bottom) -->
+    <div id="control-bar">
+      <span id="prompt-label">&#9654;</span>
+      <span id="voice-preview">TAP MIC TO SPEAK</span>
+      <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">&#128266; FULL VOICE</button>
+      <button id="kbd-btn" title="Toggle keyboard input">&#9000;</button>
+      <button id="mic-btn" title="Voice Input">
+        <span id="mic-icon">&#127908;</span>
+        <span id="mic-label">SPEAK</span>
+      </button>
+    </div>
+
+    <!-- Keyword card stack (right side, up to 3 visible) -->
+    <div id="card-stack"></div>
+
+  </div><!-- /center -->
+
+  <!-- Right sidebar -->
+  <div class="sidebar" id="sidebar-right">
+    <div class="sidebar-block"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-block"></div>
+    <div class="sidebar-small-text">ONLINE</div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-block"></div>
+    <div class="sidebar-line"></div>
+    <div class="sidebar-dot"></div>
+  </div>
+
+</div><!-- /layout -->
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  SAMARITAN INTERFACE — client logic
+// ═══════════════════════════════════════════════════════════
+// ── Auth ─────────────────────────────────────────────────────
+// HTTP Basic Auth is handled by the browser — it prompts for credentials
+// Key is injected by the server at render time — sent as Bearer on all requests.
+// EventSource can't set headers so it uses ?token= query param instead.
+const _apiKey = '%%SAMARITAN_API_KEY%%';
+function authHeaders() {
+  return _apiKey ? { 'Authorization': 'Bearer ' + _apiKey } : {};
+}
+function authedUrl(url) {
+  if (!_apiKey) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return url + sep + 'token=' + encodeURIComponent(_apiKey);
+}
+
+// ── Session ID (unique per submit) ──────────────────────────
+function makeSessionId() { return 'sam-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+let SESSION_ID = makeSessionId();
+document.getElementById('session-id-value').textContent = SESSION_ID.toUpperCase();
+
+// ── DOM refs ────────────────────────────────────────────────
+const wordDisplay    = document.getElementById('word-display');
+const wordRule       = document.getElementById('word-rule');
+const idleEl         = document.getElementById('idle');
+const loaderEl       = document.getElementById('loader');
+const terminalPanel  = document.getElementById('terminal-panel');
+const terminalText   = document.getElementById('terminal-text');
+const terminalCursor = document.getElementById('terminal-cursor');
+const cardStack      = document.getElementById('card-stack');
+const textInput      = document.getElementById('text-input');
+const textInputPanel = document.getElementById('text-input-panel');
+const sendBtn        = document.getElementById('send-btn');
+const micBtn         = document.getElementById('mic-btn');
+const micIcon        = document.getElementById('mic-icon');
+const micLabel       = document.getElementById('mic-label');
+const kbdBtn         = document.getElementById('kbd-btn');
+const fullVoiceBtn   = document.getElementById('full-voice-btn');
+const voicePreview   = document.getElementById('voice-preview');
+const statusText     = document.getElementById('status-text');
+const statusDot      = document.getElementById('status-dot');
+const responsePanel  = document.getElementById('response-panel');
+const errorFlash     = document.getElementById('error-flash');
+const clockEl        = document.getElementById('clock');
+
+// ── Keyboard / voice mode toggle ─────────────────────────────
+let kbdOpen      = false;
+let voiceMode    = false;  // true only when user explicitly enabled mic
+let fullVoiceMode = false; // true when xAI TTS is active
+
+// ── Full-voice toggle ─────────────────────────────────────────
+fullVoiceBtn.addEventListener('click', () => {
+  fullVoiceMode = !fullVoiceMode;
+  fullVoiceBtn.classList.toggle('active', fullVoiceMode);
+  voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+});
+
+function setKbdMode(open) {
+  kbdOpen = open;
+  if (open) voiceMode = false;  // entering keyboard mode disables auto-restart
+  // Swap panels: show text input OR response panel, never both
+  textInputPanel.classList.toggle('open', open);
+  // responsePanel visibility is managed independently via .active class
+  kbdBtn.classList.toggle('active', open);
+  voicePreview.style.display = open ? 'none' : '';
+  if (!open) {
+    textInput.blur();
+    voicePreview.textContent = 'TAP MIC TO SPEAK';
+  }
+  // Stop mic when switching to keyboard mode
+  if (open && isListening) {
+    recognition && recognition.stop();
+  }
+}
+
+// iOS requires focus() to be called synchronously inside the tap handler
+kbdBtn.addEventListener('click', () => {
+  resetIdleTimer();
+  const opening = !kbdOpen;
+  setKbdMode(opening);
+  if (opening) {
+    textInput.focus();
+  }
+});
+
+// ── Clock ───────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  clockEl.textContent = now.toTimeString().slice(0, 8);
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ── Config ───────────────────────────────────────────────────
+const IDLE_TIMEOUT_SEC        = 300;   // seconds before screen returns to idle message
+const THEME_TRANSITION_MS     = 3000;  // ms for dark/light crossfade (must match CSS transition duration)
+const LONG_RESPONSE_THRESHOLD = 10;    // words — responses >= this use terminal display instead of word flash
+const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewriter effect
+const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
+const XAI_VOICE               = 'ara'; // xAI realtime voice: Eve | Ara | Rex | Sal | Leo (case-insensitive here, normalized below)
+
+// Keyword → card-type mapping. Add/remove entries freely.
+// type: 'initiative' | 'asset' | 'task' | 'threat'
+const KEYWORD_CARDS = {
+  'INITIATIVE:': { type: 'initiative' },
+  'ASSET:':      { type: 'asset'      },
+  'TASK:':       { type: 'task'       },
+  'THREAT:':     { type: 'threat'     },
+};
+
+// ── State ────────────────────────────────────────────────────
+let isStreaming    = false;
+let wordQueue      = [];
+let wordAnimating  = false;
+let fullResponse   = '';
+let idleTimer      = null;
+
+// ── Utilities ────────────────────────────────────────────────
+function setStatus(text, active = false) {
+  statusText.textContent = text.toUpperCase();
+  statusDot.style.animationPlayState = active ? 'running' : 'paused';
+  statusDot.style.opacity = active ? null : '1';
+}
+
+function flashError(msg) {
+  errorFlash.textContent = '[ ' + msg.toUpperCase() + ' ]';
+  errorFlash.classList.add('show');
+  setTimeout(() => errorFlash.classList.remove('show'), 3000);
+}
+
+// ── #command handler ─────────────────────────────────────────
+// Commands starting with # are intercepted client-side and never sent to agent-mcp.
+// Add new commands as cases in handleCommand().
+
+function cmdScreenMode(mode) {
+  if (mode !== 'dark' && mode !== 'light') {
+    flashError('usage: #screen_mode <dark|light>');
+    return;
+  }
+  if (mode === 'dark') {
+    document.body.setAttribute('data-theme', 'dark');
+  } else {
+    document.body.removeAttribute('data-theme');
+  }
+}
+
+function handleCommand(raw) {
+  const parts = raw.trim().split(/\s+/);
+  const cmd   = parts[0].toLowerCase();
+  const args  = parts.slice(1);
+  switch (cmd) {
+    case '#screen_mode': cmdScreenMode(args[0]); break;
+    default: flashError('unknown command: ' + cmd);
+  }
+}
+
+// ── Keyword card engine ───────────────────────────────────────
+// Scans completed response text for KEYWORD: sentences,
+// builds typed cards, stacks them on the right, cycles if > 3.
+
+let cardCycleTimer = null;
+
+function buildCardHTML(type, keyword, body) {
+  switch (type) {
+    case 'initiative':
+      return `<div class="kw-card kw-initiative">
+        <div class="kw-title-bar">SAMARITAN</div>
+        <div class="kw-label-row">
+          <span class="kw-keyword-badge">${keyword}</span>
+        </div>
+        <div class="kw-body" data-typetext="${escAttr(body)}"></div>
+        <div class="kw-footer-bar"></div>
+      </div>`;
+
+    case 'asset':
+      return `<div class="kw-card kw-asset">
+        <div class="kw-title-bar">SUBJECT IDENTIFIED</div>
+        <div class="kw-subtitle-row">
+          <span class="kw-subtitle-label">DESIGNATION:</span>
+          <span class="kw-keyword-badge">ASSET</span>
+        </div>
+        <div class="kw-content" data-typetext="${escAttr(body)}"></div>
+      </div>`;
+
+    case 'task':
+      return `<div class="kw-card kw-task">
+        <div class="kw-title-bar">SAMARITAN</div>
+        <div class="kw-subtitle-row">
+          <span class="kw-subtitle-label">TASK:</span>
+          <span class="kw-keyword-badge">DIRECTIVE</span>
+        </div>
+        <div class="kw-content" data-typetext="${escAttr(body)}"></div>
+      </div>`;
+
+    case 'threat':
+      return `<div class="kw-card kw-threat">
+        <div class="kw-deviant-bar">
+          <span class="kw-deviant-icon"></span>
+          <span>/// DEVIANT ///</span>
+        </div>
+        <div class="kw-title-bar">PRIMARY THREAT</div>
+        <div class="kw-rows">
+          <div class="kw-row">
+            <span class="kw-row-label">PROJECTION</span>
+            <span class="kw-row-value">THREAT</span>
+          </div>
+          <div class="kw-row">
+            <span class="kw-row-label">CONCLUSION</span>
+            <span class="kw-row-value">ELIMINATE</span>
+          </div>
+        </div>
+        <div class="kw-content" data-typetext="${escAttr(body)}"></div>
+      </div>`;
+
+    default: return '';
+  }
+}
+
+function escAttr(str) {
+  return str.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function typeIntoEl(el, text, charDelay, onDone) {
+  let i = 0;
+  el.textContent = '';
+  function tick() {
+    if (i < text.length) {
+      el.textContent += text[i++];
+      setTimeout(tick, charDelay);
+    } else {
+      if (onDone) onDone();
+    }
+  }
+  tick();
+}
+
+function parseKeywordCards(text) {
+  // Split the response on any recognised keyword (case-insensitive).
+  // Each segment after a keyword is that keyword's body text.
+  const keys = Object.keys(KEYWORD_CARDS);
+  if (!keys.length) return [];
+
+  // Build a splitter that captures the keyword token
+  const splitter = new RegExp(
+    '(' + keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')',
+    'i'
+  );
+
+  const parts = text.split(splitter);
+  // parts = [pre, KW1, body1, KW2, body2, ...]
+  const cards = [];
+  for (let i = 1; i < parts.length - 1; i += 2) {
+    const kw   = parts[i].toUpperCase().trim();
+    const body = (parts[i + 1] || '').trim().replace(/\s+/g, ' ');
+    if (body && KEYWORD_CARDS[kw]) {
+      cards.push({ type: KEYWORD_CARDS[kw].type, keyword: kw, body });
+    }
+  }
+  return cards;
+}
+
+function showCardGroup(cardEls, groupIdx, allGroups) {
+  // Hide all cards cleanly — remove inline styles so CSS base state takes over
+  cardEls.forEach(el => {
+    el.classList.remove('visible');
+    el.classList.remove('shown');
+    el.style.transform = '';
+    el.style.opacity   = '';
+  });
+
+  // Show current group: add 'shown' (display:block), force reflow, then add 'visible' to trigger transition
+  const group = allGroups[groupIdx];
+  group.forEach((el, i) => {
+    setTimeout(() => {
+      el.classList.add('shown');
+      // Force reflow so browser registers the display:block before the opacity/transform transition
+      void el.offsetWidth;
+      el.classList.add('visible');
+
+      // Start typewriter after card is visible
+      const bodyEl = el.querySelector('[data-typetext]');
+      if (bodyEl && !bodyEl._typed) {
+        bodyEl._typed = true;
+        typeIntoEl(bodyEl, bodyEl.getAttribute('data-typetext'), TERMINAL_CHAR_DELAY_MS, null);
+      }
+    }, i * 150);
+  });
+
+  // Schedule next group if cycling
+  if (allGroups.length > 1) {
+    cardCycleTimer = setTimeout(() => {
+      const next = (groupIdx + 1) % allGroups.length;
+      showCardGroup(cardEls, next, allGroups);
+    }, CARD_CYCLE_DELAY_MS);
+  }
+}
+
+function renderKeywordCards(cards) {
+  clearTimeout(cardCycleTimer);
+  cardStack.innerHTML = '';
+  if (!cards.length) return;
+
+  // Build DOM elements
+  const cardEls = cards.map(c => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildCardHTML(c.type, c.keyword, c.body);
+    return tmp.firstElementChild;
+  });
+
+  cardEls.forEach(el => cardStack.appendChild(el));
+
+  // Group into sets of 3 and cycle
+  const groups = [];
+  for (let i = 0; i < cardEls.length; i += 3) {
+    groups.push(cardEls.slice(i, i + 3));
+  }
+  showCardGroup(cardEls, 0, groups);
+}
+
+function clearKeywordCards() {
+  clearTimeout(cardCycleTimer);
+  cardStack.innerHTML = '';
+}
+
+function showIdle(show) {
+  idleEl.style.display = show ? 'block' : 'none';
+}
+
+function showLoader(show) {
+  loaderEl.classList.toggle('active', show);
+}
+
+// ── Terminal display (long responses) ────────────────────────
+function showTerminal(show) {
+  terminalPanel.classList.toggle('active', show);
+  if (!show) {
+    terminalText.textContent = '';
+    terminalCursor.style.display = 'none';
+  } else {
+    terminalCursor.style.display = 'inline-block';
+  }
+}
+
+let terminalAnimating = false;
+
+function runTerminal(text, onDone) {
+  terminalAnimating = true;
+  terminalText.textContent = '';
+  terminalCursor.style.display = 'inline-block';
+  showIdle(false);
+  showTerminal(true);
+
+  // Hide the word-flash area while terminal is active
+  wordDisplay.classList.remove('visible');
+  wordDisplay.textContent = '';
+  wordRule.style.width = '0';
+
+  let i = 0;
+  function tick() {
+    if (i < text.length) {
+      terminalText.textContent += text[i++];
+      // Auto-scroll to bottom as text grows
+      terminalPanel.scrollTop = terminalPanel.scrollHeight;
+      setTimeout(tick, TERMINAL_CHAR_DELAY_MS);
+    } else {
+      // Finished — leave cursor blinking, call done callback
+      terminalAnimating = false;
+      if (onDone) onDone();
+    }
+  }
+  tick();
+}
+
+function showIdleScreen() {
+  // Only activate idle screen when nothing is happening
+  if (isStreaming || wordAnimating || wordQueue.length > 0) return;
+  wordDisplay.classList.remove('visible');
+  wordDisplay.textContent = '';
+  wordRule.style.width = '0';
+  responsePanel.textContent = '';
+  responsePanel.classList.remove('active');
+  fullResponse = '';
+  showTerminal(false);   // clear terminal when idle screen takes over
+  clearKeywordCards();
+  idleEl.classList.add('blink');
+  showIdle(true);
+  setStatus('STANDBY', false);
+}
+
+function resetIdleTimer() {
+  clearTimeout(idleTimer);
+  idleEl.classList.remove('blink');
+  idleTimer = setTimeout(showIdleScreen, IDLE_TIMEOUT_SEC * 1000);
+}
+
+// ── Word-by-word animation ────────────────────────────────────
+//  Samaritan shows ONE word at a time, center screen.
+//  Each word fades in, holds, fades out, then next word.
+const WORD_FADE   = 180;   // ms opacity transition (set in CSS)
+const WORD_HOLD   = 380;   // ms visible hold per word
+const WORD_GAP    = 60;    // ms between words
+
+function flashWord(word) {
+  return new Promise(resolve => {
+    wordDisplay.textContent = word;
+    wordRule.style.width = Math.min(word.length * 22, 600) + 'px';
+    // Force reflow then fade in
+    void wordDisplay.offsetWidth;
+    wordDisplay.classList.add('visible');
+
+    setTimeout(() => {
+      wordDisplay.classList.remove('visible');
+      setTimeout(resolve, WORD_FADE + WORD_GAP);
+    }, WORD_HOLD);
+  });
+}
+
+async function drainWordQueue() {
+  if (wordAnimating) return;
+  wordAnimating = true;
+  showIdle(false);
+
+  while (wordQueue.length > 0) {
+    const word = wordQueue.shift();
+    if (word.trim()) {
+      await flashWord(word.trim());
+    }
+  }
+
+  // After queue empty — if still streaming, wait for more
+  if (isStreaming) {
+    // Brief pause then check again
+    await new Promise(r => setTimeout(r, 80));
+    if (wordQueue.length > 0) {
+      wordAnimating = false;
+      drainWordQueue();
+      return;
+    }
+  }
+
+  wordAnimating = false;
+  if (!isStreaming) {
+    wordDisplay.textContent = '';
+    wordRule.style.width = '0';
+    // Do NOT show idle here — timer fires after IDLE_TIMEOUT_SEC
+  }
+}
+
+function enqueueTokens(text) {
+  // Split incoming text into words (preserving non-space chunks)
+  const words = text.split(/(\s+)/).filter(w => w.trim().length > 0);
+  wordQueue.push(...words);
+  if (!wordAnimating) {
+    drainWordQueue();
+  }
+}
+
+// ── Response panel (accumulated text history) ────────────────
+function appendToPanel(text) {
+  fullResponse += text;
+  // Don't show panel yet — revealed after animation drains or terminal takes over
+}
+
+// ── xAI Realtime Voice (TTS) ─────────────────────────────────
+// Hybrid approach: agent-mcp handles all reasoning/memory/tools (SSE flow),
+// then the completed response text is sent to xAI realtime purely for TTS.
+// Voice model is set by XAI_VOICE constant — no bypass of the agentic brain.
+//
+// Flow:
+//   1. Run normal agent-mcp SSE (text streams to panel as usual)
+//   2. On 'done': collect fullResponse, fetch ephemeral token
+//   3. Open wss://api.x.ai/v1/realtime, inject fullResponse as assistant item
+//   4. response.output_audio.delta → PCM16 → AudioContext playback
+//   5. response.done → close WS, parse cards, STANDBY
+
+let xaiWs        = null;  // active xAI WebSocket, if any
+let audioCtx     = null;  // Web Audio context (created on first user gesture)
+let nextPlayAt   = 0;     // AudioContext time for next scheduled PCM chunk
+let cachedVtok   = null;  // voice token delivered via SSE (avoids extra HTTP round-trip)
+
+// PCM16-LE base64 → AudioBuffer for Web Audio API
+function pcm16Base64ToFloat32(b64, sampleRate) {
+  const bin   = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const samples = bytes.length / 2;
+  const buf  = audioCtx.createBuffer(1, samples, sampleRate);
+  const data = buf.getChannelData(0);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples; i++) {
+    data[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return buf;
+}
+
+function scheduleAudioChunk(audioBuf) {
+  if (!audioCtx) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuf;
+  src.connect(audioCtx.destination);
+  const startAt = Math.max(audioCtx.currentTime + 0.02, nextPlayAt);
+  src.start(startAt);
+  nextPlayAt = startAt + audioBuf.duration;
+}
+
+// Speak `responseText` via xAI TTS after agent-mcp has already finished.
+// Called from the SSE 'done' handler when fullVoiceMode is active.
+async function speakWithSamaritan(responseText, wasKbd) {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  nextPlayAt = 0;
+
+  // Get voice token — use SSE-delivered cached token first (avoids Safari post-WS HTTP drop)
+  let clientSecret;
+  if (cachedVtok) {
+    const j = cachedVtok;
+    cachedVtok = null;
+    clientSecret = j.client_secret?.value || j.value || j.token;
+  }
+  if (!clientSecret) {
+    // Fallback: fetch directly (first turn before any SSE, or if SSE token missing)
+    try {
+      const r = await fetch('/api/voice-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ expires_in: 120 }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        clientSecret = j.client_secret?.value || j.value || j.token;
+      }
+    } catch (_) {}
+  }
+  if (!clientSecret) {
+    flashError('voice token failed');
+    waitForDrainThenListen(wasKbd);
+    return;
+  }
+
+  setStatus('SAMARITAN SPEAKING', true);
+  voicePreview.textContent = fullVoiceMode ? 'SAMARITAN SPEAKING…' : 'TAP MIC TO SPEAK';
+
+  // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
+  const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
+
+  const ws = new WebSocket('wss://api.x.ai/v1/realtime',
+                           [`xai-client-secret.${clientSecret}`]);
+  xaiWs = ws;
+
+  ws.onopen = () => {
+    // Session: audio-only, chosen voice, no turn detection, no system instructions.
+    ws.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        modalities: ['audio'],
+        voice: voiceName,
+        output_audio_format: 'audio/pcm',
+        turn_detection: null,
+      },
+    }));
+
+    // "Say this: <text>" — direct command, no framing for the model to paraphrase.
+    const sayPrompt = `Say this: ${responseText}`;
+    ws.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: sayPrompt }],
+      },
+    }));
+
+    ws.send(JSON.stringify({
+      type: 'response.create',
+      response: { modalities: ['audio'] },
+    }));
+  };
+
+  ws.onmessage = (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch (_) { return; }
+
+    switch (msg.type) {
+      case 'response.output_audio.delta':
+          if (msg.delta) {
+          try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
+          catch (_) {}
+        }
+        break;
+
+      case 'response.done':
+        ws.close();
+        xaiWs = null;
+        waitForDrainThenListen(wasKbd);
+        break;
+
+      case 'error':
+        ws.close();
+        xaiWs = null;
+        flashError((msg.error?.message || 'voice error').slice(0, 60));
+        voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+        waitForDrainThenListen(wasKbd);
+        break;
+    }
+  };
+
+  ws.onerror = () => {
+    xaiWs = null;
+    flashError('voice ws error');
+    waitForDrainThenListen(wasKbd);
+  };
+
+  ws.onclose = (evt) => {
+    if (xaiWs === ws) xaiWs = null;
+    if (evt.code !== 1000 && evt.code !== 1005) {
+      flashError('voice closed: ' + evt.code);
+      waitForDrainThenListen(wasKbd);
+    }
+  };
+}
+
+// ── Submit ───────────────────────────────────────────────────
+async function submit(textOverride) {
+  const text = (textOverride || textInput.value).trim();
+  if (!text || isStreaming) return;
+
+  // Intercept #commands — handle locally, never forward to agent-mcp
+  if (text.startsWith('#')) {
+    textInput.value = '';
+    if (kbdOpen) setTimeout(() => textInput.focus(), 50);
+    handleCommand(text);
+    return;
+  }
+
+  resetIdleTimer();   // user is active — reset idle countdown
+  SESSION_ID = makeSessionId();   // fresh session per submit — avoids stale agent-mcp streams
+  document.getElementById('session-id-value').textContent = SESSION_ID.toUpperCase();
+  const wasKbd = kbdOpen;
+  textInput.value = '';
+  textInput.blur();          // dismiss iOS keyboard immediately
+  if (kbdOpen) setKbdMode(false);  // switch to response panel while waiting
+  voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+  isStreaming = true;
+  wordQueue   = [];
+  fullResponse = '';
+  responsePanel.textContent = '';
+  responsePanel.classList.remove('active');
+  showTerminal(false);   // clear any previous long response
+  clearKeywordCards();   // clear any previous keyword cards
+
+  setStatus('PROCESSING', true);
+  showIdle(false);
+  showLoader(true);
+  sendBtn.disabled = true;
+
+  try {
+    // 1. Submit to agent-mcp via our proxy (retry once — Safari drops first post-load request)
+    let submitResp;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 600));
+        submitResp = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ text, client_id: SESSION_ID }),
+        });
+        if (submitResp.ok) break;
+      } catch (_) { if (attempt === 2) throw new Error('Submit failed after retries'); }
+    }
+    if (!submitResp?.ok) {
+      throw new Error('Submit failed: ' + submitResp?.status);
+    }
+
+    showLoader(false);
+    setStatus('RECEIVING', true);
+
+    // 2. Open SSE stream — pass token via query param (EventSource can't set headers)
+    const evtSource = new EventSource(authedUrl(`/api/stream/${SESSION_ID}`));
+
+    // Use onmessage (unnamed events) for cross-browser compatibility
+    let streamDone = false;
+    evtSource.onmessage = (e) => {
+      if (streamDone) return;
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'tok') {
+          const token = data.text || '';
+          if (token) {
+            appendToPanel(token);
+            enqueueTokens(token);
+          }
+        } else if (data.type === 'vtok') {
+          // Voice token pre-delivered over SSE — cache it for speakWithSamaritan
+          cachedVtok = data.token;
+        } else if (data.type === 'done') {
+          streamDone = true;
+          evtSource.close();
+          isStreaming = false;
+          showLoader(false);
+          sendBtn.disabled = false;
+
+          const kwCards = parseKeywordCards(fullResponse);
+          if (kwCards.length) renderKeywordCards(kwCards);
+
+          if (fullVoiceMode) {
+            const ttsText = fullResponse
+              .replace(/\[thinking[^\]]*\]/gi, '')
+              .replace(/\[[^\]]*▶[^\]]*\][^\n]*/g, '')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim()
+              .slice(0, 200);  // cap TTS to ~10s of audio
+            wordQueue = [];
+            wordAnimating = false;
+            if (ttsText) {
+              speakWithSamaritan(ttsText, wasKbd);
+            } else {
+              waitForDrainThenListen(wasKbd);
+            }
+          } else {
+            const wordCount = fullResponse.trim().split(/\s+/).filter(w => w).length;
+            if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+              wordQueue = [];
+              wordAnimating = false;
+              runTerminal(fullResponse.trim(), () => waitForDrainThenListen(wasKbd));
+            } else {
+              waitForDrainThenListen(wasKbd);
+            }
+          }
+        } else if (data.type === 'error') {
+          streamDone = true;
+          evtSource.close();
+          isStreaming = false;
+          showLoader(false);
+          showIdle(false);
+          sendBtn.disabled = false;
+          flashError(data.message || 'stream error');
+          if (fullVoiceMode) {
+            waitForDrainThenListen(wasKbd);
+          } else {
+            setStatus('ERROR', false);
+          }
+        }
+      } catch (_) {}
+    };
+
+    // Native onerror (connection drop)
+    evtSource.onerror = () => {
+      if (streamDone) return;
+      if (evtSource.readyState === EventSource.CLOSED) {
+        isStreaming = false;
+        showLoader(false);
+        showIdle(false);
+        setStatus('STANDBY', false);
+        sendBtn.disabled = false;
+      }
+    };
+
+  } catch (err) {
+    isStreaming = false;
+    showLoader(false);
+    showIdle(false);
+    setStatus('ERROR', false);
+    sendBtn.disabled = false;
+    flashError(err.message || 'unknown error');
+  }
+}
+
+// ── Event listeners ──────────────────────────────────────────
+sendBtn.addEventListener('click', submit);
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submit();
+});
+
+// ── Auto-restart mic after response drains ───────────────────
+// Called when the 'done' SSE event fires. Polls until the word
+// animation queue is empty, then restarts recognition if in voice mode.
+function waitForDrainThenListen(wasKbd) {
+  if (wordAnimating || wordQueue.length > 0) {
+    setTimeout(() => waitForDrainThenListen(wasKbd), 150);
+    return;
+  }
+  // Queue drained (or terminal finished) — settle UI and start idle countdown
+  showIdle(false);     // hide idle message until timeout fires
+  // Show accumulated response text now that animation is done (if terminal not active)
+  if (!terminalPanel.classList.contains('active') && fullResponse) {
+    responsePanel.textContent = fullResponse;
+    responsePanel.classList.add('active');
+    responsePanel.scrollTop = responsePanel.scrollHeight;
+  }
+  // Terminal panel intentionally left visible — persists until next submit
+  resetIdleTimer();    // idle screen appears only after IDLE_TIMEOUT_SEC of inactivity
+
+  if (fullVoiceMode && recognition && !micBtn.classList.contains('unsupported')) {
+    // Full-voice mode: audio is playing — wait for it to finish then open mic.
+    // TTS is capped at 200 chars (~10s). We track exact end time via nextPlayAt.
+    // After audio ends, suspend AudioContext so mic doesn't hear speaker bleed.
+    const audioEndMs = audioCtx
+      ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
+      : 0;
+    setTimeout(async () => {
+      nextPlayAt = 0;
+      // Suspend AudioContext before opening mic — releases iOS audio session
+      // so the mic gets clean input without speaker bleed or session conflicts.
+      if (audioCtx && audioCtx.state === 'running') await audioCtx.suspend();
+      if (!isStreaming && !isListening) {
+        voiceMode = true;
+        try { recognition.start(); } catch (e) {
+          flashError('mic: ' + e.message.slice(0, 30));
+        }
+      }
+    }, audioEndMs + 800);
+    return;
+  }
+
+  setStatus('STANDBY', false);
+  if (wasKbd) {
+    // Keyboard mode: reopen input panel so user can type the next message
+    setTimeout(() => {
+      setKbdMode(true);
+      textInput.focus();
+    }, 300);
+  } else if (voiceMode && recognition && !micBtn.classList.contains('unsupported')) {
+    // Voice mode: restart mic
+    setTimeout(() => {
+      if (!isStreaming && !isListening) {
+        try { recognition.start(); } catch (_) {}
+      }
+    }, 400);
+  }
+}
+
+// ── Voice Input (Web Speech API) ─────────────────────────────
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+
+let recognition = null;
+let isListening = false;
+
+// Check for insecure context first (HTTP — blocks Speech API on all browsers)
+if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+  micBtn.classList.add('unsupported');
+  micLabel.textContent = 'HTTPS';
+  micBtn.title = 'Voice requires HTTPS — connect via https://';
+  voicePreview.textContent = 'HTTPS REQUIRED FOR MIC';
+} else if (!SpeechRecognition) {
+  micBtn.classList.add('unsupported');
+  micBtn.title = 'Voice input not supported in this browser';
+  micLabel.textContent = 'N/A';
+} else {
+  recognition = new SpeechRecognition();
+  recognition.continuous      = false;
+  recognition.interimResults  = true;
+  recognition.lang            = 'en-US';
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    isListening = true;
+    micBtn.classList.add('listening');
+    micIcon.textContent = '●';
+    micLabel.textContent = 'LIVE';
+    voicePreview.textContent = '…';
+    setStatus('LISTENING', true);
+  };
+
+  let pendingTranscript = '';  // last heard text; submitted from onend if no final arrived
+  let didSubmit = false;       // guards against double-submit
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    let final = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const t = event.results[i][0].transcript;
+      if (event.results[i].isFinal) final += t;
+      else interim += t;
+    }
+    const heard = (final || interim).trim();
+    if (heard) pendingTranscript = heard;
+    voicePreview.textContent = heard.toUpperCase().slice(0, 40) || '…';
+
+    if (final) {
+      didSubmit = true;
+      pendingTranscript = '';
+      const query = final.trim();
+      if (kbdOpen) {
+        textInput.value = (textInput.value + ' ' + query).trim();
+      } else {
+        submit(query);
+      }
+    }
+  };
+
+  recognition.onerror = (event) => {
+    if (event.error !== 'no-speech') flashError('mic: ' + event.error);
+    stopListening();
+  };
+
+  recognition.onend = () => {
+    // Safari sometimes ends without isFinal — use last interim as fallback
+    if (!didSubmit && pendingTranscript && !kbdOpen && !isStreaming) {
+      const query = pendingTranscript.trim();
+      pendingTranscript = '';
+      didSubmit = true;
+      submit(query);
+    }
+    pendingTranscript = '';
+    didSubmit = false;
+    stopListening();
+  };
+
+  function stopListening() {
+    isListening = false;
+    micBtn.classList.remove('listening');
+    micIcon.textContent = '🎤';
+    micLabel.textContent = 'SPEAK';
+    if (!isStreaming) {
+      setStatus('STANDBY', false);
+      if (!kbdOpen) voicePreview.textContent = 'TAP MIC TO SPEAK';
+    }
+  }
+
+  micBtn.addEventListener('click', () => {
+    if (micBtn.classList.contains('unsupported')) return;
+    resetIdleTimer();
+    if (isListening) {
+      voiceMode = false;  // user manually stopped mic — don't auto-restart
+      recognition.stop();
+    } else {
+      voiceMode = true;   // user explicitly started mic — auto-restart after responses
+      try {
+        recognition.start();
+      } catch (e) {
+        flashError('mic error: ' + e.message);
+      }
+    }
+  });
+}
+
+// ── Initial state ─────────────────────────────────────────────
+showIdle(true);
+showLoader(false);
+setStatus('STANDBY', false);
+resetIdleTimer();   // start idle countdown immediately on page load
+// Do NOT focus the text input on load — prevents iOS keyboard from popping up
+</script>
+
+</body>
+</html>

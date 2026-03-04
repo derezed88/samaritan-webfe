@@ -1,0 +1,23 @@
+# Environment — never commit real secrets
+.env
+
+# TLS certificates (auto-generated on first start)
+certs/
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Logs and runtime state
+*.log
+*.pid
+
+# Editor / OS
+.claude/
+.DS_Store
+*.swp
+*~
