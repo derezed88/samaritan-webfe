@@ -2316,6 +2316,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
     const resp = await fetch('/api/stt-token', { headers: authHeaders() });
     if (!resp.ok) throw new Error('stt-token ' + resp.status);
     dgKey = (await resp.json()).key;
+    flashError('DG key=' + dgKey.slice(0, 8) + '… len=' + dgKey.length);
     return dgKey;
   }
 
@@ -2346,8 +2347,9 @@ registerProcessor('pcm-capture', PcmCapture);`;
         utterance_end_ms:   DG_EOT_TIMEOUT_MS,
         vad_events:         true,
       });
-      dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`,
-                           ['token', key]);
+      // Pass key as URL param — avoids browser subprotocol header mangling
+      params.set('token', key);
+      dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
