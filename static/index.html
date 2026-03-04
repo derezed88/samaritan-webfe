@@ -858,6 +858,14 @@
       to   { box-shadow: 0 0 12px var(--red), 0 0 24px rgba(254,45,45,0.25); }
     }
 
+    /* ─── Speaker icon waves: hidden until full-voice active ─── */
+    #fv-wave1, #fv-wave2 { opacity: 0; transition: opacity 200ms; }
+    #full-voice-btn.active #fv-wave1 { opacity: 1; }
+    #full-voice-btn.active #fv-wave2 { opacity: 1; }
+
+    /* ─── Keyboard SVG key dots ─── */
+    #kbd-btn svg line { stroke-width: 3; stroke-linecap: round; }
+
     /* ─── Corner decorations ─── */
     .corner {
       position: absolute;
@@ -1053,8 +1061,30 @@
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
       <button id="voice-provider-btn" title="Switch TTS voice provider">VOICE: XAI</button>
-      <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">&#128266;</button>
-      <button id="kbd-btn" title="Toggle keyboard input">⌨</button>
+      <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
+        <svg id="fv-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- speaker cone -->
+          <polygon points="3,8 7,8 12,4 12,20 7,16 3,16"/>
+          <!-- inner wave (always shown when active) -->
+          <path id="fv-wave1" d="M15 9.5a4 4 0 0 1 0 5"/>
+          <!-- outer wave (shown when active) -->
+          <path id="fv-wave2" d="M18 6.5a8 8 0 0 1 0 11"/>
+        </svg>
+      </button>
+      <button id="kbd-btn" title="Toggle keyboard input">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="5" width="20" height="14" rx="2"/>
+          <line x1="6" y1="9" x2="6" y2="9"/>
+          <line x1="10" y1="9" x2="10" y2="9"/>
+          <line x1="14" y1="9" x2="14" y2="9"/>
+          <line x1="18" y1="9" x2="18" y2="9"/>
+          <line x1="6" y1="13" x2="6" y2="13"/>
+          <line x1="10" y1="13" x2="10" y2="13"/>
+          <line x1="14" y1="13" x2="14" y2="13"/>
+          <line x1="18" y1="13" x2="18" y2="13"/>
+          <line x1="8" y1="17" x2="16" y2="17"/>
+        </svg>
+      </button>
       <button id="mic-btn" title="Voice Input">
         <span id="mic-icon">&#127908;</span>
       </button>
@@ -1201,8 +1231,8 @@ let   TTS_PROVIDER            = 'xai';              // active TTS provider: 'xai
 const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
 const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
 const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
-const INWORLD_SPEAKING_RATE   = 1.0;                // 0.5–1.5× native speed
-const INWORLD_TEMPERATURE     = 0.8;                // 0–2; expressiveness
+const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
+const INWORLD_TEMPERATURE     = 1.0;                // 0–2; expressiveness
 
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
