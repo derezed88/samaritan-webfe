@@ -779,16 +779,13 @@
       border: 1px solid var(--red-mid);
       color: var(--bar-text);
       cursor: pointer;
-      padding: 4px 16px;
+      padding: 4px 10px;
       font-family: var(--font);
       font-size: 13px;
-      letter-spacing: 3px;
-      text-transform: uppercase;
       transition: all 200ms;
       flex-shrink: 0;
       display: flex;
       align-items: center;
-      gap: 6px;
       height: 32px;
     }
 
@@ -1056,11 +1053,10 @@
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
       <button id="voice-provider-btn" title="Switch TTS voice provider">VOICE: XAI</button>
-      <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">&#128266; FULL VOICE</button>
-      <button id="kbd-btn" title="Toggle keyboard input">&#9000;</button>
+      <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">&#128266;</button>
+      <button id="kbd-btn" title="Toggle keyboard input">⌨</button>
       <button id="mic-btn" title="Voice Input">
         <span id="mic-icon">&#127908;</span>
-        <span id="mic-label">SPEAK</span>
       </button>
     </div>
 
@@ -1126,7 +1122,6 @@ const textInputPanel = document.getElementById('text-input-panel');
 const sendBtn        = document.getElementById('send-btn');
 const micBtn         = document.getElementById('mic-btn');
 const micIcon        = document.getElementById('mic-icon');
-const micLabel       = document.getElementById('mic-label');
 const kbdBtn         = document.getElementById('kbd-btn');
 const fullVoiceBtn       = document.getElementById('full-voice-btn');
 const voiceProviderBtn   = document.getElementById('voice-provider-btn');
@@ -1492,7 +1487,7 @@ function showIdleScreen() {
   fullResponse = '';
   showTerminal(false);   // clear terminal when idle screen takes over
   clearKeywordCards();
-  idleEl.classList.add('blink');
+  // blink removed — CONNECTION ESTABLISHED stays static
   showIdle(true);
   setStatus('STANDBY', false);
 }
@@ -2031,13 +2026,11 @@ let isListening = false;
 // Check for insecure context first (HTTP — blocks Speech API on all browsers)
 if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   micBtn.classList.add('unsupported');
-  micLabel.textContent = 'HTTPS';
   micBtn.title = 'Voice requires HTTPS — connect via https://';
   voicePreview.textContent = 'HTTPS REQUIRED FOR MIC';
 } else if (!SpeechRecognition) {
   micBtn.classList.add('unsupported');
   micBtn.title = 'Voice input not supported in this browser';
-  micLabel.textContent = 'N/A';
 } else {
   recognition = new SpeechRecognition();
   recognition.continuous      = false;
@@ -2049,7 +2042,6 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     isListening = true;
     micBtn.classList.add('listening');
     micIcon.textContent = '●';
-    micLabel.textContent = 'LIVE';
     voicePreview.textContent = '…';
     setStatus('LISTENING', true);
   };
@@ -2103,7 +2095,6 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     isListening = false;
     micBtn.classList.remove('listening');
     micIcon.textContent = '🎤';
-    micLabel.textContent = 'SPEAK';
     if (!isStreaming) {
       setStatus('STANDBY', false);
       if (!kbdOpen) voicePreview.textContent = 'TAP MIC TO SPEAK';
