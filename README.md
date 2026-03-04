@@ -297,7 +297,7 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 Mark Jimenez - [@properTweetment](https://twitter.com/properTweetment) - xb12pilot@gmail.com
 
-Project Link: [https://github.com/derezed88/kaliLinuxNWScripts](https://github.com/derezed88/kaliLinuxNWScripts)
+Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/derezed88/samaritan-webfe)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
