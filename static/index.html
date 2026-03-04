@@ -2412,13 +2412,13 @@ registerProcessor('pcm-capture', PcmCapture);`;
           }
         }
       };
-      dgWs.onerror = () => { flashError('DG WS error'); stopDg(); onSttStop(); };
+      dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); };
       dgWs.onclose = (ev) => {
-        if (ev.code !== 1000) flashError('DG closed ' + ev.code);
-        if (active) { active = false; stopDg(); onSttStop(); }
+        flashError('DG closed ' + ev.code);
+        if (active) { active = false; stopDg(); }
       };
     } catch (err) {
-      flashError('DG: ' + String(err).slice(0, 40));
+      flashError('DG catch: ' + String(err).slice(0, 40));
       active = false;
       onSttStop();
     }
