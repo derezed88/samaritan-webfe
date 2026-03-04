@@ -231,15 +231,23 @@ async def tts_inworld(request: Request):
         return JSONResponse({"error": "INWORLD_API_KEY not configured"}, status_code=503)
 
     body = await request.json()
-    text     = body.get("text", "")
-    voice_id = body.get("voice_id", "Evelyn")
-    model_id = body.get("model_id", "inworld-tts-1.5-max")
+    text          = body.get("text", "")
+    voice_id      = body.get("voice_id", "Evelyn")
+    model_id      = body.get("model_id", "inworld-tts-1.5-max")
+    speaking_rate = body.get("speaking_rate", 1.0)
+    temperature   = body.get("temperature", 0.8)
 
     async with httpx.AsyncClient(timeout=30) as http:
         resp = await http.post(
             "https://api.inworld.ai/tts/v1/voice",
             headers={"Authorization": f"Basic {inworld_key}", "Content-Type": "application/json"},
-            json={"text": text, "voiceId": voice_id, "modelId": model_id},
+            json={
+                "text": text,
+                "voiceId": voice_id,
+                "modelId": model_id,
+                "temperature": temperature,
+                "audioConfig": {"speakingRate": speaking_rate},
+            },
         )
         if not resp.is_success:
             return JSONResponse({"error": resp.text[:200]}, status_code=resp.status_code)

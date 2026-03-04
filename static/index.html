@@ -1206,6 +1206,8 @@ let   TTS_PROVIDER            = 'xai';              // active TTS provider: 'xai
 const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
 const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
 const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
+const INWORLD_SPEAKING_RATE   = 1.0;                // 0.5–1.5× native speed
+const INWORLD_TEMPERATURE     = 0.8;                // 0–2; expressiveness
 
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
@@ -1707,7 +1709,7 @@ const ttsProviders = {
           resp = await fetch('/api/tts/inworld', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ text, voice_id: INWORLD_VOICE, model_id: INWORLD_MODEL }),
+            body: JSON.stringify({ text, voice_id: INWORLD_VOICE, model_id: INWORLD_MODEL, speaking_rate: INWORLD_SPEAKING_RATE, temperature: INWORLD_TEMPERATURE }),
             signal,
           });
         } catch (e) {
