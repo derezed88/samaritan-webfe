@@ -2316,12 +2316,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
     if (audioCtxDg) { try { audioCtxDg.close(); }  catch (_) {} audioCtxDg = null; }
     if (dgWs) {
       try {
-        // Tell Deepgram we're done so it flushes any remaining audio
         if (dgWs.readyState === WebSocket.OPEN) dgWs.send(JSON.stringify({ type: 'CloseStream' }));
         dgWs.close();
       } catch (_) {}
       dgWs = null;
     }
+    onSttStop();
   }
 
   return { start: startDg, stop: stopDg };
