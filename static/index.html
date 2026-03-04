@@ -1654,8 +1654,9 @@ function appendToPanel(text) {
 //   speak(text, clientSecret, onDone, onError) — start streaming audio
 //   stop()                                      — abort any in-progress audio
 
-let audioCtx   = null;  // Web Audio context (created on first user gesture)
-let nextPlayAt = 0;     // AudioContext time for next scheduled PCM chunk
+let audioCtx      = null;  // Web Audio context (created on first user gesture)
+let nextPlayAt    = 0;     // AudioContext time for next scheduled PCM chunk
+const activeSrcs  = new Set(); // all scheduled BufferSource nodes (for barge-in stop)
 let cachedVtok = null;  // voice token delivered via SSE (avoids extra HTTP round-trip)
 
 // PCM16-LE base64 → AudioBuffer for Web Audio API (shared across providers)
@@ -1681,13 +1682,22 @@ function scheduleAudioChunk(audioBuf) {
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(audioCtx.destination);
-  // First chunk: small lookahead to let the scheduler breathe.
-  // Subsequent chunks: start exactly where the previous one ends (gapless).
   const startAt = nextPlayAt > 0
     ? nextPlayAt
     : audioCtx.currentTime + 0.005;
   src.start(startAt);
   nextPlayAt = startAt + audioBuf.duration;
+  activeSrcs.add(src);
+  src.onended = () => activeSrcs.delete(src);
+}
+
+// Stop all scheduled/playing audio immediately — used for barge-in.
+function stopAllAudio() {
+  nextPlayAt = 0;
+  for (const src of activeSrcs) {
+    try { src.stop(); } catch (_) {}
+  }
+  activeSrcs.clear();
 }
 
 // ── Provider registry ─────────────────────────────────────────
@@ -1762,6 +1772,7 @@ const ttsProviders = {
 
     stop() {
       if (this._ws) { try { this._ws.close(); } catch(_) {} this._ws = null; }
+      stopAllAudio();
     },
   },
 
@@ -1808,6 +1819,7 @@ const ttsProviders = {
 
     stop() {
       if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
+      stopAllAudio();
     },
   },
 
@@ -2108,7 +2120,10 @@ function onSttStart() {
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
   // Barge-in: any speech heard → stop TTS immediately
-  if (isSpeaking) ttsProviders[TTS_PROVIDER].stop();
+  if (isSpeaking) {
+    isSpeaking = false;
+    ttsProviders[TTS_PROVIDER].stop();  // closes WS/fetch AND calls stopAllAudio()
+  }
 }
 
 function beepConfirm() {
