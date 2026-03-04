@@ -1264,7 +1264,7 @@ const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve |
 const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
 const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
-const INWORLD_TEMPERATURE     = 1.0;                // 0–2; expressiveness
+const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
 // ── STT config ───────────────────────────────────────────────
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
@@ -1840,65 +1840,107 @@ const ttsProviders = {
   });
 })();
 
-// ── speakWithSamaritan ────────────────────────────────────────
-// Provider-agnostic TTS entry point. Called from the SSE 'done' handler.
-async function speakWithSamaritan(responseText, wasKbd) {
-  // AudioContext must be pre-unlocked by a user gesture (FULL VOICE / kbd / send tap).
+// ── TTS sentence pipeline ─────────────────────────────────────
+// Sentences are queued as they arrive from SSE tok events.
+// Each sentence is spoken in order; the next starts as soon as the
+// previous finishes (gapless via scheduleAudioChunk / nextPlayAt).
+// speakWithSamaritan() is now called once per sentence from the SSE
+// tok handler, and once more at 'done' for any remaining buffer.
+
+let _ttsClientSecret  = null;  // cached for the duration of one response
+let _ttsSentenceQueue = [];    // sentences waiting to speak
+let _ttsBusy          = false; // true while a provider.speak() is in flight
+let _ttsWasKbd        = false; // passed through to waitForDrainThenListen
+let _ttsDone          = false; // true after SSE 'done' — no more sentences coming
+
+function _ttsFlush() {
+  if (_ttsBusy || _ttsSentenceQueue.length === 0) return;
+  const sentence = _ttsSentenceQueue.shift();
+  const provider = ttsProviders[TTS_PROVIDER];
+  _ttsBusy = true;
+  isSpeaking = true;
+  provider.speak(
+    sentence,
+    _ttsClientSecret,
+    () => {                          // onDone for this sentence
+      _ttsBusy = false;
+      if (_ttsSentenceQueue.length > 0) {
+        _ttsFlush();                 // speak next sentence immediately
+      } else if (_ttsDone) {
+        // All sentences spoken and SSE is done — hand off
+        isSpeaking = false;
+        waitForDrainThenListen(_ttsWasKbd);
+      }
+      // else: SSE still streaming — more sentences may arrive, wait
+    },
+    (err) => {                       // onError for this sentence
+      _ttsBusy = false;
+      isSpeaking = false;
+      flashError(err);
+      if (_ttsDone) waitForDrainThenListen(_ttsWasKbd);
+    },
+  );
+}
+
+async function speakWithSamaritan(sentence, wasKbd, isLast) {
+  // AudioContext must be pre-unlocked by a user gesture.
   if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  nextPlayAt = 0;
 
-  // Get voice token — SSE-delivered cached token first (avoids Safari post-WS HTTP drop)
-  let clientSecret;
-  if (cachedVtok) {
-    const j = cachedVtok;
-    cachedVtok = null;
-    clientSecret = j.client_secret?.value || j.value || j.token;
+  _ttsWasKbd = wasKbd;
+  if (isLast) _ttsDone = true;
+
+  // Fetch voice token once per response (reuse for subsequent sentences)
+  if (!_ttsClientSecret) {
+    if (cachedVtok) {
+      const j = cachedVtok; cachedVtok = null;
+      _ttsClientSecret = j.client_secret?.value || j.value || j.token;
+    }
+    if (!_ttsClientSecret) {
+      try {
+        const r = await fetch('/api/voice-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ expires_in: 120 }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          _ttsClientSecret = j.client_secret?.value || j.value || j.token;
+        } else { flashError('vtok http ' + r.status); }
+      } catch (e) { flashError('vtok fetch: ' + e.message.slice(0, 25)); }
+    }
+    if (!_ttsClientSecret) {
+      flashError('voice token failed');
+      if (isLast) waitForDrainThenListen(wasKbd);
+      return;
+    }
+    const provider = ttsProviders[TTS_PROVIDER];
+    if (!provider) {
+      flashError('unknown tts provider: ' + TTS_PROVIDER);
+      if (isLast) waitForDrainThenListen(wasKbd);
+      return;
+    }
+    setStatus('SAMARITAN SPEAKING', true);
+    voicePreview.textContent = fullVoiceMode ? 'SAMARITAN SPEAKING…' : 'TAP MIC TO SPEAK';
   }
-  if (!clientSecret) {
-    try {
-      const r = await fetch('/api/voice-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ expires_in: 120 }),
-      });
-      if (r.ok) {
-        const j = await r.json();
-        clientSecret = j.client_secret?.value || j.value || j.token;
-      } else {
-        flashError('vtok http ' + r.status);
-      }
-    } catch (e) { flashError('vtok fetch: ' + e.message.slice(0, 25)); }
-  }
-  if (!clientSecret) {
-    flashError('voice token failed');
+
+  if (sentence) _ttsSentenceQueue.push(sentence);
+  _ttsFlush();
+
+  // Edge: isLast with empty sentence and queue already drained (silent response)
+  if (isLast && !_ttsBusy && _ttsSentenceQueue.length === 0 && !isSpeaking) {
+    isSpeaking = false;
     waitForDrainThenListen(wasKbd);
-    return;
   }
+}
 
-  setStatus('SAMARITAN SPEAKING', true);
-  voicePreview.textContent = fullVoiceMode ? 'SAMARITAN SPEAKING…' : 'TAP MIC TO SPEAK';
-
-  const provider = ttsProviders[TTS_PROVIDER];
-  if (!provider) {
-    flashError('unknown tts provider: ' + TTS_PROVIDER);
-    waitForDrainThenListen(wasKbd);
-    return;
-  }
-
-  isSpeaking = true;
-  provider.speak(
-    responseText,
-    clientSecret,
-    () => { isSpeaking = false; waitForDrainThenListen(wasKbd); },   // onDone
-    (err) => {                                                         // onError
-      isSpeaking = false;
-      flashError(err);
-      voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
-      waitForDrainThenListen(wasKbd);
-    },
-  );
+// Reset TTS pipeline state at the start of each submit
+function resetTtsPipeline() {
+  _ttsClientSecret  = null;
+  _ttsSentenceQueue = [];
+  _ttsBusy          = false;
+  _ttsDone          = false;
 }
 
 // ── Submit ───────────────────────────────────────────────────
@@ -1925,6 +1967,8 @@ async function submit(textOverride) {
   isStreaming = true;
   wordQueue   = [];
   fullResponse = '';
+  nextPlayAt  = 0;
+  resetTtsPipeline();
   responsePanel.textContent = '';
   responsePanel.classList.remove('active');
   showTerminal(false);   // clear any previous long response
@@ -1961,6 +2005,26 @@ async function submit(textOverride) {
 
     // Use onmessage (unnamed events) for cross-browser compatibility
     let streamDone = false;
+    let ttsBuf = '';  // accumulates tok text until a sentence boundary
+
+    // Sentence boundary regex: end of sentence followed by space or end-of-string
+    const SENT_RE = /[.!?][)"']?\s+|[.!?][)"']?$/;
+
+    function ttsClean(t) {
+      return t
+        .replace(/\[thinking[^\]]*\]/gi, '')
+        .replace(/\[[^\]]*▶[^\]]*\][^\n]*/g, '')
+        .replace(/\n+/g, ' ')
+        .trim();
+    }
+
+    function flushTtsBuf(isLast) {
+      if (!fullVoiceMode) return;
+      const clean = ttsClean(ttsBuf);
+      ttsBuf = '';
+      if (clean || isLast) speakWithSamaritan(clean, wasKbd, isLast);
+    }
+
     evtSource.onmessage = (e) => {
       if (streamDone) return;
       try {
@@ -1970,6 +2034,17 @@ async function submit(textOverride) {
           if (token) {
             appendToPanel(token);
             enqueueTokens(token);
+            if (fullVoiceMode) {
+              ttsBuf += token;
+              // Check for sentence boundary — split and speak completed sentence(s)
+              let m;
+              while ((m = SENT_RE.exec(ttsBuf)) !== null) {
+                const end = m.index + m[0].length;
+                const sentence = ttsClean(ttsBuf.slice(0, end));
+                ttsBuf = ttsBuf.slice(end);
+                if (sentence) speakWithSamaritan(sentence, wasKbd, false);
+              }
+            }
           }
         } else if (data.type === 'vtok') {
           // Voice token pre-delivered over SSE — cache it for speakWithSamaritan
@@ -1985,19 +2060,10 @@ async function submit(textOverride) {
           if (kwCards.length) renderKeywordCards(kwCards);
 
           if (fullVoiceMode) {
-            const ttsText = fullResponse
-              .replace(/\[thinking[^\]]*\]/gi, '')
-              .replace(/\[[^\]]*▶[^\]]*\][^\n]*/g, '')
-              .replace(/\n{3,}/g, '\n\n')
-              .trim()
-              .slice(0, 200);  // cap TTS to ~10s of audio
+            // Flush any remaining buffer as the final sentence
+            flushTtsBuf(true);
             wordQueue = [];
             wordAnimating = false;
-            if (ttsText) {
-              speakWithSamaritan(ttsText, wasKbd);
-            } else {
-              waitForDrainThenListen(wasKbd);
-            }
           } else {
             const wordCount = fullResponse.trim().split(/\s+/).filter(w => w).length;
             if (wordCount >= LONG_RESPONSE_THRESHOLD) {
