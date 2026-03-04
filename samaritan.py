@@ -265,6 +265,19 @@ async def tts_inworld(request: Request):
     )
 
 
+@app.get("/api/stt-token")
+async def stt_token(request: Request):
+    """Return the Deepgram API key for browser-direct WebSocket STT.
+    The browser uses this as a Bearer token on wss://api.deepgram.com/v1/listen.
+    """
+    if not _check_auth(request):
+        return _auth_error()
+    dg_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not dg_key:
+        return JSONResponse({"error": "DEEPGRAM_API_KEY not configured"}, status_code=503)
+    return JSONResponse({"key": dg_key})
+
+
 @app.get("/api/health")
 async def health(request: Request):
     """Check agent-mcp health — also validates the caller's token."""

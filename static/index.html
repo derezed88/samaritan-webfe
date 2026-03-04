@@ -807,6 +807,25 @@
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
 
     /* ─── Voice provider selector ─── */
+    #stt-provider-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 4px 10px;
+      font-family: var(--font);
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      transition: all 200ms;
+      height: 28px;
+    }
+    #stt-provider-btn:hover {
+      border-color: rgba(255,255,255,0.5);
+      color: var(--bar-text);
+    }
+
     #voice-provider-btn {
       background: transparent;
       border: 1px solid rgba(255,255,255,0.2);
@@ -1060,6 +1079,7 @@
     <div id="control-bar">
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
+      <button id="stt-provider-btn" title="Switch STT provider">STT: WEBSPEECH</button>
       <button id="voice-provider-btn" title="Switch TTS voice provider">VOICE: XAI</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
         <svg id="fv-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1198,7 +1218,7 @@ function setKbdMode(open) {
   }
   // Stop mic when switching to keyboard mode
   if (open && isListening) {
-    recognition && recognition.stop();
+    sttProviders[STT_PROVIDER]?.stop();
   }
 }
 
@@ -1234,6 +1254,17 @@ const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
 const INWORLD_TEMPERATURE     = 1.0;                // 0–2; expressiveness
 
+// ── STT config ───────────────────────────────────────────────
+let   STT_PROVIDER            = 'webspeech';        // 'webspeech' | 'deepgram'
+const DG_MODEL                = 'nova-3';           // nova-3 | nova-2 | enhanced
+const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
+const DG_SAMPLE_RATE          = 16000;              // Hz — must match AudioContext sampleRate
+const DG_EOT_TIMEOUT_MS       = 1200;               // ms silence → speech_final (end-of-turn)
+const DG_EOT_THRESHOLD        = 0.95;               // endpointing confidence threshold (0–1)
+const DG_LANGUAGE             = 'en-US';
+const DG_INTERIM_RESULTS      = true;               // show partial transcripts in preview
+const DG_PUNCTUATE            = true;
+
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
 const KEYWORD_CARDS = {
@@ -1245,6 +1276,7 @@ const KEYWORD_CARDS = {
 
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
+let isSpeaking     = false;
 let wordQueue      = [];
 let wordAnimating  = false;
 let fullResponse   = '';
@@ -1827,11 +1859,13 @@ async function speakWithSamaritan(responseText, wasKbd) {
     return;
   }
 
+  isSpeaking = true;
   provider.speak(
     responseText,
     clientSecret,
-    () => waitForDrainThenListen(wasKbd),           // onDone
-    (err) => {                                       // onError
+    () => { isSpeaking = false; waitForDrainThenListen(wasKbd); },   // onDone
+    (err) => {                                                         // onError
+      isSpeaking = false;
       flashError(err);
       voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
       waitForDrainThenListen(wasKbd);
@@ -2010,10 +2044,8 @@ function waitForDrainThenListen(wasKbd) {
   // Terminal panel intentionally left visible — persists until next submit
   resetIdleTimer();    // idle screen appears only after IDLE_TIMEOUT_SEC of inactivity
 
-  if (fullVoiceMode && !wasKbd && recognition && !micBtn.classList.contains('unsupported')) {
+  if (fullVoiceMode && !wasKbd && !micBtn.classList.contains('unsupported')) {
     // Full-voice mode (voice input): wait for audio to finish then reopen mic.
-    // TTS is capped at 200 chars (~10s). We track exact end time via nextPlayAt.
-    // After audio ends, suspend AudioContext so mic doesn't hear speaker bleed.
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
@@ -2021,9 +2053,7 @@ function waitForDrainThenListen(wasKbd) {
       nextPlayAt = 0;
       if (!isStreaming && !isListening) {
         voiceMode = true;
-        try { recognition.start(); } catch (e) {
-          flashError('mic: ' + e.message.slice(0, 30));
-        }
+        sttProviders[STT_PROVIDER]?.start();
       }
     }, audioEndMs + 800);
     return;
@@ -2036,116 +2066,251 @@ function waitForDrainThenListen(wasKbd) {
       setKbdMode(true);
       textInput.focus();
     }, 300);
-  } else if (voiceMode && recognition && !micBtn.classList.contains('unsupported')) {
+  } else if (voiceMode && !micBtn.classList.contains('unsupported')) {
     // Voice mode: restart mic
     setTimeout(() => {
       if (!isStreaming && !isListening) {
-        try { recognition.start(); } catch (_) {}
+        sttProviders[STT_PROVIDER]?.start();
       }
     }, 400);
   }
 }
 
-// ── Voice Input (Web Speech API) ─────────────────────────────
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
-
-let recognition = null;
+// ── Voice Input — STT provider registry ──────────────────────
+// Each provider implements: start(), stop()
+// Shared state used by both providers:
 let isListening = false;
 
-// Check for insecure context first (HTTP — blocks Speech API on all browsers)
-if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-  micBtn.classList.add('unsupported');
-  micBtn.title = 'Voice requires HTTPS — connect via https://';
-  voicePreview.textContent = 'HTTPS REQUIRED FOR MIC';
-} else if (!SpeechRecognition) {
-  micBtn.classList.add('unsupported');
-  micBtn.title = 'Voice input not supported in this browser';
-} else {
-  recognition = new SpeechRecognition();
-  recognition.continuous      = false;
-  recognition.interimResults  = true;
-  recognition.lang            = 'en-US';
-  recognition.maxAlternatives = 1;
+function onSttStart() {
+  isListening = true;
+  micBtn.classList.add('listening');
+  micIcon.textContent = '●';
+  voicePreview.textContent = '…';
+  setStatus('LISTENING', true);
+}
 
-  recognition.onstart = () => {
-    isListening = true;
-    micBtn.classList.add('listening');
-    micIcon.textContent = '●';
-    voicePreview.textContent = '…';
-    setStatus('LISTENING', true);
-  };
+function onSttPartial(text) {
+  voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
+  // Barge-in: any speech heard → stop TTS immediately
+  if (isSpeaking) ttsProviders[TTS_PROVIDER].stop();
+}
 
-  let pendingTranscript = '';  // last heard text; submitted from onend if no final arrived
-  let didSubmit = false;       // guards against double-submit
+function onSttFinal(text) {
+  const query = text.trim();
+  if (!query) return;
+  if (kbdOpen) {
+    textInput.value = (textInput.value + ' ' + query).trim();
+  } else {
+    submit(query);
+  }
+}
 
-  recognition.onresult = (event) => {
-    let interim = '';
-    let final = '';
+function onSttStop() {
+  isListening = false;
+  micBtn.classList.remove('listening');
+  micIcon.textContent = '🎤';
+  if (!isStreaming) {
+    setStatus('STANDBY', false);
+    if (!kbdOpen) voicePreview.textContent = 'TAP MIC TO SPEAK';
+  }
+}
+
+// ── Provider: Web Speech API ──────────────────────────────────
+const _ws = (() => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+
+  const rec = new SpeechRecognition();
+  rec.continuous      = false;
+  rec.interimResults  = true;
+  rec.lang            = DG_LANGUAGE;
+  rec.maxAlternatives = 1;
+
+  let pendingTranscript = '';
+  let didSubmit = false;
+
+  rec.onstart = () => onSttStart();
+
+  rec.onresult = (event) => {
+    let interim = '', final = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const t = event.results[i][0].transcript;
-      if (event.results[i].isFinal) final += t;
-      else interim += t;
+      if (event.results[i].isFinal) final += t; else interim += t;
     }
     const heard = (final || interim).trim();
     if (heard) pendingTranscript = heard;
-    voicePreview.textContent = heard.toUpperCase().slice(0, 40) || '…';
-
-    if (final) {
-      didSubmit = true;
-      pendingTranscript = '';
-      const query = final.trim();
-      if (kbdOpen) {
-        textInput.value = (textInput.value + ' ' + query).trim();
-      } else {
-        submit(query);
-      }
-    }
+    onSttPartial(heard);
+    if (final) { didSubmit = true; pendingTranscript = ''; onSttFinal(final); }
   };
 
-  recognition.onerror = (event) => {
-    if (event.error !== 'no-speech') flashError('mic: ' + event.error);
-    stopListening();
+  rec.onerror = (e) => {
+    if (e.error !== 'no-speech') flashError('mic: ' + e.error);
+    onSttStop();
   };
 
-  recognition.onend = () => {
-    // Safari sometimes ends without isFinal — use last interim as fallback
+  rec.onend = () => {
     if (!didSubmit && pendingTranscript && !kbdOpen && !isStreaming) {
-      const query = pendingTranscript.trim();
-      pendingTranscript = '';
       didSubmit = true;
-      submit(query);
+      onSttFinal(pendingTranscript);
     }
     pendingTranscript = '';
     didSubmit = false;
-    stopListening();
+    onSttStop();
   };
 
-  function stopListening() {
-    isListening = false;
-    micBtn.classList.remove('listening');
-    micIcon.textContent = '🎤';
-    if (!isStreaming) {
-      setStatus('STANDBY', false);
-      if (!kbdOpen) voicePreview.textContent = 'TAP MIC TO SPEAK';
+  return {
+    start() { try { rec.start(); } catch (e) { flashError('mic: ' + e.message.slice(0, 30)); } },
+    stop()  { try { rec.stop();  } catch (_) {} },
+  };
+})();
+
+// ── Provider: Deepgram (browser WebSocket + AudioWorklet PCM) ─
+const _dg = (() => {
+  let dgKey    = null;   // fetched once from /api/stt-token
+  let dgWs     = null;
+  let audioCtxDg = null;
+  let workletNode = null;
+  let mediaStream = null;
+  let active   = false;
+
+  // Inline AudioWorklet processor as a Blob URL — sends 256-sample PCM chunks
+  const WORKLET_CODE = `
+class PcmCapture extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCapture);`;
+
+  async function fetchKey() {
+    if (dgKey) return dgKey;
+    const resp = await fetch('/api/stt-token', { headers: authHeaders() });
+    if (!resp.ok) throw new Error('stt-token ' + resp.status);
+    dgKey = (await resp.json()).key;
+    return dgKey;
+  }
+
+  async function startDg() {
+    active = true;
+    onSttStart();
+    try {
+      const key = await fetchKey();
+      const params = new URLSearchParams({
+        model:            DG_MODEL,
+        encoding:         DG_ENCODING,
+        sample_rate:      DG_SAMPLE_RATE,
+        language:         DG_LANGUAGE,
+        interim_results:  DG_INTERIM_RESULTS,
+        punctuate:        DG_PUNCTUATE,
+        endpointing:      DG_EOT_TIMEOUT_MS,
+        vad_events:       true,
+      });
+      dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`,
+                           ['token', key]);
+      dgWs.onopen = async () => {
+        // Set up AudioWorklet → PCM stream
+        mediaStream  = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const blob   = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        audioCtxDg   = new AudioContext({ sampleRate: DG_SAMPLE_RATE });
+        await audioCtxDg.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        const source  = audioCtxDg.createMediaStreamSource(mediaStream);
+        workletNode   = new AudioWorkletNode(audioCtxDg, 'pcm-capture');
+        workletNode.port.onmessage = (e) => {
+          if (dgWs && dgWs.readyState === WebSocket.OPEN) {
+            // Convert Float32 → Int16 PCM
+            const f32 = new Float32Array(e.data);
+            const i16 = new Int16Array(f32.length);
+            for (let i = 0; i < f32.length; i++) {
+              i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
+            }
+            dgWs.send(i16.buffer);
+          }
+        };
+        source.connect(workletNode);
+        workletNode.connect(audioCtxDg.destination);
+      };
+      dgWs.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (_) { return; }
+        if (msg.type !== 'Results') return;
+        const alt = msg.channel?.alternatives?.[0];
+        if (!alt) return;
+        const transcript = alt.transcript || '';
+        if (!transcript) return;
+        if (!msg.is_final) {
+          onSttPartial(transcript);
+        } else if (msg.speech_final) {
+          onSttPartial(transcript);
+          if (active) { active = false; stopDg(); onSttFinal(transcript); }
+        }
+      };
+      dgWs.onerror = () => { flashError('DG WS error'); stopDg(); onSttStop(); };
+      dgWs.onclose = () => { if (active) { active = false; stopDg(); onSttStop(); } };
+    } catch (err) {
+      flashError('DG: ' + String(err).slice(0, 40));
+      active = false;
+      onSttStop();
     }
   }
 
+  function stopDg() {
+    active = false;
+    if (dgWs)       { try { dgWs.close(); }        catch (_) {} dgWs = null; }
+    if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+    if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxDg) { try { audioCtxDg.close(); }  catch (_) {} audioCtxDg = null; }
+  }
+
+  return { start: startDg, stop: stopDg };
+})();
+
+// ── STT provider map & mic button wiring ─────────────────────
+const sttProviders = { webspeech: _ws, deepgram: _dg };
+
+// STT provider toggle button (reuse same pattern as TTS)
+const sttProviderBtn = document.getElementById('stt-provider-btn');
+(function() {
+  function updateSttBtn() {
+    sttProviderBtn.textContent = 'STT: ' + STT_PROVIDER.toUpperCase();
+  }
+  const order = Object.keys(sttProviders).filter(k => sttProviders[k]);
+  updateSttBtn();
+  sttProviderBtn.addEventListener('click', () => {
+    if (isListening) return;   // don't switch mid-listen
+    const idx = order.indexOf(STT_PROVIDER);
+    STT_PROVIDER = order[(idx + 1) % order.length];
+    updateSttBtn();
+  });
+})();
+
+// ── Mic button ───────────────────────────────────────────────
+if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+  micBtn.classList.add('unsupported');
+  micBtn.title = 'Voice requires HTTPS';
+  voicePreview.textContent = 'HTTPS REQUIRED FOR MIC';
+} else {
   micBtn.addEventListener('click', () => {
     if (micBtn.classList.contains('unsupported')) return;
     resetIdleTimer();
+    const provider = sttProviders[STT_PROVIDER];
+    if (!provider) { flashError('STT provider unavailable'); return; }
     if (isListening) {
-      voiceMode = false;  // user manually stopped mic — don't auto-restart
-      recognition.stop();
+      voiceMode = false;
+      provider.stop();
     } else {
-      voiceMode = true;   // user explicitly started mic — auto-restart after responses
-      try {
-        recognition.start();
-      } catch (e) {
-        flashError('mic error: ' + e.message);
-      }
+      voiceMode = true;
+      provider.start();
     }
   });
+  // Mark unsupported if webspeech default and not available
+  if (STT_PROVIDER === 'webspeech' && !_ws) {
+    micBtn.classList.add('unsupported');
+    micBtn.title = 'Voice input not supported in this browser — switch to Deepgram';
+  }
 }
 
 // ── Initial state ─────────────────────────────────────────────
