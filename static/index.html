@@ -2210,14 +2210,15 @@ registerProcessor('pcm-capture', PcmCapture);`;
       flashError('DG rate=' + actualRate);
 
       const params = new URLSearchParams({
-        model:            DG_MODEL,
-        encoding:         DG_ENCODING,
-        sample_rate:      actualRate,        // use real device rate
-        language:         DG_LANGUAGE,
-        interim_results:  DG_INTERIM_RESULTS,
-        punctuate:        DG_PUNCTUATE,
-        endpointing:      DG_EOT_TIMEOUT_MS,
-        vad_events:       true,
+        model:              DG_MODEL,
+        encoding:           DG_ENCODING,
+        sample_rate:        actualRate,
+        language:           DG_LANGUAGE,
+        interim_results:    DG_INTERIM_RESULTS,
+        punctuate:          DG_PUNCTUATE,
+        endpointing:        DG_EOT_TIMEOUT_MS,
+        utterance_end_ms:   DG_EOT_TIMEOUT_MS,
+        vad_events:         true,
       });
       dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`,
                            ['token', key]);
@@ -2259,18 +2260,34 @@ registerProcessor('pcm-capture', PcmCapture);`;
         dgWs.send(i16.buffer);
       }
 
+      let pendingFinal = '';  // accumulate is_final segments until UtteranceEnd
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
-        if (msg.type === 'Metadata') { flashError('DG ready, speak now'); return; }
+        flashError('DG msg: ' + msg.type);
+        if (msg.type === 'Metadata') return;
+        if (msg.type === 'UtteranceEnd') {
+          // utterance_end_ms fired — submit whatever we've accumulated
+          const text = pendingFinal.trim();
+          pendingFinal = '';
+          if (text) { onSttPartial(text); onSttFinal(text); }
+          return;
+        }
         if (msg.type !== 'Results') return;
         const alt = msg.channel?.alternatives?.[0];
         if (!alt) return;
         const transcript = (alt.transcript || '').trim();
         if (!msg.is_final) {
           if (transcript) onSttPartial(transcript);
-        } else if (msg.speech_final) {
-          if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
+        } else {
+          // is_final segment — accumulate; speech_final also submits immediately
+          if (transcript) pendingFinal += (pendingFinal ? ' ' : '') + transcript;
+          if (msg.speech_final && pendingFinal) {
+            const text = pendingFinal.trim();
+            pendingFinal = '';
+            onSttPartial(text);
+            onSttFinal(text);
+          }
         }
       };
       dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); onSttStop(); };
