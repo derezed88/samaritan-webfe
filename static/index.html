@@ -2209,48 +2209,70 @@ registerProcessor('pcm-capture', PcmCapture);`;
       });
       dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`,
                            ['token', key]);
+      dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
-        // Set up AudioWorklet → PCM stream
-        mediaStream  = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        const blob   = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-        const blobUrl = URL.createObjectURL(blob);
-        audioCtxDg   = new AudioContext({ sampleRate: DG_SAMPLE_RATE });
-        await audioCtxDg.audioWorklet.addModule(blobUrl);
-        URL.revokeObjectURL(blobUrl);
-        const source  = audioCtxDg.createMediaStreamSource(mediaStream);
-        workletNode   = new AudioWorkletNode(audioCtxDg, 'pcm-capture');
-        workletNode.port.onmessage = (e) => {
-          if (dgWs && dgWs.readyState === WebSocket.OPEN) {
-            // Convert Float32 → Int16 PCM
-            const f32 = new Float32Array(e.data);
-            const i16 = new Int16Array(f32.length);
-            for (let i = 0; i < f32.length; i++) {
-              i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
-            }
-            dgWs.send(i16.buffer);
-          }
-        };
-        source.connect(workletNode);
-        // Do NOT connect workletNode to destination — mic audio must not play through speakers
+        flashError('DG open — getting mic');
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch (e) {
+          flashError('mic denied: ' + e.message.slice(0, 30));
+          stopDg(); onSttStop(); return;
+        }
+        audioCtxDg = new AudioContext({ sampleRate: DG_SAMPLE_RATE });
+        const source = audioCtxDg.createMediaStreamSource(mediaStream);
+
+        // Try AudioWorklet first; fall back to ScriptProcessorNode for iOS Safari
+        let usedWorklet = false;
+        try {
+          const blob    = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          await audioCtxDg.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
+          workletNode = new AudioWorkletNode(audioCtxDg, 'pcm-capture');
+          workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
+          source.connect(workletNode);
+          usedWorklet = true;
+          flashError('DG using AudioWorklet');
+        } catch (_) {}
+
+        if (!usedWorklet) {
+          // ScriptProcessorNode fallback (512 samples, stereo ignored)
+          const spn = audioCtxDg.createScriptProcessor(4096, 1, 1);
+          spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
+          source.connect(spn);
+          spn.connect(audioCtxDg.destination); // required to keep spn alive (silent output)
+          workletNode = spn; // reuse slot for cleanup
+          flashError('DG using ScriptProcessor');
+        }
       };
+
+      function sendPcm(f32) {
+        if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+        const i16 = new Int16Array(f32.length);
+        for (let i = 0; i < f32.length; i++)
+          i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
+        dgWs.send(i16.buffer);
+      }
+
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
+        if (msg.type === 'Metadata') { flashError('DG ready, speak now'); return; }
         if (msg.type !== 'Results') return;
         const alt = msg.channel?.alternatives?.[0];
         if (!alt) return;
         const transcript = (alt.transcript || '').trim();
         if (!msg.is_final) {
-          // Interim — show in preview, trigger barge-in
           if (transcript) onSttPartial(transcript);
         } else if (msg.speech_final) {
-          // End-of-utterance — submit and keep listening
           if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
         }
-        // is_final without speech_final = segment boundary mid-utterance; ignore
       };
       dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); onSttStop(); };
-      dgWs.onclose = () => { if (active) { active = false; onSttStop(); } };
+      dgWs.onclose = (ev) => {
+        flashError('DG closed code=' + ev.code);
+        if (active) { active = false; stopDg(); onSttStop(); }
+      };
     } catch (err) {
       flashError('DG: ' + String(err).slice(0, 40));
       active = false;
