@@ -217,6 +217,46 @@ async def voice_token(request: Request):
     return resp.json()
 
 
+@app.post("/api/tts/inworld")
+async def tts_inworld(request: Request):
+    """Proxy Inworld TTS batch endpoint — keeps INWORLD_API_KEY server-side.
+    Accepts: { "text": "...", "voice_id": "Evelyn", "model_id": "inworld-tts-1.5-max" }
+    Returns: audio/mpeg (MP3) — decoded by browser via decodeAudioData.
+    """
+    if not _check_auth(request):
+        return _auth_error()
+
+    inworld_key = os.getenv("INWORLD_API_KEY", "")
+    if not inworld_key:
+        return JSONResponse({"error": "INWORLD_API_KEY not configured"}, status_code=503)
+
+    body = await request.json()
+    text     = body.get("text", "")
+    voice_id = body.get("voice_id", "Evelyn")
+    model_id = body.get("model_id", "inworld-tts-1.5-max")
+
+    async with httpx.AsyncClient(timeout=30) as http:
+        resp = await http.post(
+            "https://api.inworld.ai/tts/v1/voice",
+            headers={"Authorization": f"Basic {inworld_key}", "Content-Type": "application/json"},
+            json={"text": text, "voiceId": voice_id, "modelId": model_id},
+        )
+        if not resp.is_success:
+            return JSONResponse({"error": resp.text[:200]}, status_code=resp.status_code)
+        data = resp.json()
+
+    audio_b64 = data.get("audioContent", "")
+    if not audio_b64:
+        return JSONResponse({"error": "no audioContent in response"}, status_code=502)
+
+    audio_bytes = base64.b64decode(audio_b64)
+    return StreamingResponse(
+        iter([audio_bytes]),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/api/health")
 async def health(request: Request):
     """Check agent-mcp health — also validates the caller's token."""

@@ -73,7 +73,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 - Samaritan visual style — white radial-gradient background, ALL-CAPS monospace font, red accent triangle, scanline overlay
 - Word-by-word token animation (one word flashes center-screen at a time); longer responses use a typewriter terminal panel
 - **Voice input** via the Web Speech API — auto-submits on recognition, mic restarts automatically after each response
-- **Voice output (TTS)** via the xAI Realtime API — Samaritan speaks every response aloud using a configurable AI voice
+- **Voice output (TTS)** via a pluggable provider architecture — switch between xAI Realtime and Inworld AI (and future providers) with a single tap at runtime
 - **Full-voice hands-free loop** — speak a prompt, hear the response, mic reopens automatically for the next turn; works continuously for multiple turns
 - Keyboard mode for typed input — reopens automatically after each response; typed prompts also get spoken responses in full-voice mode
 - Configurable idle screen: returns to `CONNECTION ESTABLISHED.` after inactivity
@@ -104,7 +104,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 - Python 3.10+
 - [agent-mcp](https://github.com/derezed88/kaliLinuxNWScripts/tree/main/mymcp) running on the same host (default port 8767)
 - `openssl` (for self-signed cert generation — usually pre-installed on Linux/macOS)
-- An [xAI API key](https://console.x.ai/) with Realtime API access (required for voice responses)
+- At least one voice provider API key (required for FULL VOICE mode — see [Configuration](#configuration))
 
 ### Installation
 
@@ -117,7 +117,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 2. Copy and edit the environment file
    ```sh
    cp .env.example .env
-   # Edit .env and set SAMARITAN_API_KEY and XAI_API_KEY — see Configuration below
+   # Edit .env and set SAMARITAN_API_KEY plus at least one voice provider key — see Configuration below
    ```
 
 3. Run the start script (creates venv, installs deps, generates TLS cert, starts server)
@@ -148,12 +148,14 @@ The browser caches this for the session — you will not be prompted again until
 4. When the response finishes, the mic restarts automatically for the next turn
 
 **Full-voice hands-free mode (FULL VOICE + LIVE):**
-1. Tap **FULL VOICE** to enable spoken responses, then tap **MIC** to start listening
-2. Speak your query — Samaritan responds in text *and* speaks the response aloud via AI voice
-3. After the audio finishes, the mic reopens automatically — the loop continues hands-free indefinitely
-4. Works over remote access (Pinggy tunnel) from any device with a browser and microphone
+1. Tap **VOICE: XAI** (or **VOICE: INWORLD**) to select the TTS provider for this session
+2. Tap **FULL VOICE** to enable spoken responses, then tap **MIC** to start listening
+3. Speak your query — Samaritan responds in text *and* speaks the response aloud via AI voice
+4. After the audio finishes, the mic reopens automatically — the loop continues hands-free indefinitely
+5. Works over remote access (Pinggy tunnel) from any device with a browser and microphone
 
-> **Note:** Voice responses are powered by the xAI Realtime API. Requires `XAI_API_KEY` in `.env`.
+> **Note:** Voice responses require at least one provider API key in `.env` (see [Configuration](#configuration)).
+> Tap the **VOICE:** button in the control bar to switch providers at any time without reloading.
 > Supported browsers: Chrome, Edge, Safari (iOS 14.5+). Firefox does not support the Web Speech API.
 
 **Keyboard mode:**
@@ -186,19 +188,34 @@ cp .env.example .env
 | `SAMARITAN_API_KEY` | Yes | Access password for the web UI (HTTP Basic Auth). Set to any strong secret string. |
 | `AGENT_MCP_API_KEY` | No | Bearer token forwarded to agent-mcp. Leave blank if agent-mcp has no key set. |
 | `AGENT_MCP_URL` | No | Base URL of the agent-mcp service. Default: `http://localhost:8767`. |
-| `XAI_API_KEY` | For voice | xAI API key for voice responses. Used server-side only — never sent to the browser. Get one at [console.x.ai](https://console.x.ai/). |
+| `XAI_API_KEY` | For xAI voice | xAI API key. Used server-side only to mint ephemeral WebSocket tokens — never sent to the browser. Get one at [console.x.ai](https://console.x.ai/). |
+| `INWORLD_API_KEY` | For Inworld voice | Inworld API key (Base64-encoded credential from the Inworld Portal under Settings → API Keys). Used server-side only — never sent to the browser. |
 
-The idle timeout and word animation timings are constants at the top of the JavaScript block
-in `static/index.html`:
+The idle timeout, word animation timings, and voice provider settings are constants at the top
+of the JavaScript block in `static/index.html`:
 
 ```js
-const IDLE_TIMEOUT_SEC        = 30;   // seconds before screen returns to idle message
-const WORD_FADE               = 180;  // ms opacity transition per word
-const WORD_HOLD               = 380;  // ms each word is visible
-const WORD_GAP                = 60;   // ms gap between words
-const LONG_RESPONSE_THRESHOLD = 10;   // words — responses >= this use terminal typewriter display
-const XAI_VOICE               = 'eve'; // xAI voice name: Eve, Ara, Rex, Sal, Leo
+const IDLE_TIMEOUT_SEC        = 30;                  // seconds before screen returns to idle message
+const WORD_FADE               = 180;                 // ms opacity transition per word
+const WORD_HOLD               = 380;                 // ms each word is visible
+const WORD_GAP                = 60;                  // ms gap between words
+const LONG_RESPONSE_THRESHOLD = 10;                  // words — responses >= this use terminal typewriter display
+let   TTS_PROVIDER            = 'xai';               // default voice provider: 'xai' | 'inworld'
+const XAI_VOICE               = 'ara';               // xAI voice: Eve | Ara | Rex | Sal | Leo
+const INWORLD_VOICE           = 'Evelyn';            // Inworld voice name
+const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 ```
+
+### Voice Providers
+
+Samaritan uses a pluggable TTS provider architecture. The active provider can be switched at runtime via the **VOICE:** button in the control bar, or set permanently via `TTS_PROVIDER` in the JS config block.
+
+| Provider | Button label | API key required | Notes |
+|----------|-------------|-----------------|-------|
+| **xAI Realtime** | `VOICE: XAI` | `XAI_API_KEY` | WebSocket streaming; ephemeral token minted server-side. Voices: Eve, Ara, Rex, Sal, Leo. |
+| **Inworld AI** | `VOICE: INWORLD` | `INWORLD_API_KEY` | Batch HTTP; MP3 decoded by browser. Voice: configurable via `INWORLD_VOICE`. |
+
+To add a new provider, implement the `speak(text, token, onDone, onError)` / `stop()` interface in the `ttsProviders` registry in `static/index.html` and add the corresponding server-side proxy route in `samaritan.py` if the API key must stay server-side.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -314,6 +331,7 @@ Project Link: [https://github.com/derezed88/kaliLinuxNWScripts](https://github.c
 * [Web Audio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API) — browser-native
   PCM audio scheduling for real-time TTS playback
 * [xAI Realtime API](https://docs.x.ai/docs/realtime) — WebSocket-based AI voice synthesis
+* [Inworld AI TTS API](https://docs.inworld.ai/docs/quickstart-tts) — Batch HTTP AI voice synthesis
 * [Pinggy](https://pinggy.io) — SSH-based HTTPS tunnel service
 
 ### AI assistance

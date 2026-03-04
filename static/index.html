@@ -809,6 +809,26 @@
     #mic-icon { font-size: 15px; }
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
 
+    /* ─── Voice provider selector ─── */
+    #voice-provider-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 4px 10px;
+      font-family: var(--font);
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      transition: all 200ms;
+      height: 28px;
+    }
+    #voice-provider-btn:hover {
+      border-color: rgba(255,255,255,0.5);
+      color: var(--bar-text);
+    }
+
     /* ─── Full-voice toggle button ─── */
     #full-voice-btn {
       background: transparent;
@@ -1035,6 +1055,7 @@
     <div id="control-bar">
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
+      <button id="voice-provider-btn" title="Switch TTS voice provider">VOICE: XAI</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">&#128266; FULL VOICE</button>
       <button id="kbd-btn" title="Toggle keyboard input">&#9000;</button>
       <button id="mic-btn" title="Voice Input">
@@ -1107,7 +1128,8 @@ const micBtn         = document.getElementById('mic-btn');
 const micIcon        = document.getElementById('mic-icon');
 const micLabel       = document.getElementById('mic-label');
 const kbdBtn         = document.getElementById('kbd-btn');
-const fullVoiceBtn   = document.getElementById('full-voice-btn');
+const fullVoiceBtn       = document.getElementById('full-voice-btn');
+const voiceProviderBtn   = document.getElementById('voice-provider-btn');
 const voicePreview   = document.getElementById('voice-preview');
 const statusText     = document.getElementById('status-text');
 const statusDot      = document.getElementById('status-dot');
@@ -1121,10 +1143,20 @@ let voiceMode    = false;  // true only when user explicitly enabled mic
 let fullVoiceMode = false; // true when xAI TTS is active
 
 // ── Full-voice toggle ─────────────────────────────────────────
+// Pre-create AudioContext on user gesture so iOS Safari allows it to play later.
+function initAudioCtx() {
+  if (!audioCtx || audioCtx.state === 'closed') {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+// voiceProviderBtn wired after ttsProviders is defined (see end of TTS section)
+
 fullVoiceBtn.addEventListener('click', () => {
   fullVoiceMode = !fullVoiceMode;
   fullVoiceBtn.classList.toggle('active', fullVoiceMode);
   voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+  if (fullVoiceMode) initAudioCtx();  // unlock AudioContext while we have a user gesture
 });
 
 function setKbdMode(open) {
@@ -1134,7 +1166,7 @@ function setKbdMode(open) {
   textInputPanel.classList.toggle('open', open);
   // responsePanel visibility is managed independently via .active class
   kbdBtn.classList.toggle('active', open);
-  voicePreview.style.display = open ? 'none' : '';
+  voicePreview.style.visibility = open ? 'hidden' : '';
   if (!open) {
     textInput.blur();
     voicePreview.textContent = 'TAP MIC TO SPEAK';
@@ -1148,6 +1180,7 @@ function setKbdMode(open) {
 // iOS requires focus() to be called synchronously inside the tap handler
 kbdBtn.addEventListener('click', () => {
   resetIdleTimer();
+  if (fullVoiceMode) initAudioCtx();  // unlock AudioContext while we have a user gesture
   const opening = !kbdOpen;
   setKbdMode(opening);
   if (opening) {
@@ -1169,7 +1202,10 @@ const THEME_TRANSITION_MS     = 3000;  // ms for dark/light crossfade (must matc
 const LONG_RESPONSE_THRESHOLD = 10;    // words — responses >= this use terminal display instead of word flash
 const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewriter effect
 const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
-const XAI_VOICE               = 'ara'; // xAI realtime voice: Eve | Ara | Rex | Sal | Leo (case-insensitive here, normalized below)
+let   TTS_PROVIDER            = 'xai';              // active TTS provider: 'xai' | 'inworld'
+const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
+const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
+const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
@@ -1534,28 +1570,24 @@ function appendToPanel(text) {
 }
 
 // ── xAI Realtime Voice (TTS) ─────────────────────────────────
+/// ── TTS Engine ───────────────────────────────────────────────
 // Hybrid approach: agent-mcp handles all reasoning/memory/tools (SSE flow),
-// then the completed response text is sent to xAI realtime purely for TTS.
-// Voice model is set by XAI_VOICE constant — no bypass of the agentic brain.
+// then the completed response text is sent to the TTS provider for audio.
+// Switch providers by changing TTS_PROVIDER in the config block above.
 //
-// Flow:
-//   1. Run normal agent-mcp SSE (text streams to panel as usual)
-//   2. On 'done': collect fullResponse, fetch ephemeral token
-//   3. Open wss://api.x.ai/v1/realtime, inject fullResponse as assistant item
-//   4. response.output_audio.delta → PCM16 → AudioContext playback
-//   5. response.done → close WS, parse cards, STANDBY
+// To add a new provider, add an entry to ttsProviders below implementing:
+//   speak(text, clientSecret, onDone, onError) — start streaming audio
+//   stop()                                      — abort any in-progress audio
 
-let xaiWs        = null;  // active xAI WebSocket, if any
-let audioCtx     = null;  // Web Audio context (created on first user gesture)
-let nextPlayAt   = 0;     // AudioContext time for next scheduled PCM chunk
-let cachedVtok   = null;  // voice token delivered via SSE (avoids extra HTTP round-trip)
+let audioCtx   = null;  // Web Audio context (created on first user gesture)
+let nextPlayAt = 0;     // AudioContext time for next scheduled PCM chunk
+let cachedVtok = null;  // voice token delivered via SSE (avoids extra HTTP round-trip)
 
-// PCM16-LE base64 → AudioBuffer for Web Audio API
+// PCM16-LE base64 → AudioBuffer for Web Audio API (shared across providers)
 function pcm16Base64ToFloat32(b64, sampleRate) {
   const bin   = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-
   const samples = bytes.length / 2;
   const buf  = audioCtx.createBuffer(1, samples, sampleRate);
   const data = buf.getChannelData(0);
@@ -1566,26 +1598,171 @@ function pcm16Base64ToFloat32(b64, sampleRate) {
   return buf;
 }
 
+// Schedule an AudioBuffer for gapless sequential playback (shared across providers).
+// Uses a small initial lookahead (5ms) on the first chunk so audio starts promptly,
+// then chains subsequent chunks directly to avoid inter-chunk gaps that cause clicks.
 function scheduleAudioChunk(audioBuf) {
   if (!audioCtx) return;
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(audioCtx.destination);
-  const startAt = Math.max(audioCtx.currentTime + 0.02, nextPlayAt);
+  // First chunk: small lookahead to let the scheduler breathe.
+  // Subsequent chunks: start exactly where the previous one ends (gapless).
+  const startAt = nextPlayAt > 0
+    ? nextPlayAt
+    : audioCtx.currentTime + 0.005;
   src.start(startAt);
   nextPlayAt = startAt + audioBuf.duration;
 }
 
-// Speak `responseText` via xAI TTS after agent-mcp has already finished.
-// Called from the SSE 'done' handler when fullVoiceMode is active.
+// ── Provider registry ─────────────────────────────────────────
+const ttsProviders = {
+
+  // ── xAI Realtime API ───────────────────────────────────────
+  xai: {
+    _ws: null,
+
+    speak(text, clientSecret, onDone, onError) {
+      // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
+      const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
+      let ws;
+      try {
+        ws = new WebSocket('wss://api.x.ai/v1/realtime',
+                           [`xai-client-secret.${clientSecret}`]);
+      } catch (e) {
+        onError('ws: ' + e.message.slice(0, 40));
+        return;
+      }
+      this._ws = ws;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            modalities: ['audio'],
+            voice: voiceName,
+            output_audio_format: 'audio/pcm',
+            turn_detection: null,
+          },
+        }));
+        // "Say this: <text>" — direct command, prevents LLM paraphrasing
+        ws.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message', role: 'user',
+            content: [{ type: 'input_text', text: `Say this: ${text}` }],
+          },
+        }));
+        ws.send(JSON.stringify({
+          type: 'response.create',
+          response: { modalities: ['audio'] },
+        }));
+      };
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch (_) { return; }
+        switch (msg.type) {
+          case 'response.output_audio.delta':
+            if (msg.delta) {
+              try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
+              catch (e) { onError('pcm: ' + e.message.slice(0, 25)); }
+            }
+            break;
+          case 'response.done':
+            ws.close(); this._ws = null; onDone(); break;
+          case 'error':
+            ws.close(); this._ws = null;
+            onError((msg.error?.message || 'voice error').slice(0, 60)); break;
+        }
+      };
+
+      ws.onerror = () => { this._ws = null; onError('voice ws error'); };
+
+      ws.onclose = (evt) => {
+        if (this._ws === ws) this._ws = null;
+        if (evt.code !== 1000 && evt.code !== 1005) onError('voice closed: ' + evt.code);
+      };
+    },
+
+    stop() {
+      if (this._ws) { try { this._ws.close(); } catch(_) {} this._ws = null; }
+    },
+  },
+
+  // ── Inworld TTS (HTTP streaming) ───────────────────────────
+  // Server proxies to api.inworld.ai/tts/v1/voice (batch endpoint, returns MP3).
+  // clientSecret arg unused — no ephemeral token exchange needed.
+  // Audio: MP3, decoded by browser via decodeAudioData — no PCM parsing required.
+  inworld: {
+    _abortCtrl: null,
+
+    speak(text, _clientSecret, onDone, onError) {
+      this._abortCtrl = new AbortController();
+      const signal = this._abortCtrl.signal;
+
+      (async () => {
+        let resp;
+        try {
+          resp = await fetch('/api/tts/inworld', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ text, voice_id: INWORLD_VOICE, model_id: INWORLD_MODEL }),
+            signal,
+          });
+        } catch (e) {
+          if (e.name !== 'AbortError') onError('inworld: ' + e.message.slice(0, 30));
+          return;
+        }
+        if (!resp.ok) { onError('inworld http ' + resp.status); return; }
+
+        // Decode MP3 via Web Audio API — handles format/sample-rate automatically
+        let arrayBuf;
+        try { arrayBuf = await resp.arrayBuffer(); }
+        catch (e) { onError('inworld read: ' + e.message.slice(0, 30)); return; }
+
+        let audioBuf;
+        try { audioBuf = await audioCtx.decodeAudioData(arrayBuf); }
+        catch (e) { onError('inworld decode: ' + e.message.slice(0, 30)); return; }
+
+        scheduleAudioChunk(audioBuf);
+        // Wait for playback to complete then signal done
+        setTimeout(onDone, audioBuf.duration * 1000 + 150);
+      })();
+    },
+
+    stop() {
+      if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
+    },
+  },
+
+};
+
+// ── Wire voice provider button (after ttsProviders is defined) ───────────────
+(function() {
+  function updateVoiceProviderBtn() {
+    voiceProviderBtn.textContent = 'VOICE: ' + TTS_PROVIDER.toUpperCase();
+  }
+  const providerOrder = Object.keys(ttsProviders);
+  updateVoiceProviderBtn();
+  voiceProviderBtn.addEventListener('click', () => {
+    const idx = providerOrder.indexOf(TTS_PROVIDER);
+    TTS_PROVIDER = providerOrder[(idx + 1) % providerOrder.length];
+    updateVoiceProviderBtn();
+    if (fullVoiceMode) initAudioCtx();
+  });
+})();
+
+// ── speakWithSamaritan ────────────────────────────────────────
+// Provider-agnostic TTS entry point. Called from the SSE 'done' handler.
 async function speakWithSamaritan(responseText, wasKbd) {
-  if (!audioCtx) {
+  // AudioContext must be pre-unlocked by a user gesture (FULL VOICE / kbd / send tap).
+  if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
   nextPlayAt = 0;
 
-  // Get voice token — use SSE-delivered cached token first (avoids Safari post-WS HTTP drop)
+  // Get voice token — SSE-delivered cached token first (avoids Safari post-WS HTTP drop)
   let clientSecret;
   if (cachedVtok) {
     const j = cachedVtok;
@@ -1593,7 +1770,6 @@ async function speakWithSamaritan(responseText, wasKbd) {
     clientSecret = j.client_secret?.value || j.value || j.token;
   }
   if (!clientSecret) {
-    // Fallback: fetch directly (first turn before any SSE, or if SSE token missing)
     try {
       const r = await fetch('/api/voice-token', {
         method: 'POST',
@@ -1603,8 +1779,10 @@ async function speakWithSamaritan(responseText, wasKbd) {
       if (r.ok) {
         const j = await r.json();
         clientSecret = j.client_secret?.value || j.value || j.token;
+      } else {
+        flashError('vtok http ' + r.status);
       }
-    } catch (_) {}
+    } catch (e) { flashError('vtok fetch: ' + e.message.slice(0, 25)); }
   }
   if (!clientSecret) {
     flashError('voice token failed');
@@ -1615,83 +1793,23 @@ async function speakWithSamaritan(responseText, wasKbd) {
   setStatus('SAMARITAN SPEAKING', true);
   voicePreview.textContent = fullVoiceMode ? 'SAMARITAN SPEAKING…' : 'TAP MIC TO SPEAK';
 
-  // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
-  const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
-
-  const ws = new WebSocket('wss://api.x.ai/v1/realtime',
-                           [`xai-client-secret.${clientSecret}`]);
-  xaiWs = ws;
-
-  ws.onopen = () => {
-    // Session: audio-only, chosen voice, no turn detection, no system instructions.
-    ws.send(JSON.stringify({
-      type: 'session.update',
-      session: {
-        modalities: ['audio'],
-        voice: voiceName,
-        output_audio_format: 'audio/pcm',
-        turn_detection: null,
-      },
-    }));
-
-    // "Say this: <text>" — direct command, no framing for the model to paraphrase.
-    const sayPrompt = `Say this: ${responseText}`;
-    ws.send(JSON.stringify({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: sayPrompt }],
-      },
-    }));
-
-    ws.send(JSON.stringify({
-      type: 'response.create',
-      response: { modalities: ['audio'] },
-    }));
-  };
-
-  ws.onmessage = (evt) => {
-    let msg;
-    try { msg = JSON.parse(evt.data); } catch (_) { return; }
-
-    switch (msg.type) {
-      case 'response.output_audio.delta':
-          if (msg.delta) {
-          try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
-          catch (_) {}
-        }
-        break;
-
-      case 'response.done':
-        ws.close();
-        xaiWs = null;
-        waitForDrainThenListen(wasKbd);
-        break;
-
-      case 'error':
-        ws.close();
-        xaiWs = null;
-        flashError((msg.error?.message || 'voice error').slice(0, 60));
-        voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
-        waitForDrainThenListen(wasKbd);
-        break;
-    }
-  };
-
-  ws.onerror = () => {
-    xaiWs = null;
-    flashError('voice ws error');
+  const provider = ttsProviders[TTS_PROVIDER];
+  if (!provider) {
+    flashError('unknown tts provider: ' + TTS_PROVIDER);
     waitForDrainThenListen(wasKbd);
-  };
+    return;
+  }
 
-  ws.onclose = (evt) => {
-    if (xaiWs === ws) xaiWs = null;
-    if (evt.code !== 1000 && evt.code !== 1005) {
-      flashError('voice closed: ' + evt.code);
+  provider.speak(
+    responseText,
+    clientSecret,
+    () => waitForDrainThenListen(wasKbd),           // onDone
+    (err) => {                                       // onError
+      flashError(err);
+      voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
       waitForDrainThenListen(wasKbd);
-    }
-  };
+    },
+  );
 }
 
 // ── Submit ───────────────────────────────────────────────────
@@ -1841,7 +1959,7 @@ async function submit(textOverride) {
 }
 
 // ── Event listeners ──────────────────────────────────────────
-sendBtn.addEventListener('click', submit);
+sendBtn.addEventListener('click', () => { if (fullVoiceMode) initAudioCtx(); submit(); });
 textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') submit();
 });
@@ -1865,18 +1983,15 @@ function waitForDrainThenListen(wasKbd) {
   // Terminal panel intentionally left visible — persists until next submit
   resetIdleTimer();    // idle screen appears only after IDLE_TIMEOUT_SEC of inactivity
 
-  if (fullVoiceMode && recognition && !micBtn.classList.contains('unsupported')) {
-    // Full-voice mode: audio is playing — wait for it to finish then open mic.
+  if (fullVoiceMode && !wasKbd && recognition && !micBtn.classList.contains('unsupported')) {
+    // Full-voice mode (voice input): wait for audio to finish then reopen mic.
     // TTS is capped at 200 chars (~10s). We track exact end time via nextPlayAt.
     // After audio ends, suspend AudioContext so mic doesn't hear speaker bleed.
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
-    setTimeout(async () => {
+    setTimeout(() => {
       nextPlayAt = 0;
-      // Suspend AudioContext before opening mic — releases iOS audio session
-      // so the mic gets clean input without speaker bleed or session conflicts.
-      if (audioCtx && audioCtx.state === 'running') await audioCtx.suspend();
       if (!isStreaming && !isListening) {
         voiceMode = true;
         try { recognition.start(); } catch (e) {
