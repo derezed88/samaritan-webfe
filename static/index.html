@@ -1271,7 +1271,7 @@ let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_MODEL                = 'nova-3';           // nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
 const DG_SAMPLE_RATE          = 16000;              // Hz — must match AudioContext sampleRate
-const DG_EOT_TIMEOUT_MS       = 1200;               // ms silence → speech_final (end-of-turn)
+const DG_EOT_TIMEOUT_MS       = 800;                // ms silence → speech_final (end-of-turn)
 const DG_EOT_THRESHOLD        = 0.95;               // endpointing confidence threshold (0–1)
 const DG_LANGUAGE             = 'en-US';
 const DG_INTERIM_RESULTS      = true;               // show partial transcripts in preview
@@ -1978,6 +1978,17 @@ async function submit(textOverride) {
   showIdle(false);
   showLoader(true);
   sendBtn.disabled = true;
+
+  // Prefetch voice token in parallel with agent-mcp submit (only if full voice mode)
+  if (fullVoiceMode) {
+    fetch('/api/voice-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ expires_in: 120 }),
+    }).then(r => r.ok ? r.json() : null)
+      .then(j => { if (j && !cachedVtok) cachedVtok = j; })
+      .catch(() => {});  // silent — speakWithSamaritan will retry if needed
+  }
 
   try {
     // 1. Submit to agent-mcp via our proxy (retry once — Safari drops first post-load request)
