@@ -1276,6 +1276,10 @@ const DG_EOT_THRESHOLD        = 0.95;               // endpointing confidence th
 const DG_LANGUAGE             = 'en-US';
 const DG_INTERIM_RESULTS      = true;               // show partial transcripts in preview
 const DG_PUNCTUATE            = true;
+const STT_CONFIRM_BEEP        = true;               // audible beep on STT prompt received
+const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
+const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
+const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
@@ -2107,9 +2111,28 @@ function onSttPartial(text) {
   if (isSpeaking) ttsProviders[TTS_PROVIDER].stop();
 }
 
+function beepConfirm() {
+  if (!STT_CONFIRM_BEEP) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = STT_BEEP_FREQ_HZ;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(STT_BEEP_GAIN, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + STT_BEEP_DURATION_MS / 1000);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + STT_BEEP_DURATION_MS / 1000);
+    osc.onended = () => ctx.close();
+  } catch (_) {}
+}
+
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
+  beepConfirm();
   if (kbdOpen) {
     textInput.value = (textInput.value + ' ' + query).trim();
   } else {
