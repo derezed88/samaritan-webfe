@@ -1271,7 +1271,8 @@ let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_MODEL                = 'nova-3';           // nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
 const DG_SAMPLE_RATE          = 16000;              // Hz — must match AudioContext sampleRate
-const DG_EOT_TIMEOUT_MS       = 800;                // ms silence → speech_final (end-of-turn)
+const DG_EOT_TIMEOUT_MS       = 800;                // ms silence → endpointing/speech_final (min ~300ms)
+const DG_UTTERANCE_END_MS     = 1000;               // ms silence → UtteranceEnd event (min 1000ms per Deepgram)
 const DG_EOT_THRESHOLD        = 0.95;               // endpointing confidence threshold (0–1)
 const DG_LANGUAGE             = 'en-US';
 const DG_INTERIM_RESULTS      = true;               // show partial transcripts in preview
@@ -2344,7 +2345,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
         interim_results:    DG_INTERIM_RESULTS,
         punctuate:          DG_PUNCTUATE,
         endpointing:        DG_EOT_TIMEOUT_MS,
-        utterance_end_ms:   DG_EOT_TIMEOUT_MS,
+        utterance_end_ms:   DG_UTTERANCE_END_MS,
         vad_events:         true,
       });
       // Pass key as URL param — avoids browser subprotocol header mangling
