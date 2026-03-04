@@ -988,6 +988,18 @@
       opacity: 0.3;
       cursor: not-allowed;
     }
+
+    /* ─── Narrow phone screens (≤ 480px) ─── */
+    @media (max-width: 480px) {
+      /* Hide text-only provider toggle buttons — icons still visible */
+      #stt-provider-btn, #voice-provider-btn { display: none; }
+      /* Tighten bar so all icon buttons fit */
+      #control-bar { gap: 6px; padding: 0 8px; }
+      /* Hide sidebars */
+      .sidebar { display: none; }
+      /* Shrink voice preview text */
+      #voice-preview { font-size: 9px; letter-spacing: 1px; }
+    }
   </style>
 </head>
 <body>
