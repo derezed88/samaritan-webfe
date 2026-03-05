@@ -12,6 +12,7 @@ Auth: Set SAMARITAN_API_KEY in .env (or environment).
 
 import base64
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -25,6 +26,8 @@ import asyncio
 import uvicorn
 
 load_dotenv()
+
+logger = logging.getLogger("uvicorn.error")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 AGENT_MCP_URL     = os.getenv("AGENT_MCP_URL", "http://localhost:8767")
@@ -132,6 +135,7 @@ async def stream_proxy(client_id: str, request: Request):
                 async with http.stream("GET", stream_url) as resp:
                     event_type = "message"
                     data_lines = []
+                    response_tokens = []
 
                     async for line in resp.aiter_lines():
                         line = line.rstrip("\r")
@@ -150,6 +154,7 @@ async def stream_proxy(client_id: str, request: Request):
                                 except (json.JSONDecodeError, ValueError):
                                     token = raw_data
                                 if token:
+                                    response_tokens.append(token)
                                     yield f"data: {json.dumps({'type': 'tok', 'text': token})}\n\n"
 
                             elif event_type == "flush":
@@ -160,9 +165,12 @@ async def stream_proxy(client_id: str, request: Request):
                                 except (json.JSONDecodeError, ValueError):
                                     token = raw_data
                                 if token:
+                                    response_tokens.append(token)
                                     yield f"data: {json.dumps({'type': 'flush', 'text': token})}\n\n"
 
                             elif event_type == "done":
+                                full_response = "".join(response_tokens)
+                                logger.info("RESP (%d chars): %s", len(full_response), full_response[:200])
                                 # Fetch xAI voice token server-side and piggyback it
                                 # on the SSE stream so the browser never needs a
                                 # separate HTTP request (avoids Safari post-WS drop).
@@ -250,8 +258,10 @@ async def tts_inworld(request: Request):
     speaking_rate = body.get("speaking_rate", 1.0)
     temperature   = body.get("temperature", 0.8)
 
+    logger.info("TTS text (%d chars): %r", len(text), text[:120])
+
     async def stream_chunks():
-        async with httpx.AsyncClient(timeout=60) as http:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=5)) as http:
             async with http.stream(
                 "POST",
                 "https://api.inworld.ai/tts/v1/voice:stream",
@@ -350,6 +360,18 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
                             await websocket.send_bytes(message)
                         else:
                             await websocket.send_text(message)
+                            try:
+                                dg_msg = json.loads(message)
+                                if dg_msg.get("is_final"):
+                                    transcript = (
+                                        dg_msg.get("channel", {})
+                                        .get("alternatives", [{}])[0]
+                                        .get("transcript", "")
+                                    )
+                                    if transcript:
+                                        logger.info("STT: %s", transcript)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 finally:

@@ -1304,6 +1304,15 @@ const STT_CONFIRM_BEEP        = true;               // audible beep on STT promp
 const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
+// Speaker-mode ambient noise guards (applied only when micMode === 'speaker')
+const STT_SPEAKER_COOLDOWN_MS    = 2000;            // ms after TTS ends before accepting STT finals
+const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
+const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
+const STT_READY_CHIME_FREQ_LO    = 523;             // low note Hz  (C5)
+const STT_READY_CHIME_FREQ_HI    = 784;             // high note Hz (G5)
+const STT_READY_CHIME_NOTE_MS    = 80;              // duration of each note in ms
+const STT_READY_CHIME_GAP_MS     = 40;              // gap between notes in ms
+const STT_READY_CHIME_GAIN       = 0.15;            // chime volume 0–1
 
 // Keyword → card-type mapping. Add/remove entries freely.
 // type: 'initiative' | 'asset' | 'task' | 'threat'
@@ -1317,6 +1326,7 @@ const KEYWORD_CARDS = {
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
 let isSpeaking     = false;
+let _sttCooldownUntil = 0;  // timestamp (ms) — STT finals suppressed until this time in speaker mode
 let wordQueue      = [];
 let wordAnimating  = false;
 let fullResponse   = '';
@@ -1969,15 +1979,25 @@ function _ttsFlush() {
       if (_ttsSentenceQueue.length > 0) {
         _ttsFlush();                 // speak next sentence immediately
       } else if (_ttsDone) {
-        // All sentences spoken and SSE is done — hand off
-        isSpeaking = false;
-        waitForDrainThenListen(_ttsWasKbd);
+        // All sentences spoken and SSE done — poll until Web Audio drains,
+        // then clear isSpeaking. Needed for xAI where response.done arrives
+        // before all scheduled PCM chunks finish playing.
+        (function waitForAudio() {
+          if (activeSrcs.size > 0) {
+            setTimeout(waitForAudio, 100);
+          } else {
+            isSpeaking = false;
+            if (micMode === 'speaker') startSpeakerCooldown();
+            waitForDrainThenListen(_ttsWasKbd);
+          }
+        })();
       }
       // else: SSE still streaming — more sentences may arrive, wait
     },
     (err) => {                       // onError for this sentence
       _ttsBusy = false;
       isSpeaking = false;
+      if (micMode === 'speaker') startSpeakerCooldown();
       flashError(err);
       if (_ttsDone) waitForDrainThenListen(_ttsWasKbd);
     },
@@ -1989,6 +2009,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
+    if (micMode === 'speaker') startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
@@ -2338,11 +2359,46 @@ function beepConfirm() {
   } catch (_) {}
 }
 
+function beepReady() {
+  // Ascending two-tone chime: signals cooldown cleared, mic open in speaker mode
+  if (!STT_READY_CHIME) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const noteSec  = STT_READY_CHIME_NOTE_MS / 1000;
+    const gapSec   = STT_READY_CHIME_GAP_MS  / 1000;
+    [STT_READY_CHIME_FREQ_LO, STT_READY_CHIME_FREQ_HI].forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      const t0 = ctx.currentTime + i * (noteSec + gapSec);
+      gain.gain.setValueAtTime(STT_READY_CHIME_GAIN, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + noteSec);
+      osc.start(t0);
+      osc.stop(t0 + noteSec);
+      if (i === 1) osc.onended = () => ctx.close();
+    });
+  } catch (_) {}
+}
+
+function startSpeakerCooldown() {
+  // Called whenever TTS ends in speaker mode — sets cooldown and schedules ready chime
+  _sttCooldownUntil = Date.now() + STT_SPEAKER_COOLDOWN_MS;
+  setTimeout(beepReady, STT_SPEAKER_COOLDOWN_MS);
+}
+
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
-  // In speaker mode, ignore transcripts while TTS is playing (mic hears speaker output)
-  if (isSpeaking && micMode === 'speaker') return;
+  // In speaker mode: suppress while TTS is playing or during post-TTS cooldown.
+  // Min word count only applies during cooldown (filters echo/ambient noise).
+  // Outside cooldown, short responses like "yes"/"no" are accepted normally.
+  if (micMode === 'speaker') {
+    if (isSpeaking) return;
+    if (Date.now() < _sttCooldownUntil && query.split(/\s+/).length < STT_SPEAKER_MIN_WORDS) return;
+  }
   beepConfirm();
   if (kbdOpen) {
     textInput.value = (textInput.value + ' ' + query).trim();
@@ -2497,15 +2553,23 @@ registerProcessor('pcm-capture', PcmCapture);`;
       }
 
       let pendingFinal = '';  // accumulate is_final segments until UtteranceEnd
+      let speechFinalTimer = null;  // debounce timer for speech_final bursts
+      const SPEECH_FINAL_DEBOUNCE_MS = 700;  // wait this long after last speech_final before submitting
+
+      function flushPendingFinal() {
+        if (speechFinalTimer) { clearTimeout(speechFinalTimer); speechFinalTimer = null; }
+        const text = pendingFinal.trim();
+        pendingFinal = '';
+        if (text) { onSttPartial(text); onSttFinal(text); }
+      }
+
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
         if (msg.type === 'Metadata') return;
         if (msg.type === 'UtteranceEnd') {
           // utterance_end_ms fired — submit whatever we've accumulated
-          const text = pendingFinal.trim();
-          pendingFinal = '';
-          if (text) { onSttPartial(text); onSttFinal(text); }
+          flushPendingFinal();
           return;
         }
         if (msg.type !== 'Results') return;
@@ -2515,13 +2579,13 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (!msg.is_final) {
           if (transcript) onSttPartial(transcript);
         } else {
-          // is_final segment — accumulate; speech_final also submits immediately
+          // is_final segment — accumulate into pendingFinal
           if (transcript) pendingFinal += (pendingFinal ? ' ' : '') + transcript;
           if (msg.speech_final && pendingFinal) {
-            const text = pendingFinal.trim();
-            pendingFinal = '';
-            onSttPartial(text);
-            onSttFinal(text);
+            // Debounce: reset timer on each speech_final so rapid mid-sentence
+            // pauses don't fire separate submits. UtteranceEnd will flush too.
+            if (speechFinalTimer) clearTimeout(speechFinalTimer);
+            speechFinalTimer = setTimeout(flushPendingFinal, SPEECH_FINAL_DEBOUNCE_MS);
           }
         }
       };
@@ -2587,8 +2651,8 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     const provider = sttProviders[STT_PROVIDER];
     if (!provider) { flashError('STT provider unavailable'); return; }
 
-    // If already in an active mode but STT dropped (e.g. iOS notification interruption),
-    // restart STT without cycling mode — single tap recovery.
+    // If already in an active mode but STT dropped (e.g. iOS notification interruption,
+    // or tapped while audio was playing), restart STT without cycling mode.
     if (micMode !== 'off' && !isListening && !isStreaming) {
       voiceMode = true;
       provider.start();
@@ -2596,6 +2660,8 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     }
 
     // Otherwise cycle: off → barge → speaker → off
+    // Don't cycle while actively streaming LLM response (isStreaming).
+    if (isStreaming) return;
     const next = MIC_MODES[(MIC_MODES.indexOf(micMode) + 1) % MIC_MODES.length];
     setMicMode(next);
     if (next === 'off') {
@@ -2603,7 +2669,7 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
       if (isListening) provider.stop();
     } else {
       voiceMode = true;
-      if (!isListening && !isStreaming) provider.start();
+      if (!isListening) provider.start();
     }
   });
   // Mark unsupported if webspeech default and not available
