@@ -433,7 +433,7 @@ Any contributions you make are **greatly appreciated**.
 <!-- LICENSE -->
 ## License
 
-Distributed under the MIT License. See `LICENSE.txt` for more information.
+Distributed under the MIT License. See `LICENSE.md` for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -501,7 +501,7 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
 [issues-shield]: https://img.shields.io/github/issues/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
 [issues-url]: https://github.com/derezed88/kaliLinuxNWScripts/issues
 [license-shield]: https://img.shields.io/github/license/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
-[license-url]: https://github.com/derezed88/kaliLinuxNWScripts/blob/master/LICENSE.txt
+[license-url]: https://github.com/derezed88/samaritan-webfe/blob/main/LICENSE.md
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/markajimenez
 [Python-badge]: https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white
