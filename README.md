@@ -51,6 +51,7 @@
     <li><a href="#configuration">Configuration</a></li>
     <li><a href="#remote-access">Remote Access via Pinggy</a></li>
     <li><a href="#security">Security</a></li>
+    <li><a href="#developer-notes-adapting-this-frontend">Developer Notes: Adapting This Frontend</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
     <li><a href="#contact">Contact</a></li>
@@ -262,6 +263,152 @@ the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
 - `AGENT_MCP_API_KEY` is a separate server-side secret forwarded to agent-mcp — it is never exposed to the browser.
 - The self-signed cert on port 8800 will trigger a browser warning on first visit; accept it once. It is valid for 10 years for the configured local IP.
 - When using the Pinggy tunnel, the obscure URL provides minimal protection on its own — always set a strong `SAMARITAN_API_KEY`.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+
+<!-- DEVELOPER NOTES -->
+## Developer Notes: Adapting This Frontend
+
+Developers should understand why I created this front end: because I wanted to combine the memory capabilities of agent-mcp, allowing me to choose any mainstream or locally hosted LLM with the voice providers of my choice.
+
+As an example, let's say you like the Grok app's ability to handle text and voice in the same chat. What's really going on in the backend is that when in text mode, Grok is using models that have a much bigger context window than when in live voice mode — in live voice mode, as of this writing the Voice Agent is used and that is backed by a model with a much smaller 32k-token context window. There are good reasons for that, and the biggest reason I can see is optimizing for voice quality: your voice and the model handling the voice are the same, or at least together, reducing API turns.
+
+This project is therefore a workaround, with some performance hit and possible cost implications. If you want to send voice to e.g. `grok-4-1-fast-reasoning` (or any other model that agent-mcp supports — and that includes all mainstream models and any OpenAI-compatible or llama/ollama-hosted model), then you need to process STT (your voice speech-to-text) and TTS (the model's text response to voice), with the LLM of your choice in the middle. I first started with simple Web Speech API for input and text response only. That wasn't good enough for me, so I went with Deepgram for STT and xAI and Inworld for TTS. I don't have enough resources to locally host models to do it on my own, so cloud APIs it is for me. Of course if you want to go keyboard and text only, that works too. There is also a `#screen_mode <dark|light>` command for your ambient light matching needs.
+
+**The performance implication:** API turns for the LLM (plus possible tool calls), for voice input, and for voice response. I am seeing about 8–10 seconds for voice input to voice response — and for the enhanced memory, I'm okay with that.
+
+**The cost implication:** API and token usage for everything. Figure that out based on your perceived amount of use.
+
+**Platform note:** Since the frontend is a web browser talking to a Python service, it can run from just about anywhere — macOS, iPhones with Safari, etc. The downside of browser mode is speaker-phone use: you should run voice input in the second orange "speaker-phone" mic mode so that barge-in is suppressed and the speaker doesn't pick up the audio output of the response. I am not willing at this time to develop a standalone native app for better acoustic separation.
+
+I modeled the UI after the Samaritan interface in the *Person of Interest* series. Samaritan will animate center text just like the TV show if the response is small. If the response is large it will print grey text at the top. Feel free to clone and rewrite to support voice providers of your choice.
+
+---
+
+### Architecture Overview
+
+The project has two layers:
+
+| Layer | File | Role |
+|-------|------|------|
+| **Browser UI** | `static/index.html` | Single-file HTML/CSS/JS — all rendering, SSE parsing, TTS/STT logic |
+| **Python proxy** | `samaritan.py` | FastAPI server — auth gate, API key management, stream translation |
+
+`samaritan.py` exists primarily to keep API keys out of the browser. It translates between the browser's expectations and whatever backend you wire up.
+
+---
+
+### Service Coupling Map
+
+The following services are used and where they are coupled:
+
+| Service | Where coupled | How to swap |
+|---------|--------------|-------------|
+| **agent-mcp** (LLM backend) | `samaritan.py` routes + `index.html` SSE parser | See [Swapping the LLM Backend](#swapping-the-llm-backend) below |
+| **Deepgram** (STT) | `samaritan.py` WebSocket proxy (`/api/stt-proxy`), `index.html` AudioWorklet | Replace proxy + browser WS client |
+| **xAI Realtime** (TTS) | `samaritan.py` `/api/voice-token`, `index.html` `ttsProviders.xai` | Implement new provider object + server route |
+| **Inworld AI** (TTS) | `samaritan.py` `/api/tts/inworld`, `index.html` `ttsProviders.inworld` | Implement new provider object + server route |
+
+---
+
+### Swapping the LLM Backend
+
+The frontend and backend share an internal SSE contract. As long as `samaritan.py` emits these events, `index.html` needs no changes:
+
+| Event | Payload | Meaning |
+|-------|---------|---------|
+| `tok` | `{"type":"tok","text":"..."}` | One token/word to display |
+| `flush` | `{"type":"flush","text":"..."}` | Intermediate checkpoint (tool call done, more coming); resets TTS buffer |
+| `done` | `{"type":"done"}` | Turn complete — trigger TTS and re-open mic |
+| `error` | `{"type":"error","text":"..."}` | Stream error |
+
+To replace agent-mcp with a different LLM (OpenAI, Anthropic, Ollama, etc.), rewrite only `samaritan.py`:
+
+1. **Submit route** (`POST /api/submit`) — translate `{text, client_id}` into your backend's request format and start a streaming response.
+2. **Stream route** (`GET /api/stream/{client_id}`) — parse your backend's streaming format (OpenAI JSON lines, Anthropic delta events, Ollama chunks, etc.) and emit `tok` / `flush` / `done` / `error` SSE events to the browser.
+3. **Session management** — agent-mcp correlates a submitted request to its SSE stream via `client_id`. If your backend streams directly in the POST response body, you can simplify or eliminate the separate stream route; you would also need to update the frontend's `submit()` function (around the `EventSource` setup) to match.
+4. **Health check** (`GET /api/health`) — point at your backend's health endpoint.
+
+**Effort estimates:**
+
+| Backend | Estimated effort | Notes |
+|---------|-----------------|-------|
+| Custom backend with agent-mcp-compatible protocol | ~1–2 h | Just update `AGENT_MCP_URL` and endpoint paths |
+| OpenAI / Anthropic streaming API | ~4–6 h | Rewrite `event_generator()` in `samaritan.py`; frontend unchanged |
+| Ollama or other non-SSE backends | ~6–8 h | Same as above plus handle direct-stream-in-response pattern |
+
+---
+
+### Swapping or Adding TTS Providers
+
+TTS providers are a registry object in `index.html`:
+
+```js
+const ttsProviders = {
+  xai:    { speak(text, token, onDone, onError) {...}, stop() {...} },
+  inworld: { speak(text, token, onDone, onError) {...}, stop() {...} },
+  // add yours here
+};
+```
+
+To add a provider:
+1. Implement `speak(text, token, onDone, onError)` and `stop()` in the registry.
+2. If the provider's API key must stay server-side, add a proxy route to `samaritan.py` (see `/api/tts/inworld` as a pattern).
+3. Add the button label to the `TTS_PROVIDER` cycle in the UI controls.
+
+Inworld uses a streaming NDJSON response (each line is a base64-encoded WAV chunk with a 44-byte RIFF header to strip). xAI uses a WebSocket with ephemeral token auth. Either pattern is a reasonable template for a new provider.
+
+---
+
+### Swapping STT (Speech-to-Text)
+
+Deepgram STT is split across two places:
+
+- **`samaritan.py`** — `WS /api/stt-proxy` proxies the browser WebSocket to Deepgram and injects the `Authorization` header server-side.
+- **`index.html`** — `connectDeepgram()` and the AudioWorklet pipeline handle mic capture, PCM16-LE encoding, and Deepgram message parsing (`SpeechStarted`, `Results`, `UtteranceEnd`).
+
+To swap to a different STT provider:
+1. Update the proxy in `samaritan.py` to forward to your provider's WebSocket endpoint with appropriate auth.
+2. Rewrite `connectDeepgram()` in `index.html` to match your provider's message protocol.
+3. The AudioWorklet/ScriptProcessorNode mic capture is generic PCM and can stay as-is for most providers that accept raw audio.
+
+If you want to use the browser's native Web Speech API instead (no server proxy needed, no API key), remove the Deepgram path and wire `SpeechRecognition` events directly to `onSttFinal()`.
+
+---
+
+### TTS Response Cleaning (`ttsClean()`)
+
+Before sending LLM output to TTS, `ttsClean()` in `index.html` strips formatting artifacts. The current strip list is tuned for Claude/agent-mcp output:
+
+- `[thinking…]` and `[tool ▶/◀]` markers (agent-mcp specific)
+- Markdown (`#`, `*`, `_`, `` ` ``, `---`, `~~`, links, tables, bullets)
+- Smart quotes, em/en dashes, ellipsis, HTML entities, non-ASCII characters
+
+If you switch LLM backends, audit this function for your model's output quirks. Adding `"respond in plain text only, no markdown formatting"` to your system prompt reduces the need for most of these strips.
+
+---
+
+### Session ID
+
+`SESSION_ID` is generated once on page load and reused for all turns in that browser session. It is sent as `client_id` in `POST /api/submit` and used in `GET /api/stream/{client_id}`.
+
+**Do not rotate it per submit.** agent-mcp uses it to maintain conversation memory across turns — a new `client_id` starts a fresh session and exhausts the session limit. If your backend manages conversation context differently (e.g. you build and send the full message history client-side), you can remove this correlation entirely.
+
+---
+
+### Mic Modes
+
+The rightmost button cycles through three STT modes:
+
+| Mode | Icon | Behavior |
+|------|------|----------|
+| Off | 🎤 | Mic disabled in full-voice mode |
+| Barge-in | **B** (red) | Incoming speech during TTS immediately stops playback — best for headphones/AirPods |
+| Speaker | **S** (amber) | Mic stays on but transcripts are suppressed during TTS — safe for phone-speaker/speakerphone use |
+
+If you are using this on a phone or tablet without headphones, use **S** mode to prevent feedback loops.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
