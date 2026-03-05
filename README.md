@@ -467,6 +467,8 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
   Served via [Google Fonts](https://fonts.google.com/specimen/Share+Tech+Mono).
 * **CSS scanline overlay technique** — adapted from public domain CSS snippets widely shared
   in the retro/CRT aesthetic community (no single original author identified).
+* **Person of Interest web UI demo** — [phresh-it.hu/demos/poi-web-ui/](https://phresh-it.hu/demos/poi-web-ui/)
+  — card designs for ASSET, THREAT, and other keyword pop-ups were adapted from this demo.
 
 ### Libraries & tools
 * [FastAPI](https://fastapi.tiangolo.com/) — ASGI web framework (MIT License)
