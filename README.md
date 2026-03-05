@@ -36,6 +36,7 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
+    <li><a href="#screenshots">Screenshots</a></li>
     <li><a href="#about-the-project">About The Project</a>
       <ul>
         <li><a href="#built-with">Built With</a></li>
@@ -58,6 +59,21 @@
     <li><a href="#acknowledgments">Acknowledgments</a></li>
   </ol>
 </details>
+
+
+
+<!-- SCREENSHOTS -->
+## Screenshots
+
+<div align="center">
+  <img src="docs/IMG_7650.PNG" alt="Samaritan UI — word flash animation" width="30%" />
+  &nbsp;
+  <img src="docs/IMG_7651.PNG" alt="Samaritan UI — terminal response panel" width="30%" />
+  &nbsp;
+  <img src="docs/IMG_7653.PNG" alt="Samaritan UI — voice mode" width="30%" />
+</div>
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
 
