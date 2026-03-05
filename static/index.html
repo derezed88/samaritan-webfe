@@ -2392,6 +2392,10 @@ function startSpeakerCooldown() {
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
+  // Drop transcript if agent is still processing a prior turn — prevents
+  // mid-ramble pauses from firing a second submit and getting a 0-char response.
+  // Barge-in (micMode === 'barge') is exempt: it intentionally interrupts.
+  if (isStreaming && micMode !== 'barge') return;
   // In speaker mode: suppress while TTS is playing or during post-TTS cooldown.
   // Min word count only applies during cooldown (filters echo/ambient noise).
   // Outside cooldown, short responses like "yes"/"no" are accepted normally.
