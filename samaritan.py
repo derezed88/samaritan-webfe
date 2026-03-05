@@ -16,10 +16,12 @@ import os
 from pathlib import Path
 
 import httpx
+import websockets as ws_lib
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import asyncio
 import uvicorn
 
 load_dotenv()
@@ -150,6 +152,16 @@ async def stream_proxy(client_id: str, request: Request):
                                 if token:
                                     yield f"data: {json.dumps({'type': 'tok', 'text': token})}\n\n"
 
+                            elif event_type == "flush":
+                                # Intermediate checkpoint — more tokens coming after tool call.
+                                # Forward text tokens for display but signal no-TTS-yet.
+                                try:
+                                    token = json.loads(raw_data).get("text", "")
+                                except (json.JSONDecodeError, ValueError):
+                                    token = raw_data
+                                if token:
+                                    yield f"data: {json.dumps({'type': 'flush', 'text': token})}\n\n"
+
                             elif event_type == "done":
                                 # Fetch xAI voice token server-side and piggyback it
                                 # on the SSE stream so the browser never needs a
@@ -219,9 +231,10 @@ async def voice_token(request: Request):
 
 @app.post("/api/tts/inworld")
 async def tts_inworld(request: Request):
-    """Proxy Inworld TTS batch endpoint — keeps INWORLD_API_KEY server-side.
+    """Proxy Inworld TTS streaming endpoint — keeps INWORLD_API_KEY server-side.
     Accepts: { "text": "...", "voice_id": "Evelyn", "model_id": "inworld-tts-1.5-max" }
-    Returns: audio/mpeg (MP3) — decoded by browser via decodeAudioData.
+    Returns: newline-delimited JSON stream, each line is a chunk with base64 audioContent.
+    Browser decodes each chunk independently via decodeAudioData and plays gaplessly.
     """
     if not _check_auth(request):
         return _auth_error()
@@ -237,31 +250,37 @@ async def tts_inworld(request: Request):
     speaking_rate = body.get("speaking_rate", 1.0)
     temperature   = body.get("temperature", 0.8)
 
-    async with httpx.AsyncClient(timeout=30) as http:
-        resp = await http.post(
-            "https://api.inworld.ai/tts/v1/voice",
-            headers={"Authorization": f"Basic {inworld_key}", "Content-Type": "application/json"},
-            json={
-                "text": text,
-                "voiceId": voice_id,
-                "modelId": model_id,
-                "temperature": temperature,
-                "audioConfig": {"speakingRate": speaking_rate},
-            },
-        )
-        if not resp.is_success:
-            return JSONResponse({"error": resp.text[:200]}, status_code=resp.status_code)
-        data = resp.json()
+    async def stream_chunks():
+        async with httpx.AsyncClient(timeout=60) as http:
+            async with http.stream(
+                "POST",
+                "https://api.inworld.ai/tts/v1/voice:stream",
+                headers={"Authorization": f"Basic {inworld_key}", "Content-Type": "application/json"},
+                json={
+                    "text": text,
+                    "voiceId": voice_id,
+                    "modelId": model_id,
+                    "temperature": temperature,
+                    "audioConfig": {
+                        "audioEncoding": "LINEAR16",
+                        "sampleRateHertz": 24000,
+                        "speakingRate": speaking_rate,
+                    },
+                },
+            ) as resp:
+                if not resp.is_success:
+                    err = await resp.aread()
+                    yield json.dumps({"error": err.decode()[:200]}) + "\n"
+                    return
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if line:
+                        yield line + "\n"
 
-    audio_b64 = data.get("audioContent", "")
-    if not audio_b64:
-        return JSONResponse({"error": "no audioContent in response"}, status_code=502)
-
-    audio_bytes = base64.b64decode(audio_b64)
     return StreamingResponse(
-        iter([audio_bytes]),
-        media_type="audio/mpeg",
-        headers={"Cache-Control": "no-cache"},
+        stream_chunks(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -276,6 +295,76 @@ async def stt_token(request: Request):
     if not dg_key:
         return JSONResponse({"error": "DEEPGRAM_API_KEY not configured"}, status_code=503)
     return JSONResponse({"key": dg_key})
+
+
+@app.websocket("/api/stt-proxy")
+async def stt_proxy(websocket: WebSocket, token: str = ""):
+    """Proxy browser WebSocket → Deepgram, injecting Authorization header.
+    Browser can't set custom headers on WebSocket, so we bridge it here.
+    Query param: ?token=<SAMARITAN_API_KEY>  (same as other protected routes)
+    Remaining query params (model, encoding, etc.) are forwarded to Deepgram.
+    """
+    # Authenticate caller
+    if SAMARITAN_API_KEY and token != SAMARITAN_API_KEY:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    dg_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not dg_key:
+        await websocket.close(code=4002, reason="DEEPGRAM_API_KEY not configured")
+        return
+
+    # Build Deepgram URL — forward all query params except our 'token'
+    params = dict(websocket.query_params)
+    params.pop("token", None)
+    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    dg_url = f"wss://api.deepgram.com/v1/listen?{qs}"
+
+    await websocket.accept()
+
+    try:
+        async with ws_lib.connect(
+            dg_url,
+            additional_headers={"Authorization": f"Token {dg_key}"},
+        ) as dg_ws:
+
+            async def browser_to_dg():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if "bytes" in msg and msg["bytes"]:
+                            await dg_ws.send(msg["bytes"])
+                        elif "text" in msg and msg["text"]:
+                            await dg_ws.send(msg["text"])
+                        else:
+                            break  # disconnect
+                except (WebSocketDisconnect, Exception):
+                    pass
+                finally:
+                    await dg_ws.close()
+
+            async def dg_to_browser():
+                try:
+                    async for message in dg_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+
+            await asyncio.gather(browser_to_dg(), dg_to_browser())
+
+    except Exception as e:
+        try:
+            await websocket.close(code=1011, reason=str(e)[:100])
+        except Exception:
+            pass
 
 
 @app.get("/api/health")

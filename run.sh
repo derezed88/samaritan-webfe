@@ -9,7 +9,7 @@ sleep 1
 source venv/bin/activate
 
 # Unbuffered python, timestamp each line, append to samaritan.log
-python -u samaritan.py 2>&1 | awk '{ print strftime("[%Y-%m-%d %H:%M:%S]"), $0; fflush() }' >> samaritan.log &
+PYTHONUNBUFFERED=1 python -u samaritan.py 2>&1 | stdbuf -oL awk '{ print strftime("[%Y-%m-%d %H:%M:%S]"), $0; fflush() }' >> samaritan.log &
 PID=$!
 echo "$PID" > samaritan.pid
 echo "Started PID $PID — logging to samaritan.log"

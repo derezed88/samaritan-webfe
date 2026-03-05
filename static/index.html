@@ -804,6 +804,8 @@
     }
 
     #mic-icon { font-size: 15px; }
+    #mic-btn.barge   { border-color: var(--red); color: var(--red); }
+    #mic-btn.speaker { border-color: #f0a500;    color: #f0a500; }
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
 
     /* ─── Voice provider selector ─── */
@@ -901,7 +903,7 @@
     /* ─── Error flash ─── */
     #error-flash {
       position: absolute;
-      top: 50px;
+      bottom: 52px;
       left: 50%;
       transform: translateX(-50%);
       font-size: 10px;
@@ -1092,7 +1094,7 @@
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
       <button id="stt-provider-btn" title="Switch STT provider">WEBSPEECH</button>
-      <button id="voice-provider-btn" title="Switch TTS voice provider">XAI</button>
+      <button id="voice-provider-btn" title="Switch TTS voice provider">INWORLD</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
         <svg id="fv-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <!-- speaker cone -->
@@ -1117,7 +1119,7 @@
           <line x1="8" y1="17" x2="16" y2="17"/>
         </svg>
       </button>
-      <button id="mic-btn" title="Voice Input">
+      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker">
         <span id="mic-icon">&#127908;</span>
       </button>
     </div>
@@ -1199,11 +1201,32 @@ let kbdOpen      = false;
 let voiceMode    = false;  // true only when user explicitly enabled mic
 let fullVoiceMode = false; // true when xAI TTS is active
 
+// ── Mic mode: 'off' | 'barge' | 'speaker' ────────────────────
+// off    — mic disabled in full-voice mode
+// barge  — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
+// speaker — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
+let micMode = 'off';
+const MIC_MODES = ['off', 'barge', 'speaker'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S' };
+
+function setMicMode(mode) {
+  micMode = mode;
+  if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
+  micBtn.classList.remove('barge', 'speaker');
+  if (mode !== 'off') micBtn.classList.add(mode);
+}
+
 // ── Full-voice toggle ─────────────────────────────────────────
 // Pre-create AudioContext on user gesture so iOS Safari allows it to play later.
 function initAudioCtx() {
   if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Auto-resume if iOS suspends the context (e.g. after notification interruption)
+    audioCtx.addEventListener('statechange', () => {
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    });
+  } else if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
   }
 }
 
@@ -1298,6 +1321,7 @@ let wordQueue      = [];
 let wordAnimating  = false;
 let fullResponse   = '';
 let idleTimer      = null;
+let activeEvtSource = null;  // current SSE stream — closed on each new submit
 
 // ── Utilities ────────────────────────────────────────────────
 function setStatus(text, active = false) {
@@ -1658,38 +1682,43 @@ function appendToPanel(text) {
 let audioCtx      = null;  // Web Audio context (created on first user gesture)
 let nextPlayAt    = 0;     // AudioContext time for next scheduled PCM chunk
 const activeSrcs  = new Set(); // all scheduled BufferSource nodes (for barge-in stop)
-let cachedVtok = null;  // voice token delivered via SSE (avoids extra HTTP round-trip)
 
-// PCM16-LE base64 → AudioBuffer for Web Audio API (shared across providers)
-function pcm16Base64ToFloat32(b64, sampleRate) {
-  const bin   = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+// PCM16-LE bytes → AudioBuffer
+function pcmBytesToAudioBuf(bytes, sampleRate) {
   const samples = bytes.length / 2;
   const buf  = audioCtx.createBuffer(1, samples, sampleRate);
   const data = buf.getChannelData(0);
-  const view = new DataView(bytes.buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let i = 0; i < samples; i++) {
     data[i] = view.getInt16(i * 2, true) / 32768;
   }
   return buf;
 }
 
+// PCM16-LE base64 → AudioBuffer for Web Audio API (shared across providers)
+function pcm16Base64ToFloat32(b64, sampleRate) {
+  const bin   = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return pcmBytesToAudioBuf(bytes, sampleRate);
+}
+
 // Schedule an AudioBuffer for gapless sequential playback (shared across providers).
-// Uses a small initial lookahead (5ms) on the first chunk so audio starts promptly,
-// then chains subsequent chunks directly to avoid inter-chunk gaps that cause clicks.
+// Returns the wall-clock ms until playback of this buffer completes (for onDone timing).
 function scheduleAudioChunk(audioBuf) {
-  if (!audioCtx) return;
+  if (!audioCtx) return 0;
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(audioCtx.destination);
-  const startAt = nextPlayAt > 0
+  const startAt = nextPlayAt > audioCtx.currentTime
     ? nextPlayAt
     : audioCtx.currentTime + 0.005;
   src.start(startAt);
   nextPlayAt = startAt + audioBuf.duration;
   activeSrcs.add(src);
   src.onended = () => activeSrcs.delete(src);
+  // Return ms from now until this chunk finishes playing
+  return (startAt + audioBuf.duration - audioCtx.currentTime) * 1000;
 }
 
 // Stop all scheduled/playing audio immediately — used for barge-in.
@@ -1707,8 +1736,40 @@ const ttsProviders = {
   // ── xAI Realtime API ───────────────────────────────────────
   xai: {
     _ws: null,
+    _clientSecret: null,   // ephemeral token for this response
+    _cachedVtok:   null,   // pre-fetched token from SSE vtok event
 
-    speak(text, clientSecret, onDone, onError) {
+    // Fetch (or reuse cached) ephemeral token. Returns token string or null.
+    async _getToken() {
+      if (this._clientSecret) return this._clientSecret;
+      if (this._cachedVtok) {
+        const j = this._cachedVtok; this._cachedVtok = null;
+        this._clientSecret = j.client_secret?.value || j.value || j.token;
+        if (this._clientSecret) return this._clientSecret;
+      }
+      try {
+        const r = await fetch('/api/voice-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ expires_in: 120 }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          this._clientSecret = j.client_secret?.value || j.value || j.token;
+        }
+      } catch (_) {}
+      return this._clientSecret || null;
+    },
+
+    speak(text, _unused, onDone, onError) {
+      (async () => {
+        const clientSecret = await this._getToken();
+        if (!clientSecret) { onError('voice token failed'); return; }
+        this._speakWithToken(text, clientSecret, onDone, onError);
+      })();
+    },
+
+    _speakWithToken(text, clientSecret, onDone, onError) {
       // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
       const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
       let ws;
@@ -1773,6 +1834,8 @@ const ttsProviders = {
 
     stop() {
       if (this._ws) { try { this._ws.close(); } catch(_) {} this._ws = null; }
+      this._clientSecret = null;
+      this._cachedVtok   = null;
       stopAllAudio();
     },
   },
@@ -1780,7 +1843,8 @@ const ttsProviders = {
   // ── Inworld TTS (HTTP streaming) ───────────────────────────
   // Server proxies to api.inworld.ai/tts/v1/voice (batch endpoint, returns MP3).
   // clientSecret arg unused — no ephemeral token exchange needed.
-  // Audio: MP3, decoded by browser via decodeAudioData — no PCM parsing required.
+  // Inworld streaming TTS — NDJSON stream, each line has base64 audioContent (MP3).
+  // Chunks are decoded and scheduled as they arrive for low-latency gapless playback.
   inworld: {
     _abortCtrl: null,
 
@@ -1803,18 +1867,53 @@ const ttsProviders = {
         }
         if (!resp.ok) { onError('inworld http ' + resp.status); return; }
 
-        // Decode MP3 via Web Audio API — handles format/sample-rate automatically
-        let arrayBuf;
-        try { arrayBuf = await resp.arrayBuffer(); }
-        catch (e) { onError('inworld read: ' + e.message.slice(0, 30)); return; }
+        // Read NDJSON stream — each chunk is a self-contained WAV file (RIFF header + PCM16-LE).
+        // Strip the 44-byte WAV header and feed raw PCM to pcm16Base64ToFloat32 at 24kHz.
+        const WAV_HEADER_BYTES = 44;
+        const reader = resp.body.getReader();
+        const txtDec = new TextDecoder();
+        let buf = '';
+        let lastChunkEndMs = 0;
+        let gotAny = false;
+        let errored = false;
 
-        let audioBuf;
-        try { audioBuf = await audioCtx.decodeAudioData(arrayBuf); }
-        catch (e) { onError('inworld decode: ' + e.message.slice(0, 30)); return; }
+        const scheduleWavChunk = (b64) => {
+          const bin = atob(b64);
+          if (bin.length <= WAV_HEADER_BYTES) return;
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          // Slice off the 44-byte WAV header — remaining bytes are raw PCM16-LE at 24kHz
+          const pcm = bytes.subarray(WAV_HEADER_BYTES);
+          lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(pcm, 24000));
+          gotAny = true;
+        };
 
-        scheduleAudioChunk(audioBuf);
-        // Wait for playback to complete then signal done
-        setTimeout(onDone, audioBuf.duration * 1000 + 150);
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += txtDec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              const t = line.trim();
+              if (!t) continue;
+              try {
+                const chunk = JSON.parse(t);
+                if (chunk.error) { onError('inworld: ' + String(chunk.error).slice(0, 40)); errored = true; break; }
+                const b64 = chunk.result?.audioContent || chunk.audioContent;
+                if (b64) scheduleWavChunk(b64);
+              } catch (_) {}
+            }
+            if (errored) break;
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') onError('inworld stream: ' + e.message.slice(0, 30));
+          return;
+        }
+
+        if (errored || !gotAny) { if (!errored) onError('inworld: no audio'); return; }
+        setTimeout(onDone, lastChunkEndMs + 150);
       })();
     },
 
@@ -1848,7 +1947,6 @@ const ttsProviders = {
 // speakWithSamaritan() is now called once per sentence from the SSE
 // tok handler, and once more at 'done' for any remaining buffer.
 
-let _ttsClientSecret  = null;  // cached for the duration of one response
 let _ttsSentenceQueue = [];    // sentences waiting to speak
 let _ttsBusy          = false; // true while a provider.speak() is in flight
 let _ttsWasKbd        = false; // passed through to waitForDrainThenListen
@@ -1862,7 +1960,7 @@ function _ttsFlush() {
   isSpeaking = true;
   provider.speak(
     sentence,
-    _ttsClientSecret,
+    null,
     () => {                          // onDone for this sentence
       _ttsBusy = false;
       if (_ttsSentenceQueue.length > 0) {
@@ -1884,6 +1982,14 @@ function _ttsFlush() {
 }
 
 async function speakWithSamaritan(sentence, wasKbd, isLast) {
+  // If nothing to speak and this is the last sentence, just signal done immediately.
+  if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
+    _ttsDone = true;
+    isSpeaking = false;
+    waitForDrainThenListen(wasKbd);
+    return;
+  }
+
   // AudioContext must be pre-unlocked by a user gesture.
   if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1892,36 +1998,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   _ttsWasKbd = wasKbd;
   if (isLast) _ttsDone = true;
 
-  // Fetch voice token once per response (reuse for subsequent sentences)
-  if (!_ttsClientSecret) {
-    if (cachedVtok) {
-      const j = cachedVtok; cachedVtok = null;
-      _ttsClientSecret = j.client_secret?.value || j.value || j.token;
-    }
-    if (!_ttsClientSecret) {
-      try {
-        const r = await fetch('/api/voice-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ expires_in: 120 }),
-        });
-        if (r.ok) {
-          const j = await r.json();
-          _ttsClientSecret = j.client_secret?.value || j.value || j.token;
-        } else { flashError('vtok http ' + r.status); }
-      } catch (e) { flashError('vtok fetch: ' + e.message.slice(0, 25)); }
-    }
-    if (!_ttsClientSecret) {
-      flashError('voice token failed');
-      if (isLast) waitForDrainThenListen(wasKbd);
-      return;
-    }
-    const provider = ttsProviders[TTS_PROVIDER];
-    if (!provider) {
-      flashError('unknown tts provider: ' + TTS_PROVIDER);
-      if (isLast) waitForDrainThenListen(wasKbd);
-      return;
-    }
+  if (!isSpeaking) {
     setStatus('SAMARITAN SPEAKING', true);
     voicePreview.textContent = fullVoiceMode ? 'SAMARITAN SPEAKING…' : 'TAP MIC TO SPEAK';
   }
@@ -1938,7 +2015,9 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
 
 // Reset TTS pipeline state at the start of each submit
 function resetTtsPipeline() {
-  _ttsClientSecret  = null;
+  // Cancel any in-flight TTS (Inworld fetch or xAI WebSocket)
+  const provider = ttsProviders[TTS_PROVIDER];
+  if (provider?.stop) provider.stop();  // xAI.stop() also clears its own token state
   _ttsSentenceQueue = [];
   _ttsBusy          = false;
   _ttsDone          = false;
@@ -1947,7 +2026,10 @@ function resetTtsPipeline() {
 // ── Submit ───────────────────────────────────────────────────
 async function submit(textOverride) {
   const text = (textOverride || textInput.value).trim();
-  if (!text || isStreaming) return;
+  if (!text) return;
+  // If a prior stream is still open (e.g. after barge-in), force-close it now
+  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; isStreaming = false; }
+  if (isStreaming) return;
 
   // Intercept #commands — handle locally, never forward to agent-mcp
   if (text.startsWith('#')) {
@@ -1958,8 +2040,6 @@ async function submit(textOverride) {
   }
 
   resetIdleTimer();   // user is active — reset idle countdown
-  SESSION_ID = makeSessionId();   // fresh session per submit — avoids stale agent-mcp streams
-  document.getElementById('session-id-value').textContent = SESSION_ID.toUpperCase();
   const wasKbd = kbdOpen;
   textInput.value = '';
   textInput.blur();          // dismiss iOS keyboard immediately
@@ -1980,15 +2060,15 @@ async function submit(textOverride) {
   showLoader(true);
   sendBtn.disabled = true;
 
-  // Prefetch voice token in parallel with agent-mcp submit (only if full voice mode)
-  if (fullVoiceMode) {
+  // Prefetch xAI voice token in parallel — only needed for xAI provider
+  if (fullVoiceMode && TTS_PROVIDER === 'xai') {
     fetch('/api/voice-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ expires_in: 120 }),
     }).then(r => r.ok ? r.json() : null)
-      .then(j => { if (j && !cachedVtok) cachedVtok = j; })
-      .catch(() => {});  // silent — speakWithSamaritan will retry if needed
+      .then(j => { if (j) ttsProviders.xai._cachedVtok = j; })
+      .catch(() => {});
   }
 
   try {
@@ -2014,19 +2094,41 @@ async function submit(textOverride) {
 
     // 2. Open SSE stream — pass token via query param (EventSource can't set headers)
     const evtSource = new EventSource(authedUrl(`/api/stream/${SESSION_ID}`));
+    activeEvtSource = evtSource;
 
     // Use onmessage (unnamed events) for cross-browser compatibility
     let streamDone = false;
     let ttsBuf = '';  // accumulates tok text until a sentence boundary
+    const mySessionId = SESSION_ID;  // capture at open time; stale streams self-discard
 
     // Sentence boundary regex: end of sentence followed by space or end-of-string
     const SENT_RE = /[.!?][)"']?\s+|[.!?][)"']?$/;
 
     function ttsClean(t) {
       return t
-        .replace(/\[thinking[^\]]*\]/gi, '')
-        .replace(/\[[^\]]*▶[^\]]*\][^\n]*/g, '')
+        .replace(/\[thinking[^\]]*\]/gi, '')   // [thinking…] markers
+        .replace(/\[[^\]]*[▶◀][^\]]*\]/g, '')  // [tool ▶ name] and [tool ◀ result]
+        .replace(/#{1,6}\s*/g, '')             // markdown headings
+        .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1')  // bold/italic **x** *x* ***x***
+        .replace(/_{1,3}([^_]*)_{1,3}/g, '$1')    // underline/italic __x__ _x_
+        .replace(/~~([^~]*)~~/g, '$1')         // strikethrough
+        .replace(/`{1,3}[^`]*`{1,3}/g, '')    // inline code and code blocks
+        .replace(/'{3}/g, '')                  // triple single-quotes (code fence variant)
+        .replace(/^[-*_]{3,}\s*$/gm, '')       // horizontal rules ---, ***, ___ (own line)
+        .replace(/\s[-]{3,}\s/g, ' ')          // inline --- sequences
+        .replace(/^\s*[-*+]\s+/gm, '')         // unordered list bullets
+        .replace(/^\s*\d+\.\s+/gm, '')         // ordered list numbers
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // links and images → label only
+        .replace(/[|\\]/g, ' ')                // table pipes, backslashes
+        .replace(/[—–]/g, ', ')               // em dash, en dash → pause
+        .replace(/…/g, '...')                  // ellipsis char → literal dots
+        .replace(/[""]/g, '"')                 // smart double quotes → straight
+        .replace(/['']/g, "'")                 // smart single quotes → straight apostrophe
+        .replace(/&[a-z]+;/gi, ' ')            // HTML entities
+        .replace(/[<>]/g, ' ')                 // angle brackets
+        .replace(/[^\x20-\x7E\s]/g, ' ')      // strip remaining non-ASCII
         .replace(/\n+/g, ' ')
+        .replace(/\s{2,}/g, ' ')               // collapse multiple spaces
         .trim();
     }
 
@@ -2034,11 +2136,12 @@ async function submit(textOverride) {
       if (!fullVoiceMode) return;
       const clean = ttsClean(ttsBuf);
       ttsBuf = '';
-      if (clean || isLast) speakWithSamaritan(clean, wasKbd, isLast);
+      if (clean) speakWithSamaritan(clean, wasKbd, isLast);
+      else if (isLast) speakWithSamaritan('', wasKbd, true);  // signal done even if nothing to speak
     }
 
     evtSource.onmessage = (e) => {
-      if (streamDone) return;
+      if (streamDone || mySessionId !== SESSION_ID) { evtSource.close(); return; }
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'tok') {
@@ -2048,22 +2151,32 @@ async function submit(textOverride) {
             enqueueTokens(token);
             if (fullVoiceMode) {
               ttsBuf += token;
-              // Check for sentence boundary — split and speak completed sentence(s)
-              let m;
-              while ((m = SENT_RE.exec(ttsBuf)) !== null) {
-                const end = m.index + m[0].length;
-                const sentence = ttsClean(ttsBuf.slice(0, end));
-                ttsBuf = ttsBuf.slice(end);
-                if (sentence) speakWithSamaritan(sentence, wasKbd, false);
+              // Sentence-level streaming only for xAI (streaming PCM).
+              // Inworld is a batch HTTP call — speak the full response at done.
+              if (TTS_PROVIDER === 'xai') {
+                let m;
+                while ((m = SENT_RE.exec(ttsBuf)) !== null) {
+                  const end = m.index + m[0].length;
+                  const sentence = ttsClean(ttsBuf.slice(0, end));
+                  ttsBuf = ttsBuf.slice(end);
+                  if (sentence) speakWithSamaritan(sentence, wasKbd, false);
+                }
               }
             }
           }
+        } else if (data.type === 'flush') {
+          // Intermediate checkpoint from agent-mcp (tool call in progress).
+          // Intermediate checkpoint — tool round-trip done, final answer coming next.
+          // Display tokens, reset TTS buffer (pre-flush content = markers, not speech).
+          const token = data.text || '';
+          if (token) { appendToPanel(token); enqueueTokens(token); }
+          ttsBuf = '';  // discard pre-flush content from TTS (thinking/tool markers)
         } else if (data.type === 'vtok') {
-          // Voice token pre-delivered over SSE — cache it for speakWithSamaritan
-          cachedVtok = data.token;
+          // xAI voice token pre-delivered over SSE — store directly on xAI provider
+          ttsProviders.xai._cachedVtok = data.token;
         } else if (data.type === 'done') {
           streamDone = true;
-          evtSource.close();
+          evtSource.close(); activeEvtSource = null;
           isStreaming = false;
           showLoader(false);
           sendBtn.disabled = false;
@@ -2088,7 +2201,7 @@ async function submit(textOverride) {
           }
         } else if (data.type === 'error') {
           streamDone = true;
-          evtSource.close();
+          evtSource.close(); activeEvtSource = null;
           isStreaming = false;
           showLoader(false);
           showIdle(false);
@@ -2150,7 +2263,7 @@ function waitForDrainThenListen(wasKbd) {
   // Terminal panel intentionally left visible — persists until next submit
   resetIdleTimer();    // idle screen appears only after IDLE_TIMEOUT_SEC of inactivity
 
-  if (fullVoiceMode && !wasKbd && !micBtn.classList.contains('unsupported')) {
+  if (fullVoiceMode && !wasKbd && micMode !== 'off' && !micBtn.classList.contains('unsupported')) {
     // Full-voice mode (voice input): wait for audio to finish then reopen mic.
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
@@ -2190,15 +2303,15 @@ let isListening = false;
 function onSttStart() {
   isListening = true;
   micBtn.classList.add('listening');
-  micIcon.textContent = '●';
+  micIcon.textContent = '●';   // listening indicator; mode label restored on stop
   voicePreview.textContent = '…';
   setStatus('LISTENING', true);
 }
 
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
-  // Barge-in: any speech heard → stop TTS immediately
-  if (isSpeaking) {
+  // Barge-in: only in 'barge' mode — stop TTS immediately when speech is heard
+  if (isSpeaking && micMode === 'barge') {
     isSpeaking = false;
     ttsProviders[TTS_PROVIDER].stop();  // closes WS/fetch AND calls stopAllAudio()
   }
@@ -2225,6 +2338,8 @@ function beepConfirm() {
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
+  // In speaker mode, ignore transcripts while TTS is playing (mic hears speaker output)
+  if (isSpeaking && micMode === 'speaker') return;
   beepConfirm();
   if (kbdOpen) {
     textInput.value = (textInput.value + ' ' + query).trim();
@@ -2236,7 +2351,7 @@ function onSttFinal(text) {
 function onSttStop() {
   isListening = false;
   micBtn.classList.remove('listening');
-  micIcon.textContent = '🎤';
+  micIcon.textContent = MIC_MODE_LABELS[micMode];  // restore current mode label
   if (!isStreaming) {
     setStatus('STANDBY', false);
     if (!kbdOpen) voicePreview.textContent = 'TAP MIC TO SPEAK';
@@ -2312,20 +2427,10 @@ class PcmCapture extends AudioWorkletProcessor {
 }
 registerProcessor('pcm-capture', PcmCapture);`;
 
-  async function fetchKey() {
-    if (dgKey) return dgKey;
-    const resp = await fetch('/api/stt-token', { headers: authHeaders() });
-    if (!resp.ok) throw new Error('stt-token ' + resp.status);
-    dgKey = (await resp.json()).key;
-    flashError('DG key=' + dgKey.slice(0, 8) + '… len=' + dgKey.length);
-    return dgKey;
-  }
-
   async function startDg() {
     active = true;
     onSttStart();
     try {
-      const key = await fetchKey();
 
       // Get mic + AudioContext first so we know the real sample rate before connecting
       try {
@@ -2337,6 +2442,8 @@ registerProcessor('pcm-capture', PcmCapture);`;
       audioCtxDg = new AudioContext();
       const actualRate = audioCtxDg.sampleRate;
 
+      // Route through server proxy — Deepgram requires Authorization header
+      // which browsers can't set on WebSocket; proxy injects it server-side.
       const params = new URLSearchParams({
         model:              DG_MODEL,
         encoding:           DG_ENCODING,
@@ -2347,10 +2454,10 @@ registerProcessor('pcm-capture', PcmCapture);`;
         endpointing:        DG_EOT_TIMEOUT_MS,
         utterance_end_ms:   DG_UTTERANCE_END_MS,
         vad_events:         true,
+        token:              _apiKey,
       });
-      // Pass key as URL param — avoids browser subprotocol header mangling
-      params.set('token', key);
-      dgWs = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`);
+      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
@@ -2473,14 +2580,27 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   micBtn.addEventListener('click', () => {
     if (micBtn.classList.contains('unsupported')) return;
     resetIdleTimer();
+    initAudioCtx();  // re-unlock AudioContext after iOS audio interruption
     const provider = sttProviders[STT_PROVIDER];
     if (!provider) { flashError('STT provider unavailable'); return; }
-    if (isListening) {
-      voiceMode = false;
-      provider.stop();
-    } else {
+
+    // If already in an active mode but STT dropped (e.g. iOS notification interruption),
+    // restart STT without cycling mode — single tap recovery.
+    if (micMode !== 'off' && !isListening && !isStreaming) {
       voiceMode = true;
       provider.start();
+      return;
+    }
+
+    // Otherwise cycle: off → barge → speaker → off
+    const next = MIC_MODES[(MIC_MODES.indexOf(micMode) + 1) % MIC_MODES.length];
+    setMicMode(next);
+    if (next === 'off') {
+      voiceMode = false;
+      if (isListening) provider.stop();
+    } else {
+      voiceMode = true;
+      if (!isListening && !isStreaming) provider.start();
     }
   });
   // Mark unsupported if webspeech default and not available
