@@ -1168,7 +1168,10 @@ function authedUrl(url) {
 
 // ── Session ID (unique per submit) ──────────────────────────
 function makeSessionId() { return 'sam-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-let SESSION_ID = makeSessionId();
+// Persist SESSION_ID across background-reload cycles so agent-mcp session continuity is maintained.
+const _savedSessionId = sessionStorage.getItem('sam_session_id');
+let SESSION_ID = _savedSessionId || makeSessionId();
+sessionStorage.setItem('sam_session_id', SESSION_ID);
 document.getElementById('session-id-value').textContent = SESSION_ID.toUpperCase();
 
 // ── DOM refs ────────────────────────────────────────────────
@@ -2324,6 +2327,7 @@ function waitForDrainThenListen(wasKbd) {
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
+    setStatus('STANDBY', false);
     setTimeout(() => {
       nextPlayAt = 0;
       if (!isStreaming && !isListening) {
@@ -2570,7 +2574,6 @@ registerProcessor('pcm-capture', PcmCapture);`;
           source.connect(workletNode);
           usedWorklet = true;
         } catch (_) {}
-
         if (!usedWorklet) {
           // ScriptProcessorNode fallback for browsers without AudioWorklet support
           const spn = audioCtxDg.createScriptProcessor(4096, 1, 1);
@@ -2578,6 +2581,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
           source.connect(spn);
           spn.connect(audioCtxDg.destination); // required to keep spn alive (silent output)
           workletNode = spn;
+        }
+        // After all async setup, resume if iOS suspended the context.
+        // Called here (inside onopen callback) rather than before WS creation
+        // to avoid hanging the initial fresh-page-load gesture chain.
+        if (audioCtxDg && audioCtxDg.state === 'suspended') {
+          audioCtxDg.resume().catch(() => {});
         }
       };
 
@@ -2616,7 +2625,8 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (!msg.is_final) {
           if (transcript) onSttPartial(transcript);
         } else {
-          // is_final segment — accumulate into pendingFinal
+          // is_final segment — drop low-confidence results (bystander/ambient speech)
+          if (transcript && (alt.confidence ?? 1) < DG_EOT_THRESHOLD) return;
           if (transcript) pendingFinal += (pendingFinal ? ' ' : '') + transcript;
           if (msg.speech_final && pendingFinal) {
             // Debounce: reset timer on each speech_final so rapid mid-sentence
@@ -2716,12 +2726,69 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   }
 }
 
+// (iOS background/foreground recovery handled by mic-reconnect-overlay below)
+
 // ── Initial state ─────────────────────────────────────────────
 showIdle(true);
 showLoader(false);
 setStatus('STANDBY', false);
 resetIdleTimer();   // start idle countdown immediately on page load
 // Do NOT focus the text input on load — prevents iOS keyboard from popping up
+</script>
+
+<script>
+// ── iOS background recovery: auto-reload ─────────────────────
+// iOS kills the hardware mic when Safari backgrounds. In-page getUserMedia
+// recovery always returns a silent ghost track. Reload is the only reliable fix.
+// We save UI state to sessionStorage so it can be restored after reload.
+(function() {
+  const RELOAD_KEY = 'sam_reload_state';
+
+  // On page load: if we reloaded due to backgrounding, restore state + start STT.
+  const savedJson = sessionStorage.getItem(RELOAD_KEY);
+  if (savedJson) {
+    sessionStorage.removeItem(RELOAD_KEY);
+    try {
+      const saved = JSON.parse(savedJson);
+      // Delay to let page fully initialise, then restore state.
+      setTimeout(() => {
+        // Restore TTS provider — click the button until we reach the saved provider
+        if (saved.ttsProvider && ttsProviders[saved.ttsProvider] && saved.ttsProvider !== TTS_PROVIDER) {
+          const order = Object.keys(ttsProviders);
+          const steps = (order.indexOf(saved.ttsProvider) - order.indexOf(TTS_PROVIDER) + order.length) % order.length;
+          for (let i = 0; i < steps; i++) voiceProviderBtn.click();
+        }
+        // Restore fullVoiceMode
+        if (saved.fullVoiceMode && !fullVoiceMode) {
+          fullVoiceBtn.click();  // toggles fullVoiceMode + updates button
+        }
+        // Restore mic mode + start STT (extra delay so async TTS init settles first)
+        const provider = sttProviders[STT_PROVIDER];
+        if (provider && !micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
+          setMicMode(saved.micMode);
+          setTimeout(() => {
+            voiceMode = true;
+            provider.start();
+          }, 400);
+        }
+      }, 800);
+    } catch (_) {}
+  }
+
+  // On return from background with mic active: save state and reload.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    initAudioCtx();  // always resume TTS AudioContext
+    if (micMode === 'off' || isStreaming) return;
+    // Save current state so it's restored after reload.
+    sessionStorage.setItem(RELOAD_KEY, JSON.stringify({
+      micMode,
+      ttsProvider: TTS_PROVIDER,
+      fullVoiceMode,
+    }));
+    location.reload();
+  });
+})();
 </script>
 
 </body>
