@@ -2128,6 +2128,51 @@ async function submit(textOverride) {
     // Sentence boundary regex: end of sentence followed by space or end-of-string
     const SENT_RE = /[.!?][)"']?\s+|[.!?][)"']?$/;
 
+    // Strip <<topic>> (optional ": ") prefix from LLM responses (topic-routing schema).
+    // Accumulates tokens until the prefix pattern is fully matched or ruled out.
+    let _pfxBuf = '';       // pending chars while resolving prefix
+    let _pfxDone = false;   // true once prefix strip decision is settled for this turn
+    function processToken(raw) {
+      if (_pfxDone) { emitToken(raw); return; }
+      _pfxBuf += raw;
+      // Not a prefix at all — flush immediately
+      if (!_pfxBuf.startsWith('<')) {
+        _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = ''; return;
+      }
+      // Try to match complete <<topic>> with optional ": " separator
+      const m = _pfxBuf.match(/^<<[^>]*>>\s*(?::\s*)?/);
+      if (m && m[0].includes('>>')) {
+        // Matched — strip the prefix tag, emit whatever follows
+        _pfxDone = true;
+        const rest = _pfxBuf.slice(m[0].length);
+        _pfxBuf = '';
+        if (rest) emitToken(rest);
+        return;
+      }
+      // Safety valve: if buffer is long but no match yet, flush as-is
+      if (_pfxBuf.length > 80) {
+        _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = '';
+      }
+      // Otherwise keep accumulating
+    }
+    function emitToken(text) {
+      if (!text) return;
+      appendToPanel(text);
+      enqueueTokens(text);
+      if (fullVoiceMode) {
+        ttsBuf += text;
+        if (TTS_PROVIDER === 'xai') {
+          let m;
+          while ((m = SENT_RE.exec(ttsBuf)) !== null) {
+            const end = m.index + m[0].length;
+            const sentence = ttsClean(ttsBuf.slice(0, end));
+            ttsBuf = ttsBuf.slice(end);
+            if (sentence) speakWithSamaritan(sentence, wasKbd, false);
+          }
+        }
+      }
+    }
+
     function ttsClean(t) {
       return t
         .replace(/\[thinking[^\]]*\]/gi, '')   // [thinking…] markers
@@ -2169,25 +2214,7 @@ async function submit(textOverride) {
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'tok') {
-          const token = data.text || '';
-          if (token) {
-            appendToPanel(token);
-            enqueueTokens(token);
-            if (fullVoiceMode) {
-              ttsBuf += token;
-              // Sentence-level streaming only for xAI (streaming PCM).
-              // Inworld is a batch HTTP call — speak the full response at done.
-              if (TTS_PROVIDER === 'xai') {
-                let m;
-                while ((m = SENT_RE.exec(ttsBuf)) !== null) {
-                  const end = m.index + m[0].length;
-                  const sentence = ttsClean(ttsBuf.slice(0, end));
-                  ttsBuf = ttsBuf.slice(end);
-                  if (sentence) speakWithSamaritan(sentence, wasKbd, false);
-                }
-              }
-            }
-          }
+          processToken(data.text || '');
         } else if (data.type === 'flush') {
           // Intermediate checkpoint from agent-mcp (tool call in progress).
           // Intermediate checkpoint — tool round-trip done, final answer coming next.

@@ -406,6 +406,45 @@ If you switch LLM backends, audit this function for your model's output quirks. 
 
 ---
 
+### Topic-Prefix Stripping (`<<topic>>` Schema)
+
+agent-mcp can be configured to prefix LLM responses with a topic tag for context routing and memory optimization:
+
+```
+<<greeting>> Good afternoon, admin.
+<<memory-system>> Tiers redesign (in-history/short/long/off-site) active.
+```
+
+The frontend strips these tags before displaying or speaking the response. Because tokens arrive as a rapid word-by-word burst, the stripping logic uses a small streaming accumulator rather than a simple string replace:
+
+```js
+let _pfxBuf = '';       // accumulates tokens until prefix is resolved
+let _pfxDone = false;   // true once the decision is settled for this turn
+
+function processToken(raw) {
+  if (_pfxDone) { emitToken(raw); return; }
+  _pfxBuf += raw;
+  if (!_pfxBuf.startsWith('<')) {          // not a tag — flush immediately
+    _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = ''; return;
+  }
+  const m = _pfxBuf.match(/^<<[^>]*>>\s*(?::\s*)?/);
+  if (m && m[0].includes('>>')) {          // full tag matched — strip it
+    _pfxDone = true;
+    const rest = _pfxBuf.slice(m[0].length);
+    _pfxBuf = '';
+    if (rest) emitToken(rest);
+    return;
+  }
+  if (_pfxBuf.length > 80) {              // safety valve — flush as-is
+    _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = '';
+  }
+}
+```
+
+`emitToken()` feeds cleaned text to `appendToPanel()`, `enqueueTokens()`, and the TTS buffer. The optional `: ` separator after `>>` is handled by the regex (`(?::\s*)?`) since the LLM may or may not include it. Both `_pfxBuf` and `_pfxDone` are scoped to the submit closure, so they reset automatically each turn.
+
+---
+
 ### Session ID
 
 `SESSION_ID` is generated once on page load and reused for all turns in that browser session. It is sent as `client_id` in `POST /api/submit` and used in `GET /api/stream/{client_id}`.
