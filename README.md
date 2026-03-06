@@ -21,12 +21,12 @@
     A <em>Person of Interest</em>-themed web front-end for the agent-mcp AI service.
     Streams LLM responses word-by-word in the Samaritan UI style with full voice I/O — speak to Samaritan and hear it speak back.
     <br />
-    <a href="https://github.com/derezed88/kaliLinuxNWScripts"><strong>Explore the docs »</strong></a>
+    <a href="https://github.com/derezed88/samaritan-webfe"><strong>Explore the docs »</strong></a>
     <br />
     <br />
-    <a href="https://github.com/derezed88/kaliLinuxNWScripts/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
+    <a href="https://github.com/derezed88/samaritan-webfe/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
     &middot;
-    <a href="https://github.com/derezed88/kaliLinuxNWScripts/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
+    <a href="https://github.com/derezed88/samaritan-webfe/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
   </p>
 </div>
 
@@ -82,14 +82,14 @@
 
 `samaritan-webfe` is a Python web service that provides a browser-based AI chat client styled
 after the **Samaritan** interface from the CBS television series *Person of Interest* (2011–2016).
-It acts as a front-end proxy to the [agent-mcp](https://github.com/derezed88/kaliLinuxNWScripts)
+It acts as a front-end proxy to the [agent-mcp](https://github.com/derezed88/agent-mcp)
 AI agent service, streaming responses token-by-token in the show's distinctive word-flash animation style.
 
 **Key features:**
 
 - Samaritan visual style — white radial-gradient background, ALL-CAPS monospace font, red accent triangle, scanline overlay
 - Word-by-word token animation (one word flashes center-screen at a time); longer responses use a typewriter terminal panel
-- **Voice input** via the Web Speech API — auto-submits on recognition, mic restarts automatically after each response
+- **Voice input** via [Deepgram](https://deepgram.com) streaming STT (server-proxied WebSocket) with AudioWorklet PCM capture; falls back to the Web Speech API on browsers without AudioWorklet support — auto-submits on recognition, mic restarts automatically after each response
 - **Voice output (TTS)** via a pluggable provider architecture — switch between xAI Realtime and Inworld AI (and future providers) with a single tap at runtime
 - **Full-voice hands-free loop** — speak a prompt, hear the response, mic reopens automatically for the next turn; works continuously for multiple turns
 - Keyboard mode for typed input — reopens automatically after each response; typed prompts also get spoken responses in full-voice mode
@@ -119,7 +119,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 ### Prerequisites
 
 - Python 3.10+
-- [agent-mcp](https://github.com/derezed88/kaliLinuxNWScripts/tree/main/mymcp) running on the same host (default port 8767)
+- [agent-mcp](https://github.com/derezed88/agent-mcp) running on the same host (default port 8767)
 - `openssl` (for self-signed cert generation — usually pre-installed on Linux/macOS)
 - At least one voice provider API key (required for FULL VOICE mode — see [Configuration](#configuration))
 
@@ -127,8 +127,8 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 
 1. Clone the repo
    ```sh
-   git clone https://github.com/derezed88/kaliLinuxNWScripts.git
-   cd kaliLinuxNWScripts/samaritan-webfe
+   git clone https://github.com/derezed88/samaritan-webfe.git
+   cd samaritan-webfe
    ```
 
 2. Copy and edit the environment file
@@ -530,8 +530,9 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
 * [uvicorn](https://www.uvicorn.org/) — ASGI server (BSD License)
 * [httpx](https://www.python-httpx.org/) — async HTTP client (BSD License)
 * [python-dotenv](https://github.com/theskumar/python-dotenv) — `.env` file loader (BSD License)
+* [Deepgram](https://deepgram.com) — streaming speech-to-text via WebSocket (Nova-2 model); proxied server-side to keep the API key out of the browser
 * [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API) — browser-native
-  speech recognition (W3C specification, implemented by browser vendors)
+  speech recognition used as ScriptProcessorNode fallback for iOS Safari AudioWorklet gaps (W3C specification, implemented by browser vendors)
 * [Web Audio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API) — browser-native
   PCM audio scheduling for real-time TTS playback
 * [xAI Realtime API](https://docs.x.ai/docs/realtime) — WebSocket-based AI voice synthesis
@@ -547,15 +548,15 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
 
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
-[contributors-url]: https://github.com/derezed88/kaliLinuxNWScripts/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
-[forks-url]: https://github.com/derezed88/kaliLinuxNWScripts/network/members
-[stars-shield]: https://img.shields.io/github/stars/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
-[stars-url]: https://github.com/derezed88/kaliLinuxNWScripts/stargazers
-[issues-shield]: https://img.shields.io/github/issues/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
-[issues-url]: https://github.com/derezed88/kaliLinuxNWScripts/issues
-[license-shield]: https://img.shields.io/github/license/derezed88/kaliLinuxNWScripts.svg?style=for-the-badge
+[contributors-shield]: https://img.shields.io/github/contributors/derezed88/samaritan-webfe.svg?style=for-the-badge
+[contributors-url]: https://github.com/derezed88/samaritan-webfe/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/derezed88/samaritan-webfe.svg?style=for-the-badge
+[forks-url]: https://github.com/derezed88/samaritan-webfe/network/members
+[stars-shield]: https://img.shields.io/github/stars/derezed88/samaritan-webfe.svg?style=for-the-badge
+[stars-url]: https://github.com/derezed88/samaritan-webfe/stargazers
+[issues-shield]: https://img.shields.io/github/issues/derezed88/samaritan-webfe.svg?style=for-the-badge
+[issues-url]: https://github.com/derezed88/samaritan-webfe/issues
+[license-shield]: https://img.shields.io/github/license/derezed88/samaritan-webfe.svg?style=for-the-badge
 [license-url]: https://github.com/derezed88/samaritan-webfe/blob/main/LICENSE.md
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/markajimenez
