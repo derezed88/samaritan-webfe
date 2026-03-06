@@ -2258,7 +2258,8 @@ async function submit(textOverride) {
           showIdle(false);
           sendBtn.disabled = false;
           flashError(data.message || 'stream error');
-          if (fullVoiceMode) {
+          // Always recover mic if voice was active — don't leave UI in dead ERROR state
+          if (voiceMode || fullVoiceMode) {
             waitForDrainThenListen(wasKbd);
           } else {
             setStatus('ERROR', false);
@@ -2267,15 +2268,19 @@ async function submit(textOverride) {
       } catch (_) {}
     };
 
-    // Native onerror (connection drop)
+    // Native onerror (connection drop or auto-reconnect)
     evtSource.onerror = () => {
       if (streamDone) return;
-      if (evtSource.readyState === EventSource.CLOSED) {
-        isStreaming = false;
-        showLoader(false);
-        showIdle(false);
+      // CLOSED = permanent drop; CONNECTING = browser auto-reconnecting (treat same — abort)
+      evtSource.close(); activeEvtSource = null;
+      isStreaming = false;
+      showLoader(false);
+      showIdle(false);
+      sendBtn.disabled = false;
+      if (voiceMode || fullVoiceMode) {
+        waitForDrainThenListen(wasKbd);
+      } else {
         setStatus('STANDBY', false);
-        sendBtn.disabled = false;
       }
     };
 
