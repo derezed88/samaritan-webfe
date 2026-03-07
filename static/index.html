@@ -1168,7 +1168,7 @@ function authedUrl(url) {
 
 // ── Session ID (unique per submit) ──────────────────────────
 function makeSessionId() { return 'sam-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-// Persist SESSION_ID across background-reload cycles so agent-mcp session continuity is maintained.
+// Persist SESSION_ID across background-reload cycles so llmem-gw session continuity is maintained.
 const _savedSessionId = sessionStorage.getItem('sam_session_id');
 let SESSION_ID = _savedSessionId || makeSessionId();
 sessionStorage.setItem('sam_session_id', SESSION_ID);
@@ -1351,7 +1351,7 @@ function flashError(msg) {
 }
 
 // ── #command handler ─────────────────────────────────────────
-// Commands starting with # are intercepted client-side and never sent to agent-mcp.
+// Commands starting with # are intercepted client-side and never sent to llmem-gw.
 // Add new commands as cases in handleCommand().
 
 function cmdScreenMode(mode) {
@@ -1685,7 +1685,7 @@ function appendToPanel(text) {
 
 // ── xAI Realtime Voice (TTS) ─────────────────────────────────
 /// ── TTS Engine ───────────────────────────────────────────────
-// Hybrid approach: agent-mcp handles all reasoning/memory/tools (SSE flow),
+// Hybrid approach: llmem-gw handles all reasoning/memory/tools (SSE flow),
 // then the completed response text is sent to the TTS provider for audio.
 // Switch providers by changing TTS_PROVIDER in the config block above.
 //
@@ -2058,7 +2058,7 @@ async function submit(textOverride) {
   if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; isStreaming = false; }
   if (isStreaming) return;
 
-  // Intercept #commands — handle locally, never forward to agent-mcp
+  // Intercept #commands — handle locally, never forward to llmem-gw
   if (text.startsWith('#')) {
     textInput.value = '';
     if (kbdOpen) setTimeout(() => textInput.focus(), 50);
@@ -2099,7 +2099,7 @@ async function submit(textOverride) {
   }
 
   try {
-    // 1. Submit to agent-mcp via our proxy (retry once — Safari drops first post-load request)
+    // 1. Submit to llmem-gw via our proxy (retry once — Safari drops first post-load request)
     let submitResp;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -2219,7 +2219,7 @@ async function submit(textOverride) {
         if (data.type === 'tok') {
           processToken(data.text || '');
         } else if (data.type === 'flush') {
-          // Intermediate checkpoint from agent-mcp (tool call in progress).
+          // Intermediate checkpoint from llmem-gw (tool call in progress).
           // Intermediate checkpoint — tool round-trip done, final answer coming next.
           // Display tokens, reset TTS buffer (pre-flush content = markers, not speech).
           const token = data.text || '';

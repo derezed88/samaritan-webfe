@@ -1,26 +1,29 @@
 """
 Samaritan AI Web Client
-A Person of Interest-themed web interface for the agent-mcp service.
+A Person of Interest-themed web interface for the llmem-gw service.
 Streams responses word-by-word in the Samaritan UI style.
 
 Auth: Set SAMARITAN_API_KEY in .env (or environment).
-      ALL routes (including /) require HTTP Basic Auth when this is set.
-      Password = SAMARITAN_API_KEY, username is ignored.
-      The browser caches the credential so the prompt only appears once.
-      The same key is forwarded to agent-mcp if AGENT_MCP_API_KEY is also set.
+      GET / redirects to /login if not authenticated.
+      POST /login validates the password and sets an HttpOnly session cookie.
+      Cookies persist in iOS PWA (WKWebView) across launches.
+      API routes accept: Bearer token header, ?token= query param, or session cookie.
+      The same key is forwarded to llmem-gw if LLMEM_GW_API_KEY is also set.
 """
 
-import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import httpx
 import websockets as ws_lib
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import asyncio
 import uvicorn
@@ -30,9 +33,9 @@ load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-AGENT_MCP_URL     = os.getenv("AGENT_MCP_URL", "http://localhost:8767")
+LLMEM_GW_URL     = os.getenv("LLMEM_GW_URL", "http://localhost:8767")
 SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
-AGENT_MCP_API_KEY = os.getenv("AGENT_MCP_API_KEY", "")   # forwarded to agent-mcp
+LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 
 app = FastAPI(title="Samaritan Interface")
 
@@ -43,9 +46,28 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
+_COOKIE_NAME = "sam_session"
+_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+
+
+def _make_cookie_value() -> str:
+    """Sign a timestamp with HMAC-SHA256 so we can verify it later."""
+    ts = str(int(time.time()))
+    sig = hmac.new(SAMARITAN_API_KEY.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def _verify_cookie(value: str) -> bool:
+    ts, _, sig = value.partition(".")
+    if not ts or not sig:
+        return False
+    expected = hmac.new(SAMARITAN_API_KEY.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
 def _check_auth(request: Request) -> bool:
     """Return True if auth passes (or SAMARITAN_API_KEY not set).
-    Accepts: Bearer token header, Basic Auth header, or ?token= query param.
+    Accepts: Bearer token header, ?token= query param, or session cookie.
     """
     if not SAMARITAN_API_KEY:
         return True
@@ -56,42 +78,112 @@ def _check_auth(request: Request) -> bool:
     # ?token= query param (for EventSource which can't set headers)
     if request.query_params.get("token") == SAMARITAN_API_KEY:
         return True
-    # HTTP Basic Auth
-    if auth.startswith("Basic "):
-        try:
-            decoded = base64.b64decode(auth[6:]).decode()
-            _, _, password = decoded.partition(":")
-            if password == SAMARITAN_API_KEY:
-                return True
-        except Exception:
-            pass
+    # Session cookie
+    cookie = request.cookies.get(_COOKIE_NAME, "")
+    if cookie:
+        if _verify_cookie(cookie):
+            return True
+        logger.warning("Cookie present but invalid")
     return False
 
 
 def _auth_error():
-    """Return 401 with WWW-Authenticate to trigger browser credential dialog."""
-    return JSONResponse(
-        {"error": "Unauthorized"},
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Samaritan"'},
-    )
+    """Return 401 JSON for API routes that can't redirect."""
+    return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
 
 def _agent_headers() -> dict:
-    """Headers to forward to agent-mcp, including its bearer token if set."""
+    """Headers to forward to llmem-gw, including its bearer token if set."""
     h = {}
-    if AGENT_MCP_API_KEY:
-        h["Authorization"] = f"Bearer {AGENT_MCP_API_KEY}"
+    if LLMEM_GW_API_KEY:
+        h["Authorization"] = f"Bearer {LLMEM_GW_API_KEY}"
     return h
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAMARITAN — Access Required</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #fff;
+    color: #c00;
+    font-family: 'Courier New', Courier, monospace;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .box {
+    border: 2px solid #c00;
+    padding: 2rem 2.5rem;
+    width: min(340px, 90vw);
+    text-align: center;
+  }
+  h1 { font-size: 1.1rem; letter-spacing: 0.2em; margin-bottom: 1.5rem; }
+  input[type=password] {
+    width: 100%; padding: 0.6rem 0.8rem;
+    border: 1px solid #c00; background: #fff; color: #c00;
+    font-family: inherit; font-size: 1rem;
+    outline: none; margin-bottom: 1rem;
+  }
+  input[type=password]::placeholder { color: #f99; }
+  button {
+    width: 100%; padding: 0.6rem;
+    background: #c00; color: #fff; border: none;
+    font-family: inherit; font-size: 1rem; letter-spacing: 0.1em;
+    cursor: pointer;
+  }
+  button:active { background: #900; }
+  .err { color: #900; font-size: 0.85rem; margin-top: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>SAMARITAN<br>ACCESS REQUIRED</h1>
+  <form method="post" action="/login">
+    <input type="password" name="password" placeholder="access key" autofocus autocomplete="current-password">
+    <button type="submit">AUTHENTICATE</button>
+    {error}
+  </form>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return HTMLResponse(_LOGIN_HTML.replace("{error}", ""))
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    password = form.get("password", "")
+    if not SAMARITAN_API_KEY or password == SAMARITAN_API_KEY:
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie(
+            _COOKIE_NAME,
+            _make_cookie_value(),
+            max_age=_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+    return HTMLResponse(
+        _LOGIN_HTML.replace("{error}", '<p class="err">ACCESS DENIED</p>'),
+        status_code=401,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve the UI — requires auth so the page is never shown to strangers."""
     if not _check_auth(request):
-        return _auth_error()
+        return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "index.html"
     content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
     return HTMLResponse(content=content, headers={
@@ -102,7 +194,7 @@ async def index(request: Request):
 
 @app.post("/api/submit")
 async def submit(request: Request):
-    """Submit a message to agent-mcp."""
+    """Submit a message to llmem-gw."""
     if not _check_auth(request):
         return _auth_error()
 
@@ -113,7 +205,7 @@ async def submit(request: Request):
     payload = {"client_id": client_id, "text": text, "wait": False}
 
     async with httpx.AsyncClient(headers=_agent_headers(), timeout=10) as http:
-        resp = await http.post(f"{AGENT_MCP_URL}/api/v1/submit", json=payload)
+        resp = await http.post(f"{LLMEM_GW_URL}/api/v1/submit", json=payload)
         resp.raise_for_status()
 
     return {"status": "submitted", "client_id": client_id}
@@ -121,12 +213,12 @@ async def submit(request: Request):
 
 @app.get("/api/stream/{client_id}")
 async def stream_proxy(client_id: str, request: Request):
-    """Proxy the SSE stream from agent-mcp to the browser."""
+    """Proxy the SSE stream from llmem-gw to the browser."""
     if not _check_auth(request):
         return _auth_error()
 
     async def event_generator():
-        stream_url = f"{AGENT_MCP_URL}/api/v1/stream/{client_id}"
+        stream_url = f"{LLMEM_GW_URL}/api/v1/stream/{client_id}"
         try:
             async with httpx.AsyncClient(
                 headers={**_agent_headers(), "Accept": "text/event-stream"},
@@ -391,12 +483,12 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
 
 @app.get("/api/health")
 async def health(request: Request):
-    """Check agent-mcp health — also validates the caller's token."""
+    """Check llmem-gw health — also validates the caller's token."""
     if not _check_auth(request):
         return _auth_error()
     try:
         async with httpx.AsyncClient(headers=_agent_headers(), timeout=5) as http:
-            resp = await http.get(f"{AGENT_MCP_URL}/api/v1/health")
+            resp = await http.get(f"{LLMEM_GW_URL}/api/v1/health")
             return resp.json()
     except Exception as e:
         return {"status": "error", "message": str(e)}

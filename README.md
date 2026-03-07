@@ -18,7 +18,7 @@
 <h3 align="center">samaritan-webfe</h3>
 
   <p align="center">
-    A <em>Person of Interest</em>-themed web front-end for the agent-mcp AI service.
+    A <em>Person of Interest</em>-themed web front-end for the llmem-gw AI service.
     Streams LLM responses word-by-word in the Samaritan UI style with full voice I/O — speak to Samaritan and hear it speak back.
     <br />
     <a href="https://github.com/derezed88/samaritan-webfe"><strong>Explore the docs »</strong></a>
@@ -82,7 +82,7 @@
 
 `samaritan-webfe` is a Python web service that provides a browser-based AI chat client styled
 after the **Samaritan** interface from the CBS television series *Person of Interest* (2011–2016).
-It acts as a front-end proxy to the [agent-mcp](https://github.com/derezed88/agent-mcp)
+It acts as a front-end proxy to the [llmem-gw](https://github.com/derezed88/llmem-gw)
 AI agent service, streaming responses token-by-token in the show's distinctive word-flash animation style.
 
 **Key features:**
@@ -119,7 +119,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 ### Prerequisites
 
 - Python 3.10+
-- [agent-mcp](https://github.com/derezed88/agent-mcp) running on the same host (default port 8767)
+- [llmem-gw](https://github.com/derezed88/llmem-gw) running on the same host (default port 8767)
 - `openssl` (for self-signed cert generation — usually pre-installed on Linux/macOS)
 - At least one voice provider API key (required for FULL VOICE mode — see [Configuration](#configuration))
 
@@ -203,8 +203,8 @@ cp .env.example .env
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SAMARITAN_API_KEY` | Yes | Access password for the web UI (HTTP Basic Auth). Set to any strong secret string. |
-| `AGENT_MCP_API_KEY` | No | Bearer token forwarded to agent-mcp. Leave blank if agent-mcp has no key set. |
-| `AGENT_MCP_URL` | No | Base URL of the agent-mcp service. Default: `http://localhost:8767`. |
+| `LLMEM_GW_API_KEY` | No | Bearer token forwarded to llmem-gw. Leave blank if llmem-gw has no key set. |
+| `LLMEM_GW_URL` | No | Base URL of the llmem-gw service. Default: `http://localhost:8767`. |
 | `XAI_API_KEY` | For xAI voice | xAI API key. Used server-side only to mint ephemeral WebSocket tokens — never sent to the browser. Get one at [console.x.ai](https://console.x.ai/). |
 | `INWORLD_API_KEY` | For Inworld voice | Inworld API key (Base64-encoded credential from the Inworld Portal under Settings → API Keys). Used server-side only — never sent to the browser. |
 
@@ -276,7 +276,7 @@ the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
 - **HTTP Basic Auth** is enforced on every route including `/`. Unauthorized clients never see the page.
 - The `SAMARITAN_API_KEY` is the password. Username is ignored.
 - The browser caches credentials per-session (cleared on tab close).
-- `AGENT_MCP_API_KEY` is a separate server-side secret forwarded to agent-mcp — it is never exposed to the browser.
+- `LLMEM_GW_API_KEY` is a separate server-side secret forwarded to llmem-gw — it is never exposed to the browser.
 - The self-signed cert on port 8800 will trigger a browser warning on first visit; accept it once. It is valid for 10 years for the configured local IP.
 - When using the Pinggy tunnel, the obscure URL provides minimal protection on its own — always set a strong `SAMARITAN_API_KEY`.
 
@@ -287,11 +287,11 @@ the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
 <!-- DEVELOPER NOTES -->
 ## Developer Notes: Adapting This Frontend
 
-Developers should understand why I created this front end: because I wanted to combine the memory capabilities of agent-mcp, allowing me to choose any mainstream or locally hosted LLM with the voice providers of my choice.
+Developers should understand why I created this front end: because I wanted to combine the memory capabilities of llmem-gw, allowing me to choose any mainstream or locally hosted LLM with the voice providers of my choice.
 
 As an example, let's say you like the Grok app's ability to handle text and voice in the same chat. What's really going on in the backend is that when in text mode, Grok is using models that have a much bigger context window than when in live voice mode — in live voice mode, as of this writing the Voice Agent is used and that is backed by a model with a much smaller 32k-token context window. There are good reasons for that, and the biggest reason I can see is optimizing for voice quality: your voice and the model handling the voice are the same, or at least together, reducing API turns.
 
-This project is therefore a workaround, with some performance hit and possible cost implications. If you want to send voice to e.g. `grok-4-1-fast-reasoning` (or any other model that agent-mcp supports — and that includes all mainstream models and any OpenAI-compatible or llama/ollama-hosted model), then you need to process STT (your voice speech-to-text) and TTS (the model's text response to voice), with the LLM of your choice in the middle. I first started with simple Web Speech API for input and text response only. That wasn't good enough for me, so I went with Deepgram for STT and xAI and Inworld for TTS. I don't have enough resources to locally host models to do it on my own, so cloud APIs it is for me. Of course if you want to go keyboard and text only, that works too. There is also a `#screen_mode <dark|light>` command for your ambient light matching needs.
+This project is therefore a workaround, with some performance hit and possible cost implications. If you want to send voice to e.g. `grok-4-1-fast-reasoning` (or any other model that llmem-gw supports — and that includes all mainstream models and any OpenAI-compatible or llama/ollama-hosted model), then you need to process STT (your voice speech-to-text) and TTS (the model's text response to voice), with the LLM of your choice in the middle. I first started with simple Web Speech API for input and text response only. That wasn't good enough for me, so I went with Deepgram for STT and xAI and Inworld for TTS. I don't have enough resources to locally host models to do it on my own, so cloud APIs it is for me. Of course if you want to go keyboard and text only, that works too. There is also a `#screen_mode <dark|light>` command for your ambient light matching needs.
 
 **The performance implication:** API turns for the LLM (plus possible tool calls), for voice input, and for voice response. I am seeing about 8–10 seconds for voice input to voice response — and for the enhanced memory, I'm okay with that.
 
@@ -322,7 +322,7 @@ The following services are used and where they are coupled:
 
 | Service | Where coupled | How to swap |
 |---------|--------------|-------------|
-| **agent-mcp** (LLM backend) | `samaritan.py` routes + `index.html` SSE parser | See [Swapping the LLM Backend](#swapping-the-llm-backend) below |
+| **llmem-gw** (LLM backend) | `samaritan.py` routes + `index.html` SSE parser | See [Swapping the LLM Backend](#swapping-the-llm-backend) below |
 | **Deepgram** (STT) | `samaritan.py` WebSocket proxy (`/api/stt-proxy`), `index.html` AudioWorklet | Replace proxy + browser WS client |
 | **xAI Realtime** (TTS) | `samaritan.py` `/api/voice-token`, `index.html` `ttsProviders.xai` | Implement new provider object + server route |
 | **Inworld AI** (TTS) | `samaritan.py` `/api/tts/inworld`, `index.html` `ttsProviders.inworld` | Implement new provider object + server route |
@@ -340,18 +340,18 @@ The frontend and backend share an internal SSE contract. As long as `samaritan.p
 | `done` | `{"type":"done"}` | Turn complete — trigger TTS and re-open mic |
 | `error` | `{"type":"error","text":"..."}` | Stream error |
 
-To replace agent-mcp with a different LLM (OpenAI, Anthropic, Ollama, etc.), rewrite only `samaritan.py`:
+To replace llmem-gw with a different LLM (OpenAI, Anthropic, Ollama, etc.), rewrite only `samaritan.py`:
 
 1. **Submit route** (`POST /api/submit`) — translate `{text, client_id}` into your backend's request format and start a streaming response.
 2. **Stream route** (`GET /api/stream/{client_id}`) — parse your backend's streaming format (OpenAI JSON lines, Anthropic delta events, Ollama chunks, etc.) and emit `tok` / `flush` / `done` / `error` SSE events to the browser.
-3. **Session management** — agent-mcp correlates a submitted request to its SSE stream via `client_id`. If your backend streams directly in the POST response body, you can simplify or eliminate the separate stream route; you would also need to update the frontend's `submit()` function (around the `EventSource` setup) to match.
+3. **Session management** — llmem-gw correlates a submitted request to its SSE stream via `client_id`. If your backend streams directly in the POST response body, you can simplify or eliminate the separate stream route; you would also need to update the frontend's `submit()` function (around the `EventSource` setup) to match.
 4. **Health check** (`GET /api/health`) — point at your backend's health endpoint.
 
 **Effort estimates:**
 
 | Backend | Estimated effort | Notes |
 |---------|-----------------|-------|
-| Custom backend with agent-mcp-compatible protocol | ~1–2 h | Just update `AGENT_MCP_URL` and endpoint paths |
+| Custom backend with llmem-gw-compatible protocol | ~1–2 h | Just update `LLMEM_GW_URL` and endpoint paths |
 | OpenAI / Anthropic streaming API | ~4–6 h | Rewrite `event_generator()` in `samaritan.py`; frontend unchanged |
 | Ollama or other non-SSE backends | ~6–8 h | Same as above plus handle direct-stream-in-response pattern |
 
@@ -396,9 +396,9 @@ If you want to use the browser's native Web Speech API instead (no server proxy 
 
 ### TTS Response Cleaning (`ttsClean()`)
 
-Before sending LLM output to TTS, `ttsClean()` in `index.html` strips formatting artifacts. The current strip list is tuned for Claude/agent-mcp output:
+Before sending LLM output to TTS, `ttsClean()` in `index.html` strips formatting artifacts. The current strip list is tuned for Claude/llmem-gw output:
 
-- `[thinking…]` and `[tool ▶/◀]` markers (agent-mcp specific)
+- `[thinking…]` and `[tool ▶/◀]` markers (llmem-gw specific)
 - Markdown (`#`, `*`, `_`, `` ` ``, `---`, `~~`, links, tables, bullets)
 - Smart quotes, em/en dashes, ellipsis, HTML entities, non-ASCII characters
 
@@ -408,7 +408,7 @@ If you switch LLM backends, audit this function for your model's output quirks. 
 
 ### Topic-Prefix Stripping (`<<topic>>` Schema)
 
-agent-mcp can be configured to prefix LLM responses with a topic tag for context routing and memory optimization:
+llmem-gw can be configured to prefix LLM responses with a topic tag for context routing and memory optimization:
 
 ```
 <<greeting>> Good afternoon, admin.
@@ -449,7 +449,7 @@ function processToken(raw) {
 
 `SESSION_ID` is generated once on page load and reused for all turns in that browser session. It is sent as `client_id` in `POST /api/submit` and used in `GET /api/stream/{client_id}`.
 
-**Do not rotate it per submit.** agent-mcp uses it to maintain conversation memory across turns — a new `client_id` starts a fresh session and exhausts the session limit. If your backend manages conversation context differently (e.g. you build and send the full message history client-side), you can remove this correlation entirely.
+**Do not rotate it per submit.** llmem-gw uses it to maintain conversation memory across turns — a new `client_id` starts a fresh session and exhausts the session limit. If your backend manages conversation context differently (e.g. you build and send the full message history client-side), you can remove this correlation entirely.
 
 ---
 
