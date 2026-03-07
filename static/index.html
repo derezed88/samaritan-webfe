@@ -1294,15 +1294,9 @@ const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
 // ── STT config ───────────────────────────────────────────────
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
-const DG_MODEL                = 'nova-3';           // nova-3 | nova-2 | enhanced
+const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
-const DG_SAMPLE_RATE          = 16000;              // Hz — must match AudioContext sampleRate
-const DG_EOT_TIMEOUT_MS       = 800;                // ms silence → endpointing/speech_final (min ~300ms)
-const DG_UTTERANCE_END_MS     = 1000;               // ms silence → UtteranceEnd event (min 1000ms per Deepgram)
-const DG_EOT_THRESHOLD        = 0.95;               // endpointing confidence threshold (0–1)
-const DG_LANGUAGE             = 'en-US';
-const DG_INTERIM_RESULTS      = true;               // show partial transcripts in preview
-const DG_PUNCTUATE            = true;
+const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
 const STT_CONFIRM_BEEP        = true;               // audible beep on STT prompt received
 const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
@@ -2466,7 +2460,7 @@ const _ws = (() => {
   const rec = new SpeechRecognition();
   rec.continuous      = false;
   rec.interimResults  = true;
-  rec.lang            = DG_LANGUAGE;
+  rec.lang            = 'en-US';
   rec.maxAlternatives = 1;
 
   let pendingTranscript = '';
@@ -2548,12 +2542,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
         model:              DG_MODEL,
         encoding:           DG_ENCODING,
         sample_rate:        actualRate,
-        language:           DG_LANGUAGE,
-        interim_results:    DG_INTERIM_RESULTS,
-        punctuate:          DG_PUNCTUATE,
-        endpointing:        DG_EOT_TIMEOUT_MS,
-        utterance_end_ms:   DG_UTTERANCE_END_MS,
-        vad_events:         true,
+        eot_threshold:      DG_EOT_THRESHOLD,
         token:              _apiKey,
       });
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2590,50 +2579,41 @@ registerProcessor('pcm-capture', PcmCapture);`;
         }
       };
 
+      // Flux requires ~80ms chunks for optimal performance.
+      // Buffer incoming PCM and flush once we have enough samples.
+      let _pcmBuf = [];
+      let _pcmBufLen = 0;
       function sendPcm(f32) {
         if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
-        const i16 = new Int16Array(f32.length);
-        for (let i = 0; i < f32.length; i++)
-          i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
+        _pcmBuf.push(f32);
+        _pcmBufLen += f32.length;
+        const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08); // 80ms
+        if (_pcmBufLen < targetSamples) return;
+        // Flatten buffered chunks
+        const merged = new Float32Array(_pcmBufLen);
+        let offset = 0;
+        for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
+        _pcmBuf = [];
+        _pcmBufLen = 0;
+        const i16 = new Int16Array(merged.length);
+        for (let i = 0; i < merged.length; i++)
+          i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
         dgWs.send(i16.buffer);
-      }
-
-      let pendingFinal = '';  // accumulate is_final segments until UtteranceEnd
-      let speechFinalTimer = null;  // debounce timer for speech_final bursts
-      const SPEECH_FINAL_DEBOUNCE_MS = 700;  // wait this long after last speech_final before submitting
-
-      function flushPendingFinal() {
-        if (speechFinalTimer) { clearTimeout(speechFinalTimer); speechFinalTimer = null; }
-        const text = pendingFinal.trim();
-        pendingFinal = '';
-        if (text) { onSttPartial(text); onSttFinal(text); }
       }
 
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
-        if (msg.type === 'Metadata') return;
-        if (msg.type === 'UtteranceEnd') {
-          // utterance_end_ms fired — submit whatever we've accumulated
-          flushPendingFinal();
-          return;
-        }
-        if (msg.type !== 'Results') return;
-        const alt = msg.channel?.alternatives?.[0];
-        if (!alt) return;
-        const transcript = (alt.transcript || '').trim();
-        if (!msg.is_final) {
+        if (msg.type !== 'TurnInfo') return;
+        const transcript = (msg.transcript || '').trim();
+        if (msg.event === 'StartOfTurn') {
+          // User started speaking — barge-in if in barge mode
+          onSttPartial('');  // clear preview
+          if (micMode === 'barge' && isSpeaking) stopAllAudio();
+        } else if (msg.event === 'Update') {
           if (transcript) onSttPartial(transcript);
-        } else {
-          // is_final segment — drop low-confidence results (bystander/ambient speech)
-          if (transcript && (alt.confidence ?? 1) < DG_EOT_THRESHOLD) return;
-          if (transcript) pendingFinal += (pendingFinal ? ' ' : '') + transcript;
-          if (msg.speech_final && pendingFinal) {
-            // Debounce: reset timer on each speech_final so rapid mid-sentence
-            // pauses don't fire separate submits. UtteranceEnd will flush too.
-            if (speechFinalTimer) clearTimeout(speechFinalTimer);
-            speechFinalTimer = setTimeout(flushPendingFinal, SPEECH_FINAL_DEBOUNCE_MS);
-          }
+        } else if (msg.event === 'EndOfTurn') {
+          if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
         }
       };
       dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); };
@@ -2650,6 +2630,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
 
   function stopDg() {
     active = false;
+    _pcmBuf = []; _pcmBufLen = 0;
     if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
     if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (audioCtxDg) { try { audioCtxDg.close(); }  catch (_) {} audioCtxDg = null; }

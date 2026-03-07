@@ -33,6 +33,7 @@ load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
 # ── Config ────────────────────────────────────────────────────────────────────
+STT_DEBUG        = os.getenv("STT_DEBUG", "").lower() in ("1", "true", "yes")
 LLMEM_GW_URL     = os.getenv("LLMEM_GW_URL", "http://localhost:8767")
 SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
@@ -420,15 +421,18 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
     params = dict(websocket.query_params)
     params.pop("token", None)
     qs = "&".join(f"{k}={v}" for k, v in params.items())
-    dg_url = f"wss://api.deepgram.com/v1/listen?{qs}"
+    dg_version = "v2" if params.get("model", "").startswith("flux") else "v1"
+    dg_url = f"wss://api.deepgram.com/{dg_version}/listen?{qs}"
 
     await websocket.accept()
 
+    logger.info("DG connect: %s", dg_url)
     try:
         async with ws_lib.connect(
             dg_url,
             additional_headers={"Authorization": f"Token {dg_key}"},
         ) as dg_ws:
+            logger.info("DG handshake OK")
 
             async def browser_to_dg():
                 try:
@@ -454,7 +458,16 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
                             await websocket.send_text(message)
                             try:
                                 dg_msg = json.loads(message)
-                                if dg_msg.get("is_final"):
+                                msg_type = dg_msg.get("type", "")
+                                if msg_type == "TurnInfo":
+                                    transcript = (dg_msg.get("transcript") or "").strip()
+                                    event = dg_msg.get("event", "")
+                                    if event == "Update":
+                                        if STT_DEBUG and transcript:
+                                            logger.info("STT [Update]: %s", transcript)
+                                    else:
+                                        logger.info("STT [%s]: %s", event, transcript)
+                                elif dg_msg.get("is_final"):
                                     transcript = (
                                         dg_msg.get("channel", {})
                                         .get("alternatives", [{}])[0]
@@ -462,10 +475,12 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
                                     )
                                     if transcript:
                                         logger.info("STT: %s", transcript)
+                                elif msg_type not in ("Metadata",):
+                                    logger.info("DG msg: %s", message[:200])
                             except Exception:
                                 pass
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.info("DG stream closed: %s", e)
                 finally:
                     try:
                         await websocket.close()
@@ -475,6 +490,7 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
             await asyncio.gather(browser_to_dg(), dg_to_browser())
 
     except Exception as e:
+        logger.info("DG connect error: %s", e)
         try:
             await websocket.close(code=1011, reason=str(e)[:100])
         except Exception:
