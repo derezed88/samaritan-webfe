@@ -845,6 +845,16 @@
       border-color: rgba(255,255,255,0.5);
       color: var(--bar-text);
     }
+    #voice-provider-btn.xai-persistent {
+      background: #f0a500;
+      border-color: #f0a500;
+      color: #000;
+    }
+    #voice-provider-btn.xai-persistent:hover {
+      background: #d49200;
+      border-color: #d49200;
+      color: #000;
+    }
 
     /* ─── Full-voice toggle button ─── */
     #full-voice-btn {
@@ -1285,10 +1295,14 @@ const THEME_TRANSITION_MS     = 3000;  // ms for dark/light crossfade (must matc
 const LONG_RESPONSE_THRESHOLD = 10;    // words — responses >= this use terminal display instead of word flash
 const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewriter effect
 const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
-let   TTS_PROVIDER            = 'inworld';              // active TTS provider: 'xai' | 'inworld'
+let   TTS_PROVIDER            = 'inworld';              // active TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
 const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
 const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
-const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
+const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en'; // Deepgram Aura TTS model
+// Model to auto-switch to when xai-persistent TTS is selected, and back when leaving.
+// Set to null to disable auto-switch (use !model manually instead).
+const XAI_PERSISTENT_MODEL    = 'samaritan-voice-fast';  // llmem-gw model key for persistent mode
+const INWORLD_MODEL           = 'inworld-tts-1.5-mini'; // Inworld model ID
 const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
 const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
@@ -1302,7 +1316,7 @@ const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4,
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Speaker-mode ambient noise guards (applied only when micMode === 'speaker')
-const STT_SPEAKER_COOLDOWN_MS    = 2000;            // ms after TTS ends before accepting STT finals
+const STT_SPEAKER_COOLDOWN_MS    = 3500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
 const STT_READY_CHIME_FREQ_LO    = 523;             // low note Hz  (C5)
@@ -1741,6 +1755,80 @@ function stopAllAudio() {
 // ── Provider registry ─────────────────────────────────────────
 const ttsProviders = {
 
+  // ── Deepgram Aura TTS (HTTP streaming PCM) ──────────────────
+  // Server proxies to api.deepgram.com/v1/speak — returns raw PCM16-LE at 24kHz.
+  // Each chunk of bytes is fed directly to pcmBytesToAudioBuf and scheduled
+  // for gapless playback as it arrives (same pattern as Inworld).
+  deepgram: {
+    _abortCtrl: null,
+
+    speak(text, _clientSecret, onDone, onError) {
+      this._abortCtrl = new AbortController();
+      const signal = this._abortCtrl.signal;
+
+      (async () => {
+        let resp;
+        try {
+          resp = await fetch('/api/tts/deepgram', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ text, model: DEEPGRAM_TTS_MODEL }),
+            signal,
+          });
+        } catch (e) {
+          if (e.name !== 'AbortError') onError('deepgram: ' + e.message.slice(0, 30));
+          return;
+        }
+        if (!resp.ok) { onError('deepgram http ' + resp.status); return; }
+
+        // Read streaming PCM16-LE chunks — each chunk is raw samples at 24kHz.
+        // Feed directly to pcmBytesToAudioBuf (same helper used by xAI and Inworld).
+        const reader = resp.body.getReader();
+        let lastChunkEndMs = 0;
+        let gotAny = false;
+        let errored = false;
+        // PCM16 must be fed in even byte counts (2 bytes per sample).
+        // Buffer a trailing odd byte across reads.
+        let leftover = null;
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            let bytes = value;
+            // Prepend any leftover byte from previous chunk
+            if (leftover) {
+              const merged = new Uint8Array(leftover.length + bytes.length);
+              merged.set(leftover);
+              merged.set(bytes, leftover.length);
+              bytes = merged;
+              leftover = null;
+            }
+            // If odd number of bytes, save the last byte for next iteration
+            if (bytes.length % 2 !== 0) {
+              leftover = bytes.subarray(bytes.length - 1);
+              bytes = bytes.subarray(0, bytes.length - 1);
+            }
+            if (bytes.length >= 2) {
+              lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(bytes, 24000));
+              gotAny = true;
+            }
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') { onError('deepgram stream: ' + e.message.slice(0, 30)); errored = true; }
+        }
+
+        if (errored || !gotAny) { if (!errored) onError('deepgram: no audio'); return; }
+        setTimeout(onDone, lastChunkEndMs + 150);
+      })();
+    },
+
+    stop() {
+      if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
+      stopAllAudio();
+    },
+  },
+
   // ── xAI Realtime API ───────────────────────────────────────
   xai: {
     _ws: null,
@@ -1931,22 +2019,256 @@ const ttsProviders = {
     },
   },
 
+  // ── xAI Realtime API — persistent WebSocket session ────────
+  // Same as 'xai' but keeps the WebSocket open across turns to eliminate
+  // per-turn handshake overhead (~100-200ms). Token refresh is handled
+  // automatically ~30s before expiry. Pairs with samaritan-voice-fast model.
+  'xai-persistent': {
+    _ws:          null,   // live WebSocket (kept open across turns)
+    _tokenExpiry: 0,      // epoch ms when current token expires
+    _refreshTimer: null,  // setTimeout handle for proactive refresh
+    _pendingQueue: [],    // sentences queued while WS is connecting
+    _connecting:  false,  // true while WS handshake in progress
+    _currentDone: null,   // onDone callback for the active sentence
+    _currentError: null,  // onError callback for the active sentence
+
+    // ── Token / connection management ──────────────────────────
+    async _fetchToken() {
+      try {
+        const r = await fetch('/api/voice-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ expires_in: 120 }),
+        });
+        if (!r.ok) return null;
+        const j = await r.json();
+        const secret = j.client_secret?.value || j.value || j.token;
+        if (!secret) return null;
+        this._tokenExpiry = Date.now() + 90_000; // treat as ~90s to refresh before 120s expiry
+        return secret;
+      } catch (_) { return null; }
+    },
+
+    _scheduleRefresh() {
+      if (this._refreshTimer) clearTimeout(this._refreshTimer);
+      const msLeft = this._tokenExpiry - Date.now();
+      const refreshIn = Math.max(0, msLeft - 30_000); // refresh 30s before expiry
+      this._refreshTimer = setTimeout(() => this._reconnect(), refreshIn);
+    },
+
+    async _reconnect() {
+      // Gracefully replace the WS with a fresh token without dropping pending audio.
+      const secret = await this._fetchToken();
+      if (!secret) return; // will naturally close and fall back to per-turn xai
+      const old = this._ws;
+      this._open(secret, () => {
+        if (old && old.readyState < 2) old.close(1000, 'token-refresh');
+      });
+    },
+
+    _open(secret, onReady) {
+      this._connecting = true;
+      const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
+      let ws;
+      try {
+        ws = new WebSocket('wss://api.x.ai/v1/realtime',
+                           [`xai-client-secret.${secret}`]);
+      } catch (e) {
+        this._connecting = false;
+        this._drainQueue('ws open failed: ' + e.message.slice(0, 40));
+        return;
+      }
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            modalities: ['audio'],
+            voice: voiceName,
+            output_audio_format: 'audio/pcm',
+            turn_detection: null,
+          },
+        }));
+        this._ws = ws;
+        this._connecting = false;
+        this._scheduleRefresh();
+        if (onReady) onReady();
+        this._drainQueue(null);
+      };
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch (_) { return; }
+        switch (msg.type) {
+          case 'response.output_audio.delta':
+            if (msg.delta) {
+              try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
+              catch (e) { if (this._currentError) this._currentError('pcm: ' + e.message.slice(0, 25)); }
+            }
+            break;
+          case 'response.done': {
+            const cb = this._currentDone;
+            this._currentDone = null; this._currentError = null;
+            if (cb) cb();
+            break;
+          }
+          case 'error': {
+            const cb = this._currentError;
+            this._currentDone = null; this._currentError = null;
+            if (cb) cb((msg.error?.message || 'voice error').slice(0, 60));
+            break;
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        if (this._ws === ws) { this._ws = null; this._connecting = false; }
+        this._drainQueue('voice ws error');
+      };
+
+      ws.onclose = (evt) => {
+        if (this._ws === ws) { this._ws = null; this._connecting = false; }
+        if (evt.code !== 1000 && evt.code !== 1005 && this._currentError) {
+          const cb = this._currentError;
+          this._currentDone = null; this._currentError = null;
+          cb('voice closed: ' + evt.code);
+        }
+      };
+    },
+
+    _drainQueue(err) {
+      // Only used to flush the single sentence queued during WS connection setup.
+      // Once connected, speak() calls _sendSentence directly (outer _ttsFlush serialises).
+      if (err) {
+        for (const item of this._pendingQueue) item.onError(err);
+        this._pendingQueue = [];
+        return;
+      }
+      const item = this._pendingQueue.shift();
+      if (item) this._sendSentence(item.text, item.onDone, item.onError);
+    },
+
+    _sendSentence(text, onDone, onError) {
+      this._currentDone  = onDone;
+      this._currentError = onError;
+      this._ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user',
+                content: [{ type: 'input_text', text: `Say this: ${text}` }] },
+      }));
+      this._ws.send(JSON.stringify({
+        type: 'response.create',
+        response: { modalities: ['audio'] },
+      }));
+    },
+
+    // ── Public API ─────────────────────────────────────────────
+    speak(text, _unused, onDone, onError) {
+      // Outer _ttsFlush guarantees speak() is only called when xAI is idle,
+      // so we can send directly if the WS is open. Queue only during connection setup.
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._sendSentence(text, onDone, onError);
+        return;
+      }
+      // WS not yet open — queue this sentence and open if not already connecting
+      this._pendingQueue.push({ text, onDone, onError });
+      if (!this._connecting) {
+        (async () => {
+          const secret = await this._fetchToken();
+          if (!secret) { this._drainQueue('voice token failed'); return; }
+          this._open(secret, null);
+        })();
+      }
+      // else: connecting — _drainQueue called from ws.onopen
+    },
+
+    // Pre-open the persistent connection (call on provider selection or page load)
+    async prefetch() {
+      if (this._ws && this._ws.readyState < 2) return; // already open/connecting
+      if (this._connecting) return;
+      const secret = await this._fetchToken();
+      if (secret) this._open(secret, null);
+    },
+
+    stop() {
+      // Do NOT close the persistent WS — only stop current audio playback.
+      // The connection stays alive for the next turn.
+      if (this._currentDone)  { this._currentDone  = null; }
+      if (this._currentError) { this._currentError = null; }
+      this._pendingQueue = [];
+      stopAllAudio();
+    },
+
+    // Tear down fully (called when switching away from this provider)
+    destroy() {
+      if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = null; }
+      if (this._ws) { try { this._ws.close(1000, 'provider-change'); } catch (_) {} this._ws = null; }
+      this._connecting  = false;
+      this._pendingQueue = [];
+      this._currentDone  = null;
+      this._currentError = null;
+      stopAllAudio();
+    },
+  },
+
 };
 
 // ── Wire voice provider button (after ttsProviders is defined) ───────────────
 (function() {
-  const PROVIDER_LABELS = { inworld: 'I', xai: 'X' };
+  const PROVIDER_LABELS = { deepgram: 'D', inworld: 'I', xai: 'X', 'xai-persistent': 'X' };
+  const PROVIDER_TITLES = {
+    deepgram: 'TTS: Deepgram Aura — tap to switch',
+    inworld: 'TTS: Inworld — tap to switch',
+    xai: 'TTS: xAI (per-turn) — tap to switch',
+    'xai-persistent': 'TTS: xAI persistent (low-latency) — tap to switch',
+  };
+
   function updateVoiceProviderBtn() {
     voiceProviderBtn.textContent = PROVIDER_LABELS[TTS_PROVIDER] ?? TTS_PROVIDER[0].toUpperCase();
-    voiceProviderBtn.title = `TTS: ${TTS_PROVIDER} — tap to switch`;
+    voiceProviderBtn.title = PROVIDER_TITLES[TTS_PROVIDER] ?? `TTS: ${TTS_PROVIDER} — tap to switch`;
+    voiceProviderBtn.classList.toggle('xai-persistent', TTS_PROVIDER === 'xai-persistent');
   }
+
+  // Send a silent model-switch command to llmem-gw without disrupting the UI.
+  // Skips if a response is currently streaming to avoid collision.
+  function sendModelSwitch(modelKey) {
+    if (!modelKey || isStreaming) return;
+    fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ text: `!model ${modelKey}`, client_id: SESSION_ID }),
+    }).then(() => {
+      // Drain the resulting SSE stream silently so llmem-gw doesn't stall
+      const evtSrc = new EventSource(authedUrl(`/api/stream/${SESSION_ID}`));
+      evtSrc.onmessage = (e) => {
+        try { if (JSON.parse(e.data).type === 'done') evtSrc.close(); } catch (_) {}
+      };
+      evtSrc.onerror = () => evtSrc.close();
+    }).catch(() => {});
+  }
+
   const providerOrder = Object.keys(ttsProviders);
   updateVoiceProviderBtn();
+
   voiceProviderBtn.addEventListener('click', () => {
+    const prev = TTS_PROVIDER;
     const idx = providerOrder.indexOf(TTS_PROVIDER);
     TTS_PROVIDER = providerOrder[(idx + 1) % providerOrder.length];
     updateVoiceProviderBtn();
     if (fullVoiceMode) initAudioCtx();
+
+    // Tear down persistent WS when leaving xai-persistent
+    if (prev === 'xai-persistent' && TTS_PROVIDER !== 'xai-persistent') {
+      ttsProviders['xai-persistent'].destroy();
+      // No auto return-model switch — it caused llmem-gw to create a new session
+      // if the in-memory session was evicted between turns. Model stays as-is;
+      // user can switch manually with !model if needed.
+    }
+    // Pre-open persistent WS when entering xai-persistent
+    if (TTS_PROVIDER === 'xai-persistent') {
+      ttsProviders['xai-persistent'].prefetch();
+      if (XAI_PERSISTENT_MODEL) sendModelSwitch(XAI_PERSISTENT_MODEL);
+    }
   });
 })();
 
@@ -2081,7 +2403,7 @@ async function submit(textOverride) {
   showLoader(true);
   sendBtn.disabled = true;
 
-  // Prefetch xAI voice token in parallel — only needed for xAI provider
+  // Prefetch xAI voice token in parallel — only needed for per-turn xAI provider
   if (fullVoiceMode && TTS_PROVIDER === 'xai') {
     fetch('/api/voice-token', {
       method: 'POST',
@@ -2090,6 +2412,10 @@ async function submit(textOverride) {
     }).then(r => r.ok ? r.json() : null)
       .then(j => { if (j) ttsProviders.xai._cachedVtok = j; })
       .catch(() => {});
+  }
+  // For xai-persistent, ensure the connection is alive (no-op if already open)
+  if (fullVoiceMode && TTS_PROVIDER === 'xai-persistent') {
+    ttsProviders['xai-persistent'].prefetch();
   }
 
   try {
@@ -2158,7 +2484,7 @@ async function submit(textOverride) {
       enqueueTokens(text);
       if (fullVoiceMode) {
         ttsBuf += text;
-        if (TTS_PROVIDER === 'xai') {
+        if (TTS_PROVIDER === 'xai' || TTS_PROVIDER === 'xai-persistent') {
           let m;
           while ((m = SENT_RE.exec(ttsBuf)) !== null) {
             const end = m.index + m[0].length;
@@ -2321,6 +2647,11 @@ function waitForDrainThenListen(wasKbd) {
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
+    // In speaker mode, also wait for the STT cooldown to expire (prevents echo pickup).
+    const cooldownMs = micMode === 'speaker'
+      ? Math.max(0, _sttCooldownUntil - Date.now())
+      : 0;
+    const delayMs = Math.max(audioEndMs + 800, cooldownMs);
     setStatus('STANDBY', false);
     setTimeout(() => {
       nextPlayAt = 0;
@@ -2328,7 +2659,7 @@ function waitForDrainThenListen(wasKbd) {
         voiceMode = true;
         sttProviders[STT_PROVIDER]?.start();
       }
-    }, audioEndMs + 800);
+    }, delayMs);
     return;
   }
 
@@ -2432,7 +2763,9 @@ function onSttFinal(text) {
   // Outside cooldown, short responses like "yes"/"no" are accepted normally.
   if (micMode === 'speaker') {
     if (isSpeaking) return;
-    if (Date.now() < _sttCooldownUntil && query.split(/\s+/).length < STT_SPEAKER_MIN_WORDS) return;
+    // Also suppress during cooldown unconditionally — catches Deepgram finals that
+    // arrive after isSpeaking clears but were captured while audio was still playing.
+    if (Date.now() < _sttCooldownUntil) return;
   }
   beepConfirm();
   if (kbdOpen) {
@@ -2585,6 +2918,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
       let _pcmBufLen = 0;
       function sendPcm(f32) {
         if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+        // In speaker mode, drop mic audio while TTS is playing or cooldown is active.
+        // This prevents Deepgram from transcribing speaker output at all.
+        if (micMode === 'speaker' && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+          _pcmBuf = []; _pcmBufLen = 0;  // discard any buffered audio too
+          return;
+        }
         _pcmBuf.push(f32);
         _pcmBufLen += f32.length;
         const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08); // 80ms
@@ -2733,7 +3072,8 @@ resetIdleTimer();   // start idle countdown immediately on page load
       const saved = JSON.parse(savedJson);
       // Delay to let page fully initialise, then restore state.
       setTimeout(() => {
-        // Restore TTS provider — click the button until we reach the saved provider
+        // Restore TTS provider — click the button until we reach the saved provider.
+        // Using click() ensures destroy/prefetch side-effects fire correctly.
         if (saved.ttsProvider && ttsProviders[saved.ttsProvider] && saved.ttsProvider !== TTS_PROVIDER) {
           const order = Object.keys(ttsProviders);
           const steps = (order.indexOf(saved.ttsProvider) - order.indexOf(TTS_PROVIDER) + order.length) % order.length;

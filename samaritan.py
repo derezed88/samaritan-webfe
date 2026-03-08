@@ -387,6 +387,57 @@ async def tts_inworld(request: Request):
     )
 
 
+@app.post("/api/tts/deepgram")
+async def tts_deepgram(request: Request):
+    """Proxy Deepgram Aura TTS — keeps DEEPGRAM_API_KEY server-side.
+    Accepts: { "text": "...", "model": "aura-2-thalia-en" }
+    Returns: streaming PCM16-LE at 24kHz (raw bytes, no header).
+    Browser feeds each chunk directly to pcmBytesToAudioBuf for gapless playback.
+    """
+    if not _check_auth(request):
+        return _auth_error()
+
+    dg_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not dg_key:
+        return JSONResponse({"error": "DEEPGRAM_API_KEY not configured"}, status_code=503)
+
+    body = await request.json()
+    text  = body.get("text", "")
+    model = body.get("model", "aura-2-thalia-en")
+
+    if not text:
+        return JSONResponse({"error": "empty text"}, status_code=400)
+
+    logger.info("DG-TTS (%d chars, %s): %r", len(text), model, text[:120])
+
+    async def stream_audio():
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10, read=120, write=10, pool=5)
+        ) as http:
+            async with http.stream(
+                "POST",
+                f"https://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=24000&container=none",
+                headers={
+                    "Authorization": f"Token {dg_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"text": text},
+            ) as resp:
+                if not resp.is_success:
+                    err = await resp.aread()
+                    logger.warning("DG-TTS error %s: %s", resp.status_code, err.decode()[:200])
+                    yield b""
+                    return
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+
+    return StreamingResponse(
+        stream_audio(),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/stt-token")
 async def stt_token(request: Request):
     """Return the Deepgram API key for browser-direct WebSocket STT.

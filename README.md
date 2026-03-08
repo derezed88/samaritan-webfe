@@ -90,7 +90,7 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 - Samaritan visual style — white radial-gradient background, ALL-CAPS monospace font, red accent triangle, scanline overlay
 - Word-by-word token animation (one word flashes center-screen at a time); longer responses use a typewriter terminal panel
 - **Voice input** via [Deepgram](https://deepgram.com) streaming STT (server-proxied WebSocket) with AudioWorklet PCM capture; falls back to the Web Speech API on browsers without AudioWorklet support — auto-submits on recognition, mic restarts automatically after each response
-- **Voice output (TTS)** via a pluggable provider architecture — switch between xAI Realtime and Inworld AI (and future providers) with a single tap at runtime
+- **Voice output (TTS)** via a pluggable provider architecture — switch between Deepgram Aura, xAI Realtime (per-turn or persistent low-latency), and Inworld AI with a single tap at runtime
 - **Full-voice hands-free loop** — speak a prompt, hear the response, mic reopens automatically for the next turn; works continuously for multiple turns
 - Keyboard mode for typed input — reopens automatically after each response; typed prompts also get spoken responses in full-voice mode
 - Configurable idle screen: returns to `CONNECTION ESTABLISHED.` after inactivity
@@ -165,14 +165,14 @@ The browser caches this for the session — you will not be prompted again until
 4. When the response finishes, the mic restarts automatically for the next turn
 
 **Full-voice hands-free mode (FULL VOICE + LIVE):**
-1. Tap **VOICE: XAI** (or **VOICE: INWORLD**) to select the TTS provider for this session
+1. Tap **D / I / X** (TTS provider button) to cycle through Deepgram Aura, Inworld, xAI, or xAI Persistent
 2. Tap **FULL VOICE** to enable spoken responses, then tap **MIC** to start listening
 3. Speak your query — Samaritan responds in text *and* speaks the response aloud via AI voice
 4. After the audio finishes, the mic reopens automatically — the loop continues hands-free indefinitely
 5. Works over remote access (Pinggy tunnel) from any device with a browser and microphone
 
-> **Note:** Voice responses require at least one provider API key in `.env` (see [Configuration](#configuration)).
-> Tap the **VOICE:** button in the control bar to switch providers at any time without reloading.
+> **Note:** Voice responses require at least one TTS provider API key in `.env` (see [Configuration](#configuration)).
+> Tap the provider button in the control bar to cycle providers at any time without reloading.
 > Supported browsers: Chrome, Edge, Safari (iOS 14.5+). Firefox does not support the Web Speech API.
 
 **Keyboard mode:**
@@ -205,6 +205,7 @@ cp .env.example .env
 | `SAMARITAN_API_KEY` | Yes | Access password for the web UI (HTTP Basic Auth). Set to any strong secret string. |
 | `LLMEM_GW_API_KEY` | No | Bearer token forwarded to llmem-gw. Leave blank if llmem-gw has no key set. |
 | `LLMEM_GW_URL` | No | Base URL of the llmem-gw service. Default: `http://localhost:8767`. |
+| `DEEPGRAM_API_KEY` | For Deepgram TTS | Deepgram API key. Used server-side only for the TTS proxy (`/api/tts/deepgram`) — never sent to the browser. Also used for the STT WebSocket proxy. Get one at [console.deepgram.com](https://console.deepgram.com/). |
 | `XAI_API_KEY` | For xAI voice | xAI API key. Used server-side only to mint ephemeral WebSocket tokens — never sent to the browser. Get one at [console.x.ai](https://console.x.ai/). |
 | `INWORLD_API_KEY` | For Inworld voice | Inworld API key (Base64-encoded credential from the Inworld Portal under Settings → API Keys). Used server-side only — never sent to the browser. |
 
@@ -217,10 +218,12 @@ const WORD_FADE               = 180;                 // ms opacity transition pe
 const WORD_HOLD               = 380;                 // ms each word is visible
 const WORD_GAP                = 60;                  // ms gap between words
 const LONG_RESPONSE_THRESHOLD = 10;                  // words — responses >= this use terminal typewriter display
-let   TTS_PROVIDER            = 'xai';               // default voice provider: 'xai' | 'inworld'
+let   TTS_PROVIDER            = 'inworld';           // default TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
+const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en';   // Deepgram Aura model name
 const XAI_VOICE               = 'ara';               // xAI voice: Eve | Ara | Rex | Sal | Leo
+const XAI_PERSISTENT_MODEL    = 'samaritan-voice-fast'; // llmem-gw model key auto-switched with xai-persistent
 const INWORLD_VOICE           = 'Evelyn';            // Inworld voice name
-const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
+const INWORLD_MODEL           = 'inworld-tts-1.5-mini'; // Inworld model ID
 ```
 
 ### Voice Providers
@@ -229,8 +232,10 @@ Samaritan uses a pluggable TTS provider architecture. The active provider can be
 
 | Provider | Button label | API key required | Notes |
 |----------|-------------|-----------------|-------|
-| **xAI Realtime** | `VOICE: XAI` | `XAI_API_KEY` | WebSocket streaming; ephemeral token minted server-side. Voices: Eve, Ara, Rex, Sal, Leo. |
-| **Inworld AI** | `VOICE: INWORLD` | `INWORLD_API_KEY` | Batch HTTP; MP3 decoded by browser. Voice: configurable via `INWORLD_VOICE`. |
+| **Deepgram Aura** | `D` | `DEEPGRAM_API_KEY` | HTTP streaming PCM; server proxy strips WAV header (`container=none`). Model: `DEEPGRAM_TTS_MODEL`. |
+| **Inworld AI** | `I` | `INWORLD_API_KEY` | Streaming NDJSON; server proxy returns raw PCM16-LE. Voice: `INWORLD_VOICE`. |
+| **xAI Realtime** | `X` | `XAI_API_KEY` | Per-turn WebSocket; ephemeral token minted server-side per response. Voices: Eve, Ara, Rex, Sal, Leo. |
+| **xAI Persistent** | `X` (amber) | `XAI_API_KEY` | Keeps WebSocket open across turns; auto-refreshes token before expiry. Pairs with `XAI_PERSISTENT_MODEL` for low-latency responses. |
 
 To add a new provider, implement the `speak(text, token, onDone, onError)` / `stop()` interface in the `ttsProviders` registry in `static/index.html` and add the corresponding server-side proxy route in `samaritan.py` if the API key must stay server-side.
 
@@ -324,7 +329,8 @@ The following services are used and where they are coupled:
 |---------|--------------|-------------|
 | **llmem-gw** (LLM backend) | `samaritan.py` routes + `index.html` SSE parser | See [Swapping the LLM Backend](#swapping-the-llm-backend) below |
 | **Deepgram** (STT) | `samaritan.py` WebSocket proxy (`/api/stt-proxy`), `index.html` AudioWorklet | Replace proxy + browser WS client |
-| **xAI Realtime** (TTS) | `samaritan.py` `/api/voice-token`, `index.html` `ttsProviders.xai` | Implement new provider object + server route |
+| **Deepgram Aura** (TTS) | `samaritan.py` `/api/tts/deepgram`, `index.html` `ttsProviders.deepgram` | Implement new provider object + server route |
+| **xAI Realtime** (TTS) | `samaritan.py` `/api/voice-token`, `index.html` `ttsProviders.xai` / `xai-persistent` | Implement new provider object + server route |
 | **Inworld AI** (TTS) | `samaritan.py` `/api/tts/inworld`, `index.html` `ttsProviders.inworld` | Implement new provider object + server route |
 
 ---
@@ -363,18 +369,20 @@ TTS providers are a registry object in `index.html`:
 
 ```js
 const ttsProviders = {
-  xai:    { speak(text, token, onDone, onError) {...}, stop() {...} },
-  inworld: { speak(text, token, onDone, onError) {...}, stop() {...} },
+  deepgram:       { speak(text, _, onDone, onError) {...}, stop() {...} },
+  inworld:        { speak(text, _, onDone, onError) {...}, stop() {...} },
+  xai:            { speak(text, _, onDone, onError) {...}, stop() {...} },
+  'xai-persistent': { speak(...) {...}, stop() {...}, prefetch() {...}, destroy() {...} },
   // add yours here
 };
 ```
 
 To add a provider:
 1. Implement `speak(text, token, onDone, onError)` and `stop()` in the registry.
-2. If the provider's API key must stay server-side, add a proxy route to `samaritan.py` (see `/api/tts/inworld` as a pattern).
-3. Add the button label to the `TTS_PROVIDER` cycle in the UI controls.
+2. If the provider's API key must stay server-side, add a proxy route to `samaritan.py` (see `/api/tts/deepgram` or `/api/tts/inworld` as patterns).
+3. Add a button label to `PROVIDER_LABELS` in the wire-up block below `ttsProviders`.
 
-Inworld uses a streaming NDJSON response (each line is a base64-encoded WAV chunk with a 44-byte RIFF header to strip). xAI uses a WebSocket with ephemeral token auth. Either pattern is a reasonable template for a new provider.
+**Existing patterns:** Deepgram streams raw PCM16-LE via HTTP (`container=none` query param — critical to avoid WAV header artifacts). Inworld streams NDJSON where each line is a base64-encoded WAV chunk (strip the 44-byte RIFF header before feeding to `pcmBytesToAudioBuf`). xAI uses a WebSocket with a short-lived ephemeral token minted server-side. xAI Persistent keeps the WebSocket open and refreshes the token proactively.
 
 ---
 
