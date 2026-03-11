@@ -804,8 +804,14 @@
     }
 
     #mic-icon { font-size: 15px; }
-    #mic-btn.barge   { border-color: var(--red); color: var(--red); }
-    #mic-btn.speaker { border-color: #f0a500;    color: #f0a500; }
+    #mic-btn.barge       { border-color: var(--red); color: var(--red); }
+    #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
+    #mic-btn.deepgram-di { border-color: #3b82f6;    color: #3b82f6;
+                           animation: dg-di-pulse 1s ease-in-out infinite alternate; }
+    @keyframes dg-di-pulse {
+      from { border-color: #3b82f6; color: #3b82f6; box-shadow: 0 0 4px #3b82f6; }
+      to   { border-color: var(--red); color: var(--red); box-shadow: 0 0 18px rgba(254,45,45,0.5); }
+    }
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
 
     /* ─── Voice provider selector ─── */
@@ -1128,7 +1134,7 @@
           <line x1="8" y1="17" x2="16" y2="17"/>
         </svg>
       </button>
-      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker">
+      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker  DI=diarize">
         <span id="mic-icon">&#127908;</span>
       </button>
     </div>
@@ -1213,18 +1219,19 @@ let kbdOpen      = false;
 let voiceMode    = false;  // true only when user explicitly enabled mic
 let fullVoiceMode = false; // true when xAI TTS is active
 
-// ── Mic mode: 'off' | 'barge' | 'speaker' ────────────────────
-// off    — mic disabled in full-voice mode
-// barge  — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
-// speaker — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
+// ── Mic mode: 'off' | 'barge' | 'speaker' | 'deepgram-di' ───────────────────
+// off         — mic disabled in full-voice mode
+// barge       — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
+// speaker     — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
+// deepgram-di — Deepgram nova-3 + speaker diarization; labels each speaker turn
 let micMode = 'off';
-const MIC_MODES = ['off', 'barge', 'speaker'];
-const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S' };
+const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI' };
 
 function setMicMode(mode) {
   micMode = mode;
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker');
+  micBtn.classList.remove('barge', 'speaker', 'deepgram-di');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -1316,7 +1323,7 @@ const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4,
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Speaker-mode ambient noise guards (applied only when micMode === 'speaker')
-const STT_SPEAKER_COOLDOWN_MS    = 3500;            // ms after TTS ends before accepting STT finals
+const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
 const STT_READY_CHIME_FREQ_LO    = 523;             // low note Hz  (C5)
@@ -2306,7 +2313,7 @@ function _ttsFlush() {
             setTimeout(waitForAudio, 100);
           } else {
             isSpeaking = false;
-            if (micMode === 'speaker') startSpeakerCooldown();
+            if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
             waitForDrainThenListen(_ttsWasKbd);
           }
         })();
@@ -2316,7 +2323,7 @@ function _ttsFlush() {
     (err) => {                       // onError for this sentence
       _ttsBusy = false;
       isSpeaking = false;
-      if (micMode === 'speaker') startSpeakerCooldown();
+      if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
       flashError(err);
       if (_ttsDone) waitForDrainThenListen(_ttsWasKbd);
     },
@@ -2328,7 +2335,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
-    if (micMode === 'speaker') startSpeakerCooldown();
+    if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
@@ -2462,10 +2469,10 @@ async function submit(textOverride) {
       if (!_pfxBuf.startsWith('<')) {
         _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = ''; return;
       }
-      // Try to match complete <<topic>> with optional ": " separator
-      const m = _pfxBuf.match(/^<<[^>]*>>\s*(?::\s*)?/);
+      // Try to match one or more <<tag>> prefixes with optional ": " separators
+      const m = _pfxBuf.match(/^(<<[^>]*>>\s*(?::\s*)?)+/);
       if (m && m[0].includes('>>')) {
-        // Matched — strip the prefix tag, emit whatever follows
+        // Matched — strip all leading tags, emit whatever follows
         _pfxDone = true;
         const rest = _pfxBuf.slice(m[0].length);
         _pfxBuf = '';
@@ -2498,6 +2505,7 @@ async function submit(textOverride) {
 
     function ttsClean(t) {
       return t
+        .replace(/<<[^>]*>>\s*(?::\s*)?/g, '') // <<topic>> routing tags
         .replace(/\[thinking[^\]]*\]/gi, '')   // [thinking…] markers
         .replace(/\[[^\]]*[▶◀][^\]]*\]/g, '')  // [tool ▶ name] and [tool ◀ result]
         .replace(/#{1,6}\s*/g, '')             // markdown headings
@@ -2647,17 +2655,17 @@ function waitForDrainThenListen(wasKbd) {
     const audioEndMs = audioCtx
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
-    // In speaker mode, also wait for the STT cooldown to expire (prevents echo pickup).
-    const cooldownMs = micMode === 'speaker'
+    // In speaker/diarize mode, also wait for the STT cooldown to expire (prevents echo pickup).
+    const cooldownMs = (micMode === 'speaker' || micMode === 'deepgram-di')
       ? Math.max(0, _sttCooldownUntil - Date.now())
       : 0;
-    const delayMs = Math.max(audioEndMs + 800, cooldownMs);
+    const delayMs = Math.max(audioEndMs + 400, cooldownMs);
     setStatus('STANDBY', false);
     setTimeout(() => {
       nextPlayAt = 0;
       if (!isStreaming && !isListening) {
         voiceMode = true;
-        sttProviders[STT_PROVIDER]?.start();
+        getActiveProvider()?.start();
       }
     }, delayMs);
     return;
@@ -2758,10 +2766,8 @@ function onSttFinal(text) {
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
   // waiting for LLM response (isStreaming, !isSpeaking) there's nothing to barge into.
   if (isStreaming && !(micMode === 'barge' && isSpeaking)) return;
-  // In speaker mode: suppress while TTS is playing or during post-TTS cooldown.
-  // Min word count only applies during cooldown (filters echo/ambient noise).
-  // Outside cooldown, short responses like "yes"/"no" are accepted normally.
-  if (micMode === 'speaker') {
+  // In speaker/diarize mode: suppress while TTS is playing or during post-TTS cooldown.
+  if (micMode === 'speaker' || micMode === 'deepgram-di') {
     if (isSpeaking) return;
     // Also suppress during cooldown unconditionally — catches Deepgram finals that
     // arrive after isSpeaking clears but were captured while audio was still playing.
@@ -2986,8 +2992,187 @@ registerProcessor('pcm-capture', PcmCapture);`;
   return { start: startDg, stop: stopDg };
 })();
 
+// ── Provider: Deepgram Diarization (nova-3 + diarize=true) ───
+const _dgDi = (() => {
+  let dgWs       = null;
+  let audioCtxDg = null;
+  let workletNode = null;
+  let mediaStream = null;
+  let active      = false;
+
+  // Speaker label colours (cycle through a small palette)
+  const SPEAKER_COLOURS = ['#3b82f6','#f0a500','#22c55e','#a855f7','#ec4899'];
+  // Accumulate words by speaker for the current speech_final segment
+  let _speakerWords = [];  // [{speaker, word}]
+
+  function _buildTranscript(words) {
+    // Group consecutive words by same speaker, emit "Speaker N: text" blocks
+    if (!words.length) return '';
+    const blocks = [];
+    let curSpeaker = words[0].speaker;
+    let curWords   = [words[0].word];
+    for (let i = 1; i < words.length; i++) {
+      if (words[i].speaker === curSpeaker) {
+        curWords.push(words[i].word);
+      } else {
+        blocks.push(`[Speaker ${curSpeaker + 1}]: ${curWords.join(' ')}`);
+        curSpeaker = words[i].speaker;
+        curWords   = [words[i].word];
+      }
+    }
+    blocks.push(`[Speaker ${curSpeaker + 1}]: ${curWords.join(' ')}`);
+    return blocks.join('\n');
+  }
+
+  const WORKLET_CODE_DI = `
+class PcmCaptureDi extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture-di', PcmCaptureDi);`;
+
+  async function startDgDi() {
+    active = true;
+    _speakerWords = [];
+    onSttStart();
+    try {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (e) {
+        flashError('mic denied: ' + e.message.slice(0, 30));
+        active = false; onSttStop(); return;
+      }
+      audioCtxDg = new AudioContext();
+      const actualRate = audioCtxDg.sampleRate;
+
+      const params = new URLSearchParams({
+        model:            'nova-3',
+        encoding:         'linear16',
+        sample_rate:      actualRate,
+        diarize:          'true',
+        utterance_end_ms: '1000',
+        interim_results:  'true',
+        smart_format:     'true',
+        token:            _apiKey,
+      });
+      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
+      dgWs.binaryType = 'arraybuffer';
+
+      dgWs.onopen = async () => {
+        const source = audioCtxDg.createMediaStreamSource(mediaStream);
+        let usedWorklet = false;
+        try {
+          const blob    = new Blob([WORKLET_CODE_DI], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          await audioCtxDg.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
+          workletNode = new AudioWorkletNode(audioCtxDg, 'pcm-capture-di');
+          workletNode.port.onmessage = (e) => sendPcmDi(new Float32Array(e.data));
+          source.connect(workletNode);
+          usedWorklet = true;
+        } catch (_) {}
+        if (!usedWorklet) {
+          const spn = audioCtxDg.createScriptProcessor(4096, 1, 1);
+          spn.onaudioprocess = (ev) => sendPcmDi(ev.inputBuffer.getChannelData(0));
+          source.connect(spn);
+          spn.connect(audioCtxDg.destination);
+          workletNode = spn;
+        }
+        if (audioCtxDg && audioCtxDg.state === 'suspended') audioCtxDg.resume().catch(() => {});
+      };
+
+      let _pcmBuf = [], _pcmBufLen = 0;
+      function sendPcmDi(f32) {
+        if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+        // Drop mic audio while TTS is playing or cooldown is active (phone speaker safe).
+        if (isSpeaking || Date.now() < _sttCooldownUntil) {
+          _pcmBuf = []; _pcmBufLen = 0;
+          return;
+        }
+        _pcmBuf.push(f32);
+        _pcmBufLen += f32.length;
+        const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08);
+        if (_pcmBufLen < targetSamples) return;
+        const merged = new Float32Array(_pcmBufLen);
+        let offset = 0;
+        for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
+        _pcmBuf = []; _pcmBufLen = 0;
+        const i16 = new Int16Array(merged.length);
+        for (let i = 0; i < merged.length; i++)
+          i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
+        dgWs.send(i16.buffer);
+      }
+
+      dgWs.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (_) { return; }
+        const alt = (msg.channel && msg.channel.alternatives && msg.channel.alternatives[0]) || null;
+        if (!alt) return;
+
+        if (msg.type === 'Results') {
+          const partial = (alt.transcript || '').trim();
+          if (!msg.speech_final) {
+            // Rolling interim — show partial text only
+            if (partial) onSttPartial(partial);
+          } else {
+            // speech_final:true — accumulate words then submit this turn
+            const words = alt.words || [];
+            for (const w of words) {
+              if (w.word) _speakerWords.push({ speaker: w.speaker || 0, word: w.word });
+            }
+            if (_speakerWords.length) {
+              const transcript = _buildTranscript(_speakerWords);
+              _speakerWords = [];
+              onSttPartial(transcript.split('\n').pop() || '');
+              onSttFinal(transcript);
+            }
+          }
+        } else if (msg.type === 'UtteranceEnd') {
+          // Flush any words not yet submitted (e.g. if speech_final never fired)
+          if (_speakerWords.length) {
+            const transcript = _buildTranscript(_speakerWords);
+            _speakerWords = [];
+            onSttPartial(transcript.split('\n').pop() || '');
+            onSttFinal(transcript);
+          }
+        }
+      };
+
+      dgWs.onerror = () => { flashError('DG-DI WS error'); stopDgDi(); };
+      dgWs.onclose = () => { if (active) { active = false; stopDgDi(); } };
+
+    } catch (err) {
+      flashError('DG-DI: ' + String(err).slice(0, 40));
+      active = false;
+      onSttStop();
+    }
+  }
+
+  function stopDgDi() {
+    active = false;
+    _speakerWords = [];
+    if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxDg)  { try { audioCtxDg.close(); } catch (_) {} audioCtxDg = null; }
+    if (dgWs) {
+      try {
+        if (dgWs.readyState === WebSocket.OPEN) dgWs.send(JSON.stringify({ type: 'CloseStream' }));
+        dgWs.close();
+      } catch (_) {}
+      dgWs = null;
+    }
+    onSttStop();
+  }
+
+  return { start: startDgDi, stop: stopDgDi };
+})();
+
 // ── STT provider map & mic button wiring ─────────────────────
-const sttProviders = { webspeech: _ws, deepgram: _dg };
+const sttProviders = { webspeech: _ws, deepgram: _dg, 'deepgram-di': _dgDi };
 
 // STT provider toggle button (reuse same pattern as TTS)
 const sttProviderBtn = document.getElementById('stt-provider-btn');
@@ -3005,6 +3190,12 @@ const sttProviderBtn = document.getElementById('stt-provider-btn');
   });
 })();
 
+// Returns the active STT provider: deepgram-di mode always uses _dgDi
+function getActiveProvider() {
+  if (micMode === 'deepgram-di') return _dgDi;
+  return sttProviders[STT_PROVIDER];
+}
+
 // ── Mic button ───────────────────────────────────────────────
 if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   micBtn.classList.add('unsupported');
@@ -3015,28 +3206,37 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     if (micBtn.classList.contains('unsupported')) return;
     resetIdleTimer();
     initAudioCtx();  // re-unlock AudioContext after iOS audio interruption
-    const provider = sttProviders[STT_PROVIDER];
-    if (!provider) { flashError('STT provider unavailable'); return; }
 
     // If already in an active mode but STT dropped (e.g. iOS notification interruption,
     // or tapped while audio was playing), restart STT without cycling mode.
     if (micMode !== 'off' && !isListening && !isStreaming) {
+      const provider = getActiveProvider();
+      if (!provider) { flashError('STT provider unavailable'); return; }
       voiceMode = true;
       provider.start();
       return;
     }
 
-    // Otherwise cycle: off → barge → speaker → off
+    // Otherwise cycle: off → barge → speaker → deepgram-di → off
     // Don't cycle while actively streaming LLM response (isStreaming).
     if (isStreaming) return;
+    const prevProvider = getActiveProvider();
     const next = MIC_MODES[(MIC_MODES.indexOf(micMode) + 1) % MIC_MODES.length];
     setMicMode(next);
     if (next === 'off') {
       voiceMode = false;
-      if (isListening) provider.stop();
+      if (isListening && prevProvider) prevProvider.stop();
     } else {
       voiceMode = true;
-      if (!isListening) provider.start();
+      const provider = getActiveProvider();
+      if (!provider) { flashError('STT provider unavailable'); return; }
+      // If the provider changed (e.g. speaker→deepgram-di), stop old and start new.
+      if (prevProvider && prevProvider !== provider && isListening) {
+        prevProvider.stop();   // onSttStop() will set isListening=false
+        provider.start();
+      } else if (!isListening) {
+        provider.start();
+      }
     }
   });
   // Mark unsupported if webspeech default and not available
@@ -3084,13 +3284,15 @@ resetIdleTimer();   // start idle countdown immediately on page load
           fullVoiceBtn.click();  // toggles fullVoiceMode + updates button
         }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
-        const provider = sttProviders[STT_PROVIDER];
-        if (provider && !micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
+        if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
-          setTimeout(() => {
-            voiceMode = true;
-            provider.start();
-          }, 400);
+          const provider = getActiveProvider();
+          if (provider) {
+            setTimeout(() => {
+              voiceMode = true;
+              provider.start();
+            }, 400);
+          }
         }
       }, 800);
     } catch (_) {}

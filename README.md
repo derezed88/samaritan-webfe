@@ -435,8 +435,8 @@ function processToken(raw) {
   if (!_pfxBuf.startsWith('<')) {          // not a tag — flush immediately
     _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = ''; return;
   }
-  const m = _pfxBuf.match(/^<<[^>]*>>\s*(?::\s*)?/);
-  if (m && m[0].includes('>>')) {          // full tag matched — strip it
+  const m = _pfxBuf.match(/^(<<[^>]*>>\s*(?::\s*)?)+/);
+  if (m && m[0].includes('>>')) {          // one or more tags matched — strip them all
     _pfxDone = true;
     const rest = _pfxBuf.slice(m[0].length);
     _pfxBuf = '';
@@ -463,15 +463,18 @@ function processToken(raw) {
 
 ### Mic Modes
 
-The rightmost button cycles through three STT modes:
+The rightmost button cycles through four STT modes:
 
 | Mode | Icon | Behavior |
 |------|------|----------|
 | Off | 🎤 | Mic disabled in full-voice mode |
 | Barge-in | **B** (red) | Incoming speech during TTS immediately stops playback — best for headphones/AirPods |
 | Speaker | **S** (amber) | Mic stays on but transcripts are suppressed during TTS — safe for phone-speaker/speakerphone use |
+| Diarize | **DI** (blue↔red pulse) | Deepgram nova-3 + speaker diarization; each turn is prefixed with `[Speaker N]:` so the LLM can track who said what in multi-person conversations |
 
-If you are using this on a phone or tablet without headphones, use **S** mode to prevent feedback loops.
+**Diarize mode** uses the Deepgram nova-3 model with `diarize=true`. Transcripts are held until an utterance boundary is detected, then submitted with speaker labels (e.g. `[Speaker 1]: Hello`). The LLM should be prompted to resolve speaker labels to real names once a speaker self-identifies, and never to say "Speaker N" aloud in responses. Like Speaker mode, barge-in is suppressed and mic audio is gated during TTS playback.
+
+If you are using this on a phone or tablet without headphones, use **S** or **DI** mode to prevent feedback loops.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -538,7 +541,7 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
 * [uvicorn](https://www.uvicorn.org/) — ASGI server (BSD License)
 * [httpx](https://www.python-httpx.org/) — async HTTP client (BSD License)
 * [python-dotenv](https://github.com/theskumar/python-dotenv) — `.env` file loader (BSD License)
-* [Deepgram](https://deepgram.com) — streaming speech-to-text via WebSocket (Nova-2 model); proxied server-side to keep the API key out of the browser
+* [Deepgram](https://deepgram.com) — streaming speech-to-text via WebSocket; proxied server-side to keep the API key out of the browser. Standard mode uses Flux (`flux-general-en`) on the v2 API for low-latency turn detection; Diarize mode uses Nova-3 (`nova-3`) on the v1 API with `diarize=true` for speaker identification.
 * [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API) — browser-native
   speech recognition used as ScriptProcessorNode fallback for iOS Safari AudioWorklet gaps (W3C specification, implemented by browser vendors)
 * [Web Audio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API) — browser-native

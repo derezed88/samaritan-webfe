@@ -202,6 +202,7 @@ async def submit(request: Request):
     body = await request.json()
     text = body.get("text", "")
     client_id = body.get("client_id", "samaritan-ui")
+    logger.info("SUBMIT (%d chars): %r", len(text), text[:200])
 
     payload = {"client_id": client_id, "text": text, "wait": False}
 
@@ -519,14 +520,21 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
                                     else:
                                         logger.info("STT [%s]: %s", event, transcript)
                                 elif dg_msg.get("is_final"):
-                                    transcript = (
+                                    alt = (
                                         dg_msg.get("channel", {})
                                         .get("alternatives", [{}])[0]
-                                        .get("transcript", "")
                                     )
+                                    transcript = alt.get("transcript", "")
+                                    words = alt.get("words", [])
+                                    diarized = any("speaker" in w for w in words)
                                     if transcript:
-                                        logger.info("STT: %s", transcript)
-                                elif msg_type not in ("Metadata",):
+                                        if diarized:
+                                            logger.info("STT [is_final/diarized]: %s", transcript)
+                                        else:
+                                            logger.info("STT: %s", transcript)
+                                elif msg_type == "UtteranceEnd":
+                                    logger.info("STT [UtteranceEnd]")
+                                elif msg_type not in ("Metadata", "Results"):
                                     logger.info("DG msg: %s", message[:200])
                             except Exception:
                                 pass
