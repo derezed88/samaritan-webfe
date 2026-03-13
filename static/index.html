@@ -72,7 +72,7 @@
       align-items: center;
       justify-content: center;
       position: relative;
-      cursor: none; /* Samaritan hides the cursor */
+      cursor: default;
     }
 
     /* ─── Scanline overlay ─── */
@@ -1006,6 +1006,462 @@
       cursor: not-allowed;
     }
 
+    /* ═══════════════════════════════════════════════════════════
+       COGNITIVE MODE — real-time llmem-gw monitoring overlay
+       ═══════════════════════════════════════════════════════════ */
+
+    #cogn-container {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0a0a0a;
+      color: #ccc;
+      font-family: var(--font);
+      flex-direction: column;
+      z-index: 200;
+    }
+    #cogn-container.active { display: flex; }
+
+    #cogn-status-bar {
+      background: #111;
+      color: #fff;
+      font-size: 11px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      padding: 6px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+      border-bottom: 1px solid #c00;
+    }
+
+    #cogn-status-bar .cogn-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #fe2d2d;
+      animation: blink-dot 1200ms ease-in-out infinite;
+      display: inline-block;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    /* ─── Main area: data-stack (left) + center (dash+chat) + card-stack (right) ─── */
+    #cogn-main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ─── Left data card stack (goals, beliefs, prospective, plans) ─── */
+    #cogn-data-stack {
+      width: 220px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      padding: 8px 0 8px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-right: 1px solid #222;
+      scrollbar-width: thin;
+      scrollbar-color: #c00 transparent;
+    }
+    #cogn-data-stack::-webkit-scrollbar { width: 3px; }
+    #cogn-data-stack::-webkit-scrollbar-thumb { background: #c00; }
+    #cogn-data-stack::-webkit-scrollbar-track { background: transparent; }
+
+    #cogn-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    /* ─── Dashboard (timers, top of center column, halved height) ─── */
+    #cogn-dashboard {
+      flex-shrink: 0;
+      max-height: 41vh;
+      overflow-y: auto;
+      padding: 6px 12px 4px;
+      border-bottom: 2px solid #c00;
+      background: #0d0d0d;
+      scrollbar-width: thin;
+      scrollbar-color: #c00 transparent;
+    }
+    #cogn-dashboard::-webkit-scrollbar { width: 4px; }
+    #cogn-dashboard::-webkit-scrollbar-thumb { background: #c00; }
+    #cogn-dashboard::-webkit-scrollbar-track { background: transparent; }
+
+    #cogn-dash-content {
+      font-size: 10px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #999;
+      margin: 0;
+    }
+
+    #cogn-dash-age {
+      font-size: 9px;
+      color: #555;
+      text-align: right;
+      padding: 2px 0 4px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    /* ─── Memstats — full-height column, left of toolstats ─── */
+    #cogn-mem-panel {
+      width: 468px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      padding: 8px 10px;
+      background: #0d0d0d;
+      border-left: 1px solid #222;
+      border-right: 1px solid #222;
+      scrollbar-width: thin;
+      scrollbar-color: #c00 transparent;
+    }
+    #cogn-mem-panel::-webkit-scrollbar { width: 3px; }
+    #cogn-mem-panel::-webkit-scrollbar-thumb { background: #c00; }
+    #cogn-mem-panel::-webkit-scrollbar-track { background: transparent; }
+
+    #cogn-mem-label {
+      font-size: 8px;
+      color: #555;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 4px;
+    }
+    #cogn-mem-content {
+      font-size: 10px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #999;
+      margin: 0;
+    }
+
+    /* ─── Toolstats — full-height column, left of cognition cards ─── */
+    #cogn-tools-col {
+      width: 352px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      padding: 8px 0 8px 8px;
+      border-right: 1px solid #222;
+      scrollbar-width: thin;
+      scrollbar-color: #444 transparent;
+    }
+    #cogn-tools-col::-webkit-scrollbar { width: 3px; }
+    #cogn-tools-col::-webkit-scrollbar-thumb { background: #444; }
+    #cogn-tools-col::-webkit-scrollbar-track { background: transparent; }
+
+    /* ─── Chat log (scrollable, halved height) ─── */
+    #cogn-chat {
+      flex: 1;
+      max-height: 50%;
+      overflow-y: auto;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: #444 transparent;
+    }
+    #cogn-chat::-webkit-scrollbar { width: 4px; }
+    #cogn-chat::-webkit-scrollbar-thumb { background: #444; }
+    #cogn-chat::-webkit-scrollbar-track { background: transparent; }
+
+    .cogn-msg { font-size: 12px; line-height: 1.6; }
+    .cogn-msg-user .cogn-msg-prefix   { color: #c00; }
+    .cogn-msg-assistant .cogn-msg-prefix { color: #666; }
+    .cogn-msg-system { color: #555; font-style: italic; font-size: 11px; }
+    .cogn-msg-text { white-space: pre-wrap; word-break: break-word; color: #ccc; }
+    .cogn-msg-user .cogn-msg-text { color: #e0e0e0; }
+
+    .cogn-cursor {
+      display: inline-block;
+      width: 7px; height: 1em;
+      background: #c00;
+      vertical-align: text-bottom;
+      animation: blink-cursor 600ms step-end infinite;
+    }
+    .cogn-cursor.off { display: none; }
+
+    /* ═══════════════════════════════════════════════════════════
+       COGNITIVE CARDS — right-side stack (Samaritan style)
+       ═══════════════════════════════════════════════════════════ */
+
+    #cogn-card-stack {
+      width: 220px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      padding: 8px 8px 8px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      scrollbar-width: thin;
+      scrollbar-color: #c00 transparent;
+    }
+    #cogn-card-stack::-webkit-scrollbar { width: 3px; }
+    #cogn-card-stack::-webkit-scrollbar-thumb { background: #c00; }
+    #cogn-card-stack::-webkit-scrollbar-track { background: transparent; }
+
+    .cogn-card {
+      background: #0f0f0f;
+      border: 1px solid #333;
+      font-family: var(--font);
+      font-size: 10px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      transition: border-color 400ms ease;
+    }
+    .cogn-card.card-running  { border-color: #22c55e; }
+    .cogn-card.card-error    { border-color: #c00; }
+
+    .cogn-card-header {
+      background: #1a1a1a;
+      color: #666;
+      font-size: 8px;
+      padding: 2px 6px;
+      letter-spacing: 3px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .cogn-card-icon {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+      transition: background 400ms ease;
+    }
+    .cogn-card-icon.ci-sleeping { background: #3b82f6; }
+    .cogn-card-icon.ci-running  { background: #22c55e;
+      animation: cogn-icon-pulse 600ms ease-in-out infinite alternate; }
+    .cogn-card-icon.ci-disabled { background: #444; }
+    .cogn-card-icon.ci-starting { background: #f0a500; }
+    .cogn-card-icon.ci-error    { background: #fe2d2d;
+      animation: cogn-icon-pulse 400ms ease-in-out infinite alternate; }
+
+    @keyframes cogn-icon-pulse {
+      from { box-shadow: none; }
+      to   { box-shadow: 0 0 6px currentColor; }
+    }
+
+    .cogn-card-title {
+      background: #c00;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 6px;
+      letter-spacing: 2px;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.6);
+    }
+
+    .cogn-card-rows { padding: 2px 0; }
+
+    .cogn-card-row {
+      display: flex;
+      align-items: center;
+      min-height: 19px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .cogn-card-row:last-child { border-bottom: none; }
+
+    .cogn-card-label {
+      color: #555;
+      font-size: 9px;
+      padding: 0 6px;
+      width: 72px;
+      flex-shrink: 0;
+      letter-spacing: 1px;
+    }
+
+    .cogn-card-val {
+      color: #aaa;
+      font-size: 9px;
+      padding: 0 4px;
+      flex: 1;
+      letter-spacing: 1px;
+      text-align: right;
+    }
+
+    .cogn-card-val.cv-countdown {
+      color: #fe2d2d;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .cogn-card-val.cv-status-sleeping { color: #3b82f6; }
+    .cogn-card-val.cv-status-running  { color: #22c55e; }
+    .cogn-card-val.cv-status-disabled { color: #555; }
+    .cogn-card-val.cv-status-error    { color: #fe2d2d; }
+
+    /* ── Progress bar (time elapsed in current cycle) ── */
+    .cogn-card-progress {
+      height: 3px;
+      background: #1a1a1a;
+      margin: 0 6px;
+    }
+    .cogn-card-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #c00, #fe2d2d);
+      width: 0%;
+      transition: width 1s linear;
+    }
+
+    /* ── Feedback footer ── */
+    .cogn-card-fb {
+      color: #444;
+      font-size: 8px;
+      padding: 3px 6px 4px;
+      letter-spacing: 1px;
+      border-top: 1px solid #1a1a1a;
+      margin-top: 2px;
+    }
+    .cogn-card-fb .fb-ok  { color: #22c55e; }
+    .cogn-card-fb .fb-low { color: #f0a500; }
+    .cogn-card-fb .fb-bad { color: #fe2d2d; }
+
+    /* ─── Input bar (bottom) ─── */
+    #cogn-input-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      background: #111;
+      border-top: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    #cogn-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid #444;
+      color: #e0e0e0;
+      font-family: var(--font);
+      font-size: 13px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      outline: none;
+      padding: 6px 0;
+      caret-color: #c00;
+    }
+    #cogn-input::placeholder { color: #444; letter-spacing: 2px; }
+
+    #cogn-send {
+      background: transparent;
+      border: 1px solid #c00;
+      color: #c00;
+      cursor: pointer;
+      padding: 6px 16px;
+      font-family: var(--font);
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: all 200ms;
+    }
+    #cogn-send:hover { background: #330000; color: #fff; }
+    #cogn-send:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* ═══════════════════════════════════════════════════════════
+       COGNITIVE DATA CARDS — goals, beliefs, prospective, plans, toolstats
+       ═══════════════════════════════════════════════════════════ */
+
+    .cogn-dc {
+      background: #0f0f0f;
+      border: 1px solid #333;
+      font-family: var(--font);
+      text-transform: uppercase;
+    }
+
+    .cogn-dc-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0;
+    }
+
+    .cogn-dc-title {
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      padding: 3px 6px;
+      flex: 1;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.6);
+    }
+
+    .cogn-dc-controls {
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    .cogn-dc-btn {
+      background: rgba(0,0,0,0.4);
+      color: #aaa;
+      border: none;
+      border-left: 1px solid rgba(255,255,255,0.1);
+      width: 22px;
+      height: 22px;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: var(--font);
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: all 150ms;
+    }
+    .cogn-dc-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+    .cogn-dc-body {
+      padding: 4px 6px;
+      overflow-y: auto;
+      max-height: 54px;   /* default ~3 lines */
+      font-size: 9px;
+      line-height: 1.5;
+      letter-spacing: 0.5px;
+      color: #777;
+      white-space: pre-wrap;
+      word-break: break-word;
+      scrollbar-width: thin;
+      scrollbar-color: #444 transparent;
+      transition: max-height 200ms ease;
+    }
+    .cogn-dc-body::-webkit-scrollbar { width: 3px; }
+    .cogn-dc-body::-webkit-scrollbar-thumb { background: #444; }
+    .cogn-dc-body::-webkit-scrollbar-track { background: transparent; }
+
+    /* ── Fill-mode data card (stretches to fill parent) ── */
+    .cogn-dc-fill {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .cogn-dc-fill .cogn-dc-body {
+      flex: 1;
+      max-height: none;
+    }
+
+    /* ── Separator between timer cards and data cards ── */
+    .cogn-card-sep {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, #c00, transparent);
+      margin: 4px 0;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 600px) {
+      #cogn-card-stack, #cogn-data-stack, #cogn-mem-panel, #cogn-tools-col { display: none; }
+    }
+
     /* ─── Narrow phone screens (≤ 480px) ─── */
     @media (max-width: 480px) {
       /* Hide text-only provider toggle buttons — icons still visible */
@@ -1163,6 +1619,36 @@
   </div>
 
 </div><!-- /layout -->
+
+<!-- ═══ Cognitive mode overlay (hidden until #mode cognitive) ═══ -->
+<div id="cogn-container">
+  <div id="cogn-status-bar">
+    <div><span class="cogn-dot"></span> COGNITIVE MODE</div>
+    <span>SAMARITAN // COGNITIVE MONITOR</span>
+    <span id="cogn-clock"></span>
+  </div>
+  <div id="cogn-main">
+    <div id="cogn-data-stack"><!-- data cards injected by JS --></div>
+    <div id="cogn-center">
+      <div id="cogn-dashboard">
+        <pre id="cogn-dash-content">INITIALIZING...</pre>
+        <div id="cogn-dash-age"></div>
+      </div>
+      <div id="cogn-chat"></div>
+    </div>
+    <div id="cogn-mem-panel">
+      <div id="cogn-mem-label">MEMORY / BELIEFS</div>
+      <pre id="cogn-mem-content">LOADING...</pre>
+    </div>
+    <div id="cogn-tools-col"><!-- toolstats injected by JS --></div>
+    <div id="cogn-card-stack"><!-- cognition cards injected by JS --></div>
+  </div>
+  <div id="cogn-input-bar">
+    <span style="color:#c00;font-size:14px">&#9654;</span>
+    <input id="cogn-input" type="text" placeholder="ENTER COMMAND OR MESSAGE..." autocomplete="off" spellcheck="false" enterkeyhint="send" />
+    <button id="cogn-send">SEND</button>
+  </div>
+</div>
 
 <script>
 // ═══════════════════════════════════════════════════════════
@@ -1387,6 +1873,11 @@ function handleCommand(raw) {
   const args  = parts.slice(1);
   switch (cmd) {
     case '#screen_mode': cmdScreenMode(args[0]); break;
+    case '#mode':
+      if (args[0] === 'cognitive') enterCognMode();
+      else if (args[0] === 'default') exitCognMode();
+      else flashError('usage: #mode <cognitive|default>');
+      break;
     default: flashError('unknown command: ' + cmd);
   }
 }
@@ -3000,10 +3491,9 @@ const _dgDi = (() => {
   let mediaStream = null;
   let active      = false;
 
-  // Speaker label colours (cycle through a small palette)
-  const SPEAKER_COLOURS = ['#3b82f6','#f0a500','#22c55e','#a855f7','#ec4899'];
   // Accumulate words by speaker for the current speech_final segment
   let _speakerWords = [];  // [{speaker, word}]
+  let _pendingDiTranscript = null;  // held during cooldown, submitted when cooldown clears
 
   function _buildTranscript(words) {
     // Group consecutive words by same speaker, emit "Speaker N: text" blocks
@@ -3037,6 +3527,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
   async function startDgDi() {
     active = true;
     _speakerWords = [];
+    _pendingDiTranscript = null;
     onSttStart();
     try {
       try {
@@ -3088,11 +3579,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
       let _pcmBuf = [], _pcmBufLen = 0;
       function sendPcmDi(f32) {
         if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
-        // Drop mic audio while TTS is playing or cooldown is active (phone speaker safe).
-        if (isSpeaking || Date.now() < _sttCooldownUntil) {
-          _pcmBuf = []; _pcmBufLen = 0;
-          return;
-        }
+        // Always send audio to keep the DG connection alive — onSttFinal guards submission.
         _pcmBuf.push(f32);
         _pcmBufLen += f32.length;
         const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08);
@@ -3107,6 +3594,28 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         dgWs.send(i16.buffer);
       }
 
+      function flushDiWords() {
+        if (!_speakerWords.length) return;
+        const transcript = _buildTranscript(_speakerWords);
+        _speakerWords = [];
+        onSttPartial(transcript.split('\n').pop() || '');
+        const cooldownRemaining = _sttCooldownUntil - Date.now();
+        if (cooldownRemaining > 0) {
+          // Hold transcript until cooldown clears, then submit
+          _pendingDiTranscript = transcript;
+          setTimeout(() => {
+            if (_pendingDiTranscript) {
+              const t = _pendingDiTranscript;
+              _pendingDiTranscript = null;
+              onSttFinal(t);
+            }
+          }, cooldownRemaining);
+        } else {
+          _pendingDiTranscript = null;
+          onSttFinal(transcript);
+        }
+      }
+
       dgWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
@@ -3119,26 +3628,16 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
             // Rolling interim — show partial text only
             if (partial) onSttPartial(partial);
           } else {
-            // speech_final:true — accumulate words then submit this turn
+            // speech_final:true — accumulate diarized words
             const words = alt.words || [];
             for (const w of words) {
               if (w.word) _speakerWords.push({ speaker: w.speaker || 0, word: w.word });
             }
-            if (_speakerWords.length) {
-              const transcript = _buildTranscript(_speakerWords);
-              _speakerWords = [];
-              onSttPartial(transcript.split('\n').pop() || '');
-              onSttFinal(transcript);
-            }
+            flushDiWords();
           }
         } else if (msg.type === 'UtteranceEnd') {
-          // Flush any words not yet submitted (e.g. if speech_final never fired)
-          if (_speakerWords.length) {
-            const transcript = _buildTranscript(_speakerWords);
-            _speakerWords = [];
-            onSttPartial(transcript.split('\n').pop() || '');
-            onSttFinal(transcript);
-          }
+          // Safety-net flush if speech_final didn't already clear the buffer
+          flushDiWords();
         }
       };
 
@@ -3155,6 +3654,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
   function stopDgDi() {
     active = false;
     _speakerWords = [];
+    _pendingDiTranscript = null;
     if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (audioCtxDg)  { try { audioCtxDg.close(); } catch (_) {} audioCtxDg = null; }
@@ -3312,6 +3812,596 @@ resetIdleTimer();   // start idle countdown immediately on page load
     location.reload();
   });
 })();
+</script>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  COGNITIVE MODE — real-time llmem-gw monitoring
+// ═══════════════════════════════════════════════════════════
+// Activated by #mode cognitive, deactivated by #mode default.
+// Overlays a terminal-style chat + auto-refreshing dashboard
+// + Samaritan-style cards with live countdowns on the right.
+
+const cognContainer   = document.getElementById('cogn-container');
+const cognChat        = document.getElementById('cogn-chat');
+const cognInput       = document.getElementById('cogn-input');
+const cognSendBtn     = document.getElementById('cogn-send');
+const cognDashContent = document.getElementById('cogn-dash-content');
+const cognDashAge     = document.getElementById('cogn-dash-age');
+const cognClockEl     = document.getElementById('cogn-clock');
+const cognCardStack   = document.getElementById('cogn-card-stack');
+const cognDataStack   = document.getElementById('cogn-data-stack');
+const cognToolsCol    = document.getElementById('cogn-tools-col');
+const cognMemContent  = document.getElementById('cogn-mem-content');
+
+let cognMode           = false;
+let cognPollTimer      = null;
+let cognClockTimer     = null;   // 1s — drives clock + countdown ticks
+let cognPollInProgress = false;
+let cognPollCount      = 0;
+let cognLastPlan       = '';
+let cognLastCogn       = '';
+
+// Parsed timer data — keyed by timer name
+// Each value: { status, interval, last_run, next_run, next_run_ts, last_run_ts, runs, dur }
+let cognTimerData  = {};
+// Parsed !cogn feedback — keyed by timer name
+// Each value: { ratio, strength, maxStr, streak, verdictIcon }
+let cognFeedback   = {};
+
+// ── Cognitive loop definitions for cards ────────────────────
+const COGN_LOOPS = [
+  { timer: 'reflection',    label: 'REFLECTION' },
+  { timer: 'prospective',   label: 'PROSPECTIVE' },
+  { timer: 'contradiction', label: 'CONTRADICTION' },
+  { timer: 'temporal_inference', label: 'TEMPORAL' },
+];
+
+// ── Poll session IDs (separate from user chat session) ──────
+const COGN_SID_T = 'cogn-timers';
+const COGN_SID_M = 'cogn-mem';
+const COGN_SID_P = 'cogn-plan';
+const COGN_SID_C = 'cogn-cogn';
+
+// ── Helpers ─────────────────────────────────────────────────
+function cognUpdateClock() {
+  cognClockEl.textContent = new Date().toTimeString().slice(0, 8);
+}
+
+async function cognCmd(cmd, sid) {
+  try {
+    const r = await fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ text: cmd, client_id: sid, wait: true }),
+    });
+    if (!r.ok) return '(error: HTTP ' + r.status + ')';
+    const j = await r.json();
+    return j.text || '(no data)';
+  } catch (e) {
+    return '(error: ' + e.message + ')';
+  }
+}
+
+// ── Timer table parser ──────────────────────────────────────
+// Parses the formatted text table from !timers into structured data.
+function parseTimerTable(text) {
+  const result = {};
+  for (const line of text.split('\n')) {
+    // Match rows: name  <icon>status  interval  last_run  next_run  runs  dur
+    // Status keywords: sleeping, running, disabled, starting, error
+    const m = line.match(
+      /^(\S+)\s+.*?(sleeping|running|disabled|starting|error)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)/
+    );
+    if (!m) continue;
+    const name = m[1];
+    result[name] = {
+      status:   m[2],
+      interval: m[3],
+      last_run: m[4],
+      next_run: m[5],
+      runs:     parseInt(m[6]),
+      dur:      m[7],
+      next_run_ts: parseTimerTs(m[5]),
+      last_run_ts: parseTimerTs(m[4]),
+    };
+  }
+  return result;
+}
+
+// Convert timer timestamp ("HH:MM:SS" today, "MM-DD HH:MM" other, "never") → Date | null
+function parseTimerTs(s) {
+  if (!s || s === 'never' || s === '-') return null;
+  const now = new Date();
+  // HH:MM:SS (today)
+  const hms = s.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+  if (hms) {
+    const d = new Date(now);
+    d.setHours(+hms[1], +hms[2], +hms[3], 0);
+    if (d.getTime() < now.getTime() - 60000) d.setDate(d.getDate() + 1);  // past → tomorrow
+    return d;
+  }
+  // MM-DD HH:MM (other day)
+  const mdhm = s.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+  if (mdhm) {
+    return new Date(now.getFullYear(), +mdhm[1] - 1, +mdhm[2], +mdhm[3], +mdhm[4], 0);
+  }
+  return null;
+}
+
+// ── !cogn output parser — extract feedback per loop ─────────
+function parseCognFeedback(text) {
+  const fb = {};
+  const sectionMap = {
+    'Reflection Loop':          'reflection_loop',
+    'Prospective Memory Loop':  'prospective_check',
+    'Contradiction Scanner':    'contradiction_scan',
+  };
+  let cur = null;
+  for (const line of text.split('\n')) {
+    for (const [hdr, key] of Object.entries(sectionMap)) {
+      if (line.includes(hdr)) { cur = key; break; }
+    }
+    if (cur && line.includes('feedback:')) {
+      const r  = line.match(/ratio=([\d.]+|n\/a)/);
+      const s  = line.match(/strength=(\d+)\/(\d+)/);
+      const st = line.match(/streak=(\d+)/);
+      // Detect verdict icon class
+      let cls = '';
+      if (line.includes('\u2713') || line.includes('useful'))     cls = 'fb-ok';
+      else if (line.includes('\u2193') || line.includes('low'))   cls = 'fb-low';
+      else if (line.includes('\u2717') || line.includes('THROTTLE') || line.includes('EXTINGUISH')) cls = 'fb-bad';
+      fb[cur] = {
+        ratio:    r  ? r[1]  : '?',
+        strength: s  ? s[1]  : '?',
+        maxStr:   s  ? s[2]  : '10',
+        streak:   st ? st[1] : '0',
+        cls,
+      };
+      cur = null;  // consume — only first feedback line per section
+    }
+  }
+  return fb;
+}
+
+// ── Countdown formatter ─────────────────────────────────────
+function fmtCountdown(target) {
+  if (!target) return '--:--:--';
+  const diff = Math.max(0, Math.floor((target.getTime() - Date.now()) / 1000));
+  if (diff === 0) return '0:00:00';
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function calcProgress(lastTs, nextTs) {
+  if (!lastTs || !nextTs) return 0;
+  const now  = Date.now();
+  const total = nextTs.getTime() - lastTs.getTime();
+  if (total <= 0) return 0;
+  return Math.min(1, Math.max(0, (now - lastTs.getTime()) / total));
+}
+
+// ── Data card definitions ───────────────────────────────────
+// Left stack: goals, beliefs, prospective, plans
+const COGN_DATA_CARDS_LEFT = [
+  { id: 'cogn-dc-goals',  label: 'GOALS',       cmd: '!cogn goals',  sid: 'cogn-dc-g',  color: '#8b5cf6', lines: 3 },
+  { id: 'cogn-dc-beliefs',label: 'BELIEFS',      cmd: '!cogn flags',  sid: 'cogn-dc-b',  color: '#0ea5e9', lines: 3 },
+  { id: 'cogn-dc-prosp',  label: 'PROSPECTIVE',  cmd: '!cogn',        sid: COGN_SID_C,   color: '#f59e0b', lines: 3 },
+  { id: 'cogn-dc-plans',  label: 'PLANS',        cmd: '!plan',        sid: COGN_SID_P,   color: '#22c55e', lines: 3 },
+];
+// Right stack (under cognition timer cards): toolstats
+const COGN_DATA_CARDS_RIGHT = [
+  { id: 'cogn-dc-tools',  label: 'TOOLSTATS',    cmd: '!toolstats',   sid: 'cogn-dc-t',  color: '#6b7280', lines: 5, fill: true },
+];
+const COGN_DATA_CARDS = [...COGN_DATA_CARDS_LEFT, ...COGN_DATA_CARDS_RIGHT];
+// Store current line-count per card for +/- resize
+const cognDcLines = {};
+
+// Default height per line in data card body (9px font * 1.5 line-height ≈ 14px)
+const DC_LINE_H = 14;
+
+function cognDcResize(cardId, delta) {
+  const body = document.querySelector('#' + cardId + ' .cogn-dc-body');
+  if (!body) return;
+  const cur = cognDcLines[cardId] || 3;
+  const next = Math.max(1, Math.min(30, cur + delta));
+  cognDcLines[cardId] = next;
+  body.style.maxHeight = (next * DC_LINE_H) + 'px';
+}
+
+// Cached data card text (updated every 30s)
+const cognDcText = {};
+
+// ── Card generation ─────────────────────────────────────────
+function _buildDcCard(dc) {
+  cognDcLines[dc.id] = dc.lines;
+  const div = document.createElement('div');
+  div.className = 'cogn-dc' + (dc.fill ? ' cogn-dc-fill' : '');
+  div.id = dc.id;
+  const controls = dc.fill ? '' :
+    '<span class="cogn-dc-controls">' +
+      '<button class="cogn-dc-btn" data-card="' + dc.id + '" data-delta="-2">\u2212</button>' +
+      '<button class="cogn-dc-btn" data-card="' + dc.id + '" data-delta="2">+</button>' +
+    '</span>';
+  const bodyStyle = dc.fill ? '' : 'max-height:' + (dc.lines * DC_LINE_H) + 'px';
+  div.innerHTML =
+    '<div class="cogn-dc-header" style="background:' + dc.color + '">' +
+      '<span class="cogn-dc-title">' + dc.label + '</span>' +
+      controls +
+    '</div>' +
+    '<div class="cogn-dc-body"' + (bodyStyle ? ' style="' + bodyStyle + '"' : '') + '>LOADING...</div>';
+  return div;
+}
+
+function cognBuildCards() {
+  cognCardStack.innerHTML = '';
+  cognDataStack.innerHTML = '';
+  cognToolsCol.innerHTML = '';
+
+  // Left stack: data cards (goals, beliefs, prospective, plans)
+  for (const dc of COGN_DATA_CARDS_LEFT) {
+    cognDataStack.appendChild(_buildDcCard(dc));
+  }
+
+  // Toolstats — own column, left of cognition cards
+  for (const dc of COGN_DATA_CARDS_RIGHT) {
+    cognToolsCol.appendChild(_buildDcCard(dc));
+  }
+
+  // Right stack: cognition timer cards
+  for (const loop of COGN_LOOPS) {
+    const div = document.createElement('div');
+    div.className = 'cogn-card';
+    div.id = 'cogn-card-' + loop.timer;
+    div.innerHTML =
+      '<div class="cogn-card-header">' +
+        '<span class="cogn-card-icon"></span>' +
+        '<span>/// COGNITION ///</span>' +
+      '</div>' +
+      '<div class="cogn-card-title">' + loop.label + '</div>' +
+      '<div class="cogn-card-rows">' +
+        '<div class="cogn-card-row"><span class="cogn-card-label">STATUS</span>'   +
+          '<span class="cogn-card-val" data-f="status">\u2014</span></div>' +
+        '<div class="cogn-card-row"><span class="cogn-card-label">COUNTDOWN</span>' +
+          '<span class="cogn-card-val cv-countdown" data-f="countdown">--:--:--</span></div>' +
+        '<div class="cogn-card-row"><span class="cogn-card-label">INTERVAL</span>' +
+          '<span class="cogn-card-val" data-f="interval">\u2014</span></div>' +
+        '<div class="cogn-card-row"><span class="cogn-card-label">RUNS</span>'     +
+          '<span class="cogn-card-val" data-f="runs">\u2014</span></div>' +
+        '<div class="cogn-card-row"><span class="cogn-card-label">LAST DUR</span>' +
+          '<span class="cogn-card-val" data-f="dur">\u2014</span></div>' +
+      '</div>' +
+      '<div class="cogn-card-progress"><div class="cogn-card-progress-bar"></div></div>' +
+      '<div class="cogn-card-fb" data-f="feedback">\u2014</div>';
+    cognCardStack.appendChild(div);
+  }
+
+  // Wire +/- buttons on both stacks
+  document.querySelectorAll('.cogn-dc-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cognDcResize(btn.dataset.card, parseInt(btn.dataset.delta));
+    });
+  });
+}
+
+// ── Card update (called after each poll + every 1s for countdowns)
+function cognUpdateCards() {
+  for (const loop of COGN_LOOPS) {
+    const card = document.getElementById('cogn-card-' + loop.timer);
+    if (!card) continue;
+    const t = cognTimerData[loop.timer];
+
+    const valOf = (f) => card.querySelector('[data-f="' + f + '"]');
+    const icon  = card.querySelector('.cogn-card-icon');
+    const prog  = card.querySelector('.cogn-card-progress-bar');
+
+    if (!t) {
+      // Timer not found — might not be registered yet
+      valOf('status').textContent   = 'NO DATA';
+      valOf('countdown').textContent = '--:--:--';
+      card.className = 'cogn-card';
+      icon.className = 'cogn-card-icon';
+      continue;
+    }
+
+    // Status
+    const sv = valOf('status');
+    sv.textContent = t.status.toUpperCase();
+    sv.className = 'cogn-card-val cv-status-' + t.status;
+
+    // Card border accent
+    card.classList.remove('card-running', 'card-error');
+    if (t.status === 'running') card.classList.add('card-running');
+    if (t.status === 'error')   card.classList.add('card-error');
+
+    // Icon
+    icon.className = 'cogn-card-icon ci-' + t.status;
+
+    // Countdown
+    const cd = valOf('countdown');
+    if (t.status === 'disabled') {
+      cd.textContent = 'DISABLED';
+    } else if (t.status === 'running') {
+      cd.textContent = 'RUNNING';
+    } else {
+      cd.textContent = fmtCountdown(t.next_run_ts);
+    }
+
+    // Static fields
+    valOf('interval').textContent = t.interval;
+    valOf('runs').textContent     = t.runs;
+    valOf('dur').textContent      = t.dur;
+
+    // Progress bar
+    if (prog) {
+      const pct = calcProgress(t.last_run_ts, t.next_run_ts);
+      prog.style.width = (pct * 100).toFixed(1) + '%';
+    }
+
+    // Feedback
+    const fbEl = valOf('feedback');
+    const fb   = cognFeedback[loop.timer];
+    if (fb) {
+      fbEl.innerHTML = 'FEEDBACK: <span class="' + fb.cls + '">R=' + fb.ratio +
+        '</span>  STR=' + fb.strength + '/' + fb.maxStr + '  STREAK=' + fb.streak;
+    } else {
+      fbEl.textContent = 'FEEDBACK: \u2014';
+    }
+  }
+}
+
+// ── Dashboard polling (every 10s) ───────────────────────────
+async function cognPoll() {
+  if (cognPollInProgress || !cognMode) return;
+  cognPollInProgress = true;
+  cognPollCount++;
+  try {
+    // Run commands sequentially (SSE streams share browser connection pool)
+    const timersText = await cognCmd('!timers', COGN_SID_T);
+    if (!cognMode) return;
+    const memText = await cognCmd('!memstats', COGN_SID_M);
+    if (!cognMode) return;
+
+    const extendedPoll = (cognPollCount % 3 === 1);
+    if (extendedPoll) {
+      cognLastPlan = await cognCmd('!plan', COGN_SID_P);
+      if (!cognMode) return;
+      cognLastCogn = await cognCmd('!cogn', COGN_SID_C);
+      if (!cognMode) return;
+      cognDcText['cogn-dc-goals']   = await cognCmd('!cogn goals', 'cogn-dc-g');
+      if (!cognMode) return;
+      cognDcText['cogn-dc-beliefs'] = await cognCmd('!cogn flags', 'cogn-dc-b');
+      if (!cognMode) return;
+      cognDcText['cogn-dc-tools']   = await cognCmd('!toolstats',  'cogn-dc-t');
+      if (!cognMode) return;
+
+      cognFeedback = parseCognFeedback(cognLastCogn);
+      cognDcText['cogn-dc-prosp']   = cognLastCogn;
+      cognDcText['cogn-dc-plans']   = cognLastPlan;
+      cognUpdateDataCards();
+    }
+
+    // Parse timer table → structured data for countdown cards
+    cognTimerData = parseTimerTable(timersText);
+    cognUpdateCards();
+
+    // Dashboard: timers only
+    cognDashContent.textContent = timersText;
+
+    // Memstats: separate right panel
+    cognMemContent.textContent = memText;
+    cognDashAge.textContent = 'UPDATED ' + new Date().toTimeString().slice(0, 8);
+  } catch (e) {
+    cognDashAge.textContent = 'POLL ERROR: ' + e.message;
+  } finally {
+    cognPollInProgress = false;
+  }
+}
+
+// ── Update data cards with polled text ──────────────────────
+function cognUpdateDataCards() {
+  for (const dc of COGN_DATA_CARDS) {
+    const body = document.querySelector('#' + dc.id + ' .cogn-dc-body');
+    if (!body) continue;
+    const text = cognDcText[dc.id];
+    if (text) body.textContent = text;
+  }
+}
+
+// ── 1s tick — clock + countdown + progress bars ─────────────
+function cognTick() {
+  if (!cognMode) return;
+  cognUpdateClock();
+  cognUpdateCards();
+}
+
+// ── Chat log ────────────────────────────────────────────────
+function cognAppendMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'cogn-msg cogn-msg-' + role;
+  if (role === 'system') {
+    div.textContent = text;
+  } else {
+    const pfx = document.createElement('span');
+    pfx.className = 'cogn-msg-prefix';
+    pfx.textContent = role === 'user' ? '\u25b6 ' : '\u25c0 ';
+    const txt = document.createElement('span');
+    txt.className = 'cogn-msg-text';
+    txt.textContent = text;
+    div.appendChild(pfx);
+    div.appendChild(txt);
+    if (role === 'assistant') {
+      const cur = document.createElement('span');
+      cur.className = 'cogn-cursor';
+      div.appendChild(cur);
+    }
+  }
+  cognChat.appendChild(div);
+  cognChat.scrollTop = cognChat.scrollHeight;
+  return div;
+}
+
+// ── Chat submit (SSE streaming into chat log) ───────────────
+async function cognChatSubmit(text) {
+  cognAppendMsg('user', text);
+  cognSendBtn.disabled = true;
+
+  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
+  isStreaming = true;
+
+  try {
+    let submitResp;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 600));
+        submitResp = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ text, client_id: SESSION_ID }),
+        });
+        if (submitResp.ok) break;
+      } catch (_) { if (attempt === 2) throw new Error('Submit failed after retries'); }
+    }
+    if (!submitResp?.ok) throw new Error('Submit failed: ' + (submitResp?.status || 'network'));
+  } catch (e) {
+    cognAppendMsg('system', 'SUBMIT ERROR: ' + e.message);
+    isStreaming = false;
+    cognSendBtn.disabled = false;
+    return;
+  }
+
+  const evtSource = new EventSource(authedUrl('/api/stream/' + SESSION_ID));
+  activeEvtSource = evtSource;
+  const mySessionId = SESSION_ID;
+
+  const msgEl   = cognAppendMsg('assistant', '');
+  const textEl  = msgEl.querySelector('.cogn-msg-text');
+  const cursorEl = msgEl.querySelector('.cogn-cursor');
+  let fullText = '';
+
+  let _pfxBuf = '', _pfxDone = false;
+  function stripPfx(raw) {
+    if (_pfxDone) return raw;
+    _pfxBuf += raw;
+    if (!_pfxBuf.startsWith('<')) { _pfxDone = true; const r = _pfxBuf; _pfxBuf = ''; return r; }
+    const m = _pfxBuf.match(/^(<<[^>]*>>\s*(?::\s*)?)+/);
+    if (m && m[0].includes('>>')) { _pfxDone = true; const r = _pfxBuf.slice(m[0].length); _pfxBuf = ''; return r; }
+    if (_pfxBuf.length > 80) { _pfxDone = true; const r = _pfxBuf; _pfxBuf = ''; return r; }
+    return '';
+  }
+
+  evtSource.onmessage = (e) => {
+    if (mySessionId !== SESSION_ID) { evtSource.close(); return; }
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'tok' || data.type === 'flush') {
+        const cleaned = stripPfx(data.text || '');
+        if (cleaned) {
+          fullText += cleaned;
+          textEl.textContent = fullText;
+          cognChat.scrollTop = cognChat.scrollHeight;
+        }
+      } else if (data.type === 'done') {
+        evtSource.close(); activeEvtSource = null;
+        isStreaming = false;
+        cognSendBtn.disabled = false;
+        if (cursorEl) cursorEl.classList.add('off');
+        cognPoll();
+      } else if (data.type === 'error') {
+        evtSource.close(); activeEvtSource = null;
+        isStreaming = false;
+        cognSendBtn.disabled = false;
+        if (cursorEl) cursorEl.classList.add('off');
+        if (data.message) cognAppendMsg('system', 'ERROR: ' + data.message);
+      }
+    } catch (_) {}
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close(); activeEvtSource = null;
+    isStreaming = false;
+    cognSendBtn.disabled = false;
+    if (cursorEl) cursorEl.classList.add('off');
+  };
+}
+
+// ── Input handling ──────────────────────────────────────────
+function cognDoSubmit() {
+  const text = cognInput.value.trim();
+  if (!text) return;
+  cognInput.value = '';
+  if (text.startsWith('#')) { handleCommand(text); return; }
+  cognChatSubmit(text);
+}
+
+cognSendBtn.addEventListener('click', () => cognDoSubmit());
+cognInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') cognDoSubmit();
+});
+
+// ── Mode enter / exit ───────────────────────────────────────
+function enterCognMode() {
+  if (cognMode) return;
+  cognMode = true;
+
+  if (typeof isListening !== 'undefined' && isListening) {
+    if (typeof getActiveProvider === 'function') getActiveProvider()?.stop();
+  }
+  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; isStreaming = false; }
+
+  document.getElementById('layout').style.display = 'none';
+  cognContainer.classList.add('active');
+
+  // Build card DOM
+  cognBuildCards();
+
+  // Start 1s tick (clock + countdowns) and 10s poll
+  cognTick();
+  cognClockTimer = setInterval(cognTick, 1000);
+  cognPollCount = 0;
+  cognLastPlan = '';
+  cognLastCogn = '';
+  cognTimerData = {};
+  cognFeedback = {};
+  cognPoll();
+  cognPollTimer = setInterval(cognPoll, 10000);
+
+  cognInput.focus();
+  cognAppendMsg('system', 'COGNITIVE MODE ACTIVE \u2014 monitoring llmem-gw at 10s resolution.');
+  cognAppendMsg('system', 'Type #mode default to return to standard interface.');
+}
+
+function exitCognMode() {
+  if (!cognMode) return;
+  cognMode = false;
+
+  clearInterval(cognPollTimer);  cognPollTimer = null;
+  clearInterval(cognClockTimer); cognClockTimer = null;
+
+  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; isStreaming = false; }
+
+  cognContainer.classList.remove('active');
+  document.getElementById('layout').style.display = 'flex';
+
+  cognChat.innerHTML = '';
+  cognCardStack.innerHTML = '';
+  cognDataStack.innerHTML = '';
+  cognToolsCol.innerHTML = '';
+  cognDashContent.textContent = 'INITIALIZING...';
+  cognDashAge.textContent = '';
+  cognMemContent.textContent = 'LOADING...';
+  cognTimerData = {};
+  cognFeedback = {};
+  for (const k in cognDcText) delete cognDcText[k];
+  for (const k in cognDcLines) delete cognDcLines[k];
+
+  showIdle(true);
+  setStatus('STANDBY', false);
+  resetIdleTimer();
+}
 </script>
 
 </body>

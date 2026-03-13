@@ -204,12 +204,19 @@ async def submit(request: Request):
     client_id = body.get("client_id", "samaritan-ui")
     logger.info("SUBMIT (%d chars): %r", len(text), text[:200])
 
-    payload = {"client_id": client_id, "text": text, "wait": False}
+    wait = body.get("wait", False)
+    payload = {"client_id": client_id, "text": text}
+    if wait:
+        payload["wait"] = True
 
-    async with httpx.AsyncClient(headers=_agent_headers(), timeout=10) as http:
+    timeout = httpx.Timeout(connect=10, read=120, write=10, pool=10) if wait else 10
+    async with httpx.AsyncClient(headers=_agent_headers(), timeout=timeout) as http:
         resp = await http.post(f"{LLMEM_GW_URL}/api/v1/submit", json=payload)
         resp.raise_for_status()
 
+    if wait:
+        data = resp.json()
+        return {"text": data.get("text", ""), "status": data.get("status", "complete")}
     return {"status": "submitted", "client_id": client_id}
 
 
