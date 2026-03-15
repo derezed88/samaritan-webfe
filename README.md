@@ -102,8 +102,10 @@ It uses the same llmem-gw backend and auth cookie as the Samaritan voice UI, but
 | Model selection | Dropdown to choose the active LLM model (passed as `model` in the submit body) |
 | Session continuity | `SESSION_ID` is persisted in `sessionStorage` so page reloads reuse the same llmem-gw session |
 | Token streaming | Same SSE `tok` / `flush` / `done` / `error` protocol as `index.html`; tokens appended to the assistant bubble in real time |
+| Voice input | Deepgram STT via `/api/stt-proxy` WebSocket; mic button toggles listen/stop |
+| Voice output | Inworld TTS toggle; speaks the full assistant response on turn completion |
 
-**Architecture note:** `chat.html` is fully independent of `index.html` — it shares no JS globals, no audio pipeline, and no TTS/STT wiring. It is a plain chat client. Both pages talk to the same llmem-gw session via the same `SESSION_ID` cookie mechanism if you keep the tab open across both pages.
+**Architecture note:** `chat.html` is fully independent of `index.html` — it shares no JS globals and no code. It includes its own Inworld TTS (`speakInworld`) and Deepgram STT pipeline (same `/api/stt-proxy` WebSocket), so `INWORLD_API_KEY` and `DEEPGRAM_API_KEY` are still needed for voice features. Both pages talk to the same llmem-gw session via the same `SESSION_ID` cookie mechanism if you keep the tab open across both pages.
 
 **Accessing it:** Navigate to `https://<host>:8800/chat` (or the Pinggy URL + `/chat`). Auth uses the same login cookie as the main UI — log in once and both pages work.
 
