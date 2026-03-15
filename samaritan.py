@@ -40,6 +40,10 @@ LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 
 app = FastAPI(title="Samaritan Interface")
 
+# Per-client SSE stream cancellation: when a new stream opens for a client_id,
+# the old one is signalled to exit so they don't compete on the same llmem-gw queue.
+_stream_cancel: dict[str, asyncio.Event] = {}
+
 # Serve static files
 static_dir = Path(__file__).parent / "static"
 static_dir.mkdir(exist_ok=True)
@@ -193,6 +197,19 @@ async def index(request: Request):
     })
 
 
+@app.get("/chat", response_class=HTMLResponse)
+async def chat(request: Request):
+    """Serve the Claude-like chat UI."""
+    if not _check_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    html_path = Path(__file__).parent / "static" / "chat.html"
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    return HTMLResponse(content=content, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+    })
+
+
 @app.post("/api/submit")
 async def submit(request: Request):
     """Submit a message to llmem-gw."""
@@ -226,6 +243,13 @@ async def stream_proxy(client_id: str, request: Request):
     if not _check_auth(request):
         return _auth_error()
 
+    # Cancel any previous generator for this client so it stops reading the shared queue
+    old = _stream_cancel.pop(client_id, None)
+    if old:
+        old.set()
+    cancel_ev = asyncio.Event()
+    _stream_cancel[client_id] = cancel_ev
+
     async def event_generator():
         stream_url = f"{LLMEM_GW_URL}/api/v1/stream/{client_id}"
         try:
@@ -239,6 +263,8 @@ async def stream_proxy(client_id: str, request: Request):
                     response_tokens = []
 
                     async for line in resp.aiter_lines():
+                        if cancel_ev.is_set():
+                            return
                         line = line.rstrip("\r")
 
                         if line.startswith("event:"):
@@ -304,6 +330,10 @@ async def stream_proxy(client_id: str, request: Request):
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            # Remove our cancel event so the dict doesn't grow unbounded
+            if _stream_cancel.get(client_id) is cancel_ev:
+                _stream_cancel.pop(client_id, None)
 
     return StreamingResponse(
         event_generator(),

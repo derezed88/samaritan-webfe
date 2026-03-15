@@ -3918,20 +3918,24 @@ function parseTimerTable(text) {
   for (const line of text.split('\n')) {
     // Match rows: name  <icon>status  interval  last_run  next_run  runs  dur
     // Status keywords: sleeping, running, disabled, starting, error
+    // last_run and next_run may be "HH:MM:SS" (1 token) or "MM-DD HH:MM" (2 tokens)
+    const TS = '(?:\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}|\\S+)';
     const m = line.match(
-      /^(\S+)\s+.*?(sleeping|running|disabled|starting|error)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)/
+      new RegExp('^(\\S+)\\s+.*?(sleeping|running|disabled|starting|error)\\s+(\\S+)\\s+(' + TS + ')\\s+(' + TS + ')\\s+(\\d+)\\s+(\\S+)')
     );
     if (!m) continue;
-    const name = m[1];
+    const name    = m[1];
+    const lastRun = m[4].trim();
+    const nextRun = m[5].trim();
     result[name] = {
       status:   m[2],
       interval: m[3],
-      last_run: m[4],
-      next_run: m[5],
+      last_run: lastRun,
+      next_run: nextRun,
       runs:     parseInt(m[6]),
       dur:      m[7],
-      next_run_ts: parseTimerTs(m[5]),
-      last_run_ts: parseTimerTs(m[4]),
+      next_run_ts: parseTimerTs(nextRun),
+      last_run_ts: parseTimerTs(lastRun),
     };
   }
   return result;
@@ -3961,9 +3965,9 @@ function parseTimerTs(s) {
 function parseCognFeedback(text) {
   const fb = {};
   const sectionMap = {
-    'Reflection Loop':          'reflection_loop',
-    'Prospective Memory Loop':  'prospective_check',
-    'Contradiction Scanner':    'contradiction_scan',
+    'Reflection Loop':          'reflection',
+    'Prospective Memory Loop':  'prospective',
+    'Contradiction Scanner':    'contradiction',
   };
   let cur = null;
   for (const line of text.split('\n')) {
@@ -4101,8 +4105,7 @@ function cognBuildCards() {
         '<div class="cogn-card-row"><span class="cogn-card-label">LAST DUR</span>' +
           '<span class="cogn-card-val" data-f="dur">\u2014</span></div>' +
       '</div>' +
-      '<div class="cogn-card-progress"><div class="cogn-card-progress-bar"></div></div>' +
-      '<div class="cogn-card-fb" data-f="feedback">\u2014</div>';
+      '<div class="cogn-card-progress"><div class="cogn-card-progress-bar"></div></div>';
     cognCardStack.appendChild(div);
   }
 
@@ -4169,15 +4172,6 @@ function cognUpdateCards() {
       prog.style.width = (pct * 100).toFixed(1) + '%';
     }
 
-    // Feedback
-    const fbEl = valOf('feedback');
-    const fb   = cognFeedback[loop.timer];
-    if (fb) {
-      fbEl.innerHTML = 'FEEDBACK: <span class="' + fb.cls + '">R=' + fb.ratio +
-        '</span>  STR=' + fb.strength + '/' + fb.maxStr + '  STREAK=' + fb.streak;
-    } else {
-      fbEl.textContent = 'FEEDBACK: \u2014';
-    }
   }
 }
 
