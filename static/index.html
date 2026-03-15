@@ -1876,10 +1876,21 @@ function handleCommand(raw) {
     case '#mode':
       if (args[0] === 'cognitive') enterCognMode();
       else if (args[0] === 'default') exitCognMode();
-      else flashError('usage: #mode <cognitive|default>');
+      else if (args[0] === 'chat') enterChatMode();
+      else flashError('usage: #mode <cognitive|default|chat>');
+      break;
+    case '#db':
+      if (!args[0]) { flashError('usage: #db <name>'); break; }
+      if (cognMode) cognSwitchDb(args[0]);
+      else flashError('#db only applies in cognitive mode');
       break;
     default: flashError('unknown command: ' + cmd);
   }
+}
+
+// ── Mode: enter chat ─────────────────────────────────────────
+function enterChatMode() {
+  window.location.href = '/chat';
 }
 
 // ── Keyword card engine ───────────────────────────────────────
@@ -3862,6 +3873,11 @@ const COGN_SID_T = 'cogn-timers';
 const COGN_SID_M = 'cogn-mem';
 const COGN_SID_P = 'cogn-plan';
 const COGN_SID_C = 'cogn-cogn';
+// All session IDs used by cognitive mode (for db switching)
+const COGN_ALL_SIDS = [COGN_SID_T, COGN_SID_M, COGN_SID_P, COGN_SID_C,
+                       'cogn-dc-g', 'cogn-dc-b', 'cogn-dc-t'];
+
+let cognDb = null;  // currently active db for cognitive sessions
 
 // ── Helpers ─────────────────────────────────────────────────
 function cognUpdateClock() {
@@ -3881,6 +3897,17 @@ async function cognCmd(cmd, sid) {
   } catch (e) {
     return '(error: ' + e.message + ')';
   }
+}
+
+// ── Switch db on all cognitive sessions ─────────────────────
+async function cognSwitchDb(name) {
+  if (!name) return;
+  cognDb = name;
+  // Fire all db switches in parallel — don't await sequentially
+  await Promise.all(COGN_ALL_SIDS.map(sid => cognCmd('!db switch ' + name, sid)));
+  cognAppendMsg('system', 'DB switched to [' + name + '] on all cognitive sessions.');
+  // Trigger immediate poll to refresh all panels
+  cognPoll();
 }
 
 // ── Timer table parser ──────────────────────────────────────
@@ -4366,12 +4393,16 @@ function enterCognMode() {
   cognLastCogn = '';
   cognTimerData = {};
   cognFeedback = {};
-  cognPoll();
-  cognPollTimer = setInterval(cognPoll, 10000);
+
+  // Sync all cognitive sessions to the current db (default on first entry)
+  const initDb = cognDb || 'default';
+  cognDb = initDb;
+  Promise.all(COGN_ALL_SIDS.map(sid => cognCmd('!db switch ' + initDb, sid)))
+    .then(() => { cognPoll(); cognPollTimer = setInterval(cognPoll, 10000); });
 
   cognInput.focus();
-  cognAppendMsg('system', 'COGNITIVE MODE ACTIVE \u2014 monitoring llmem-gw at 10s resolution.');
-  cognAppendMsg('system', 'Type #mode default to return to standard interface.');
+  cognAppendMsg('system', 'COGNITIVE MODE ACTIVE \u2014 monitoring llmem-gw at 10s resolution. DB: [' + initDb + ']');
+  cognAppendMsg('system', 'Type #mode default to return. Use #db <name> to switch database.');
 }
 
 function exitCognMode() {
