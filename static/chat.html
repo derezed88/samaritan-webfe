@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+    onload="window._katexReady=true"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #FAFAFA;
+      --bg-alt:       #F3F3F5;
+      --text:         #1A1A1A;
+      --text-muted:   #6B7280;
+      --accent:       #7C3AED;
+      --accent-light: #EDE9FE;
+      --border:       #E5E7EB;
+      --bubble-user:  #7C3AED;
+      --bubble-asst:  #F3F3F5;
+      --input-bg:     #FFFFFF;
+      --shadow:       rgba(0,0,0,0.08);
+      --sidebar-w:    260px;
+    }
+
+    [data-theme="dark"] {
+      --bg:           #1A1A1A;
+      --bg-alt:       #111111;
+      --text:         #E5E5E5;
+      --text-muted:   #9CA3AF;
+      --accent:       #A78BFA;
+      --accent-light: #2D1F5E;
+      --border:       #2D2D2D;
+      --bubble-user:  #A78BFA;
+      --bubble-asst:  #242424;
+      --input-bg:     #1F1F1F;
+      --shadow:       rgba(0,0,0,0.3);
+    }
+
+    html, body { height: 100%; overflow: hidden; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      height: 100%;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      background: var(--bg-alt);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transition: width 0.25s ease, min-width 0.25s ease, opacity 0.2s ease;
+      overflow: hidden;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+    #sidebar.collapsed {
+      width: 0;
+      min-width: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #sidebar-inner {
+      width: var(--sidebar-w);
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      padding: 12px 0;
+      overflow: hidden;
+    }
+
+    #sidebar-header {
+      padding: 4px 12px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #new-chat-btn {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.15s;
+    }
+    #new-chat-btn:hover { opacity: 0.88; }
+
+    #sidebar-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 12px 16px 6px;
+      flex-shrink: 0;
+    }
+
+    #db-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px;
+    }
+
+    .db-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 7px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13.5px;
+      color: var(--text);
+      transition: background 0.12s;
+      overflow: hidden;
+      user-select: none;
+    }
+    .db-row:hover { background: var(--border); }
+    .db-row.active { background: var(--accent-light); color: var(--accent); font-weight: 500; }
+    .db-row-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .db-row-icon { flex-shrink: 0; font-size: 13px; opacity: 0.6; }
+    .db-trash {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      padding: 2px 4px;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 13px;
+      opacity: 0;
+      transition: opacity 0.1s, color 0.1s;
+    }
+    .db-row:hover .db-trash { opacity: 1; }
+    .db-trash:hover { color: #EF4444; }
+
+    /* ── Main ── */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* ── Top bar ── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--bg);
+    }
+
+    #hamburger {
+      background: none;
+      border: none;
+      padding: 6px;
+      cursor: pointer;
+      color: var(--text-muted);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+    #hamburger:hover { color: var(--text); }
+    #hamburger span {
+      display: block;
+      width: 18px;
+      height: 2px;
+      background: currentColor;
+      border-radius: 2px;
+    }
+
+    #current-db-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Chat area ── */
+    #chat-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 0 8px;
+    }
+
+    #chat-messages {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px 20px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Empty state ── */
+    #empty-state {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -60%);
+      text-align: center;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #empty-state.hidden { opacity: 0; pointer-events: none; }
+    #empty-state h1 {
+      font-size: 26px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    #empty-state p { font-size: 15px; color: var(--text-muted); }
+
+    /* ── Message bubbles ── */
+    .msg-row {
+      display: flex;
+      flex-direction: column;
+    }
+    .msg-row.user { align-items: flex-end; }
+    .msg-row.assistant { align-items: flex-start; }
+
+    .msg-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .msg-bubble {
+      padding: 12px 16px;
+      border-radius: 16px;
+      line-height: 1.6;
+      font-size: 15px;
+      max-width: 85%;
+      word-break: break-word;
+    }
+    .msg-row.user .msg-bubble {
+      background: var(--bubble-user);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg-row.assistant .msg-bubble {
+      background: var(--bubble-asst);
+      color: var(--text);
+      border-bottom-left-radius: 4px;
+      max-width: 100%;
+    }
+
+    /* Markdown inside bubbles */
+    .msg-bubble strong { font-weight: 600; }
+    .msg-bubble em { font-style: italic; }
+    .msg-bubble code {
+      font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+      font-size: 0.88em;
+      background: rgba(0,0,0,0.08);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    .msg-row.user .msg-bubble code { background: rgba(255,255,255,0.2); }
+    .msg-bubble pre {
+      background: rgba(0,0,0,0.07);
+      border-radius: 8px;
+      padding: 12px 14px;
+      overflow-x: auto;
+      margin: 8px 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    [data-theme="dark"] .msg-bubble pre { background: rgba(0,0,0,0.3); }
+    .msg-bubble pre code { background: none; padding: 0; }
+    .msg-bubble p + p { margin-top: 10px; }
+    .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 6px 0; }
+    .msg-bubble li { margin: 3px 0; }
+
+    .memory-sep {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 6px;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      margin: 4px 0;
+    }
+
+    /* Typing cursor */
+    .streaming-cursor::after {
+      content: '▋';
+      animation: blink 1s step-end infinite;
+      color: var(--accent);
+      font-size: 0.9em;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── Input area ── */
+    #input-area {
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      padding: 12px 16px 16px;
+      flex-shrink: 0;
+    }
+
+    /* Centered layout when no messages */
+    #input-wrapper {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    /* When in empty-state, lift the input to center of viewport */
+    body.empty-mode #chat-scroll { pointer-events: none; }
+    body.empty-mode #input-area {
+      position: absolute;
+      bottom: 50%;
+      left: 0; right: 0;
+      transform: translateY(50%);
+      border: none;
+      background: transparent;
+    }
+    body.empty-mode #input-wrapper {
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 4px 24px var(--shadow);
+    }
+
+    #input-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 6px 8px 6px 14px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    body.empty-mode #input-row {
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 10px 10px 10px 16px;
+    }
+    #input-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+    body.empty-mode #input-row:focus-within { box-shadow: none; border: none; }
+
+    #text-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-family: inherit;
+      font-size: 15px;
+      color: var(--text);
+      resize: none;
+      line-height: 1.5;
+      max-height: calc(6 * 1.5 * 15px);
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    #text-input::placeholder { color: var(--text-muted); }
+
+    .input-btn {
+      background: none;
+      border: none;
+      padding: 6px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s, background 0.12s;
+      flex-shrink: 0;
+    }
+    .input-btn:hover { color: var(--text); background: var(--border); }
+    .input-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #send-btn {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      padding: 6px 10px;
+    }
+    #send-btn:hover { opacity: 0.88; background: var(--accent); color: #fff; }
+    #send-btn:disabled { opacity: 0.35; }
+
+    #mic-btn.active { color: #EF4444; }
+    #mic-btn.active svg { animation: pulse-red 1.5s ease-in-out infinite; }
+    @keyframes pulse-red {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    #tts-btn.active { color: var(--accent); }
+
+    #toolbar-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 2px 0;
+    }
+
+    #model-select {
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--text-muted);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+      outline: none;
+    }
+    #model-select:focus { border-color: var(--accent); }
+
+    #status-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Scrollbar ── */
+    #chat-scroll::-webkit-scrollbar { width: 4px; }
+    #chat-scroll::-webkit-scrollbar-track { background: transparent; }
+    #chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    #db-list::-webkit-scrollbar { width: 4px; }
+    #db-list::-webkit-scrollbar-track { background: transparent; }
+    #db-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Mobile ── */
+    @media (max-width: 600px) {
+      :root { --sidebar-w: 80vw; }
+      #sidebar:not(.collapsed) {
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        z-index: 50;
+        box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+      }
+      #sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.4);
+        z-index: 40;
+      }
+      #sidebar-overlay.visible { display: block; }
+      #chat-messages { padding: 16px 12px 8px; }
+      .msg-bubble { font-size: 14px; }
+    }
+  </style>
+</head>
+<body class="empty-mode">
+
+  <!-- Sidebar overlay for mobile -->
+  <div id="sidebar-overlay"></div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div id="sidebar-inner">
+      <div id="sidebar-header">
+        <button id="new-chat-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Chat
+        </button>
+      </div>
+      <div id="sidebar-section-label">Chats</div>
+      <div id="db-list">
+        <!-- DB rows injected here -->
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div id="main">
+    <!-- Top bar -->
+    <div id="topbar">
+      <button id="hamburger" title="Toggle sidebar">
+        <span></span><span></span><span></span>
+      </button>
+      <div id="current-db-label">—</div>
+    </div>
+
+    <!-- Chat scroll area -->
+    <div id="chat-scroll">
+      <div id="chat-messages"></div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state">
+      <h1>Claude Chat</h1>
+      <p>Start a conversation below.</p>
+    </div>
+
+    <!-- Input area -->
+    <div id="input-area">
+      <div id="input-wrapper">
+        <div id="input-row">
+          <textarea id="text-input" rows="1" placeholder="Message Claude..." autocomplete="off" spellcheck="true"></textarea>
+          <button class="input-btn" id="mic-btn" title="Voice input">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+          <button class="input-btn" id="tts-btn" title="Toggle voice output">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            </svg>
+          </button>
+          <button class="input-btn" id="send-btn" title="Send (Enter)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
+        </div>
+        <div id="toolbar-row">
+          <select id="model-select" title="Select model">
+            <option value="">Loading…</option>
+          </select>
+          <div id="status-text"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+'use strict';
+
+// ── Auth ──────────────────────────────────────────────────────
+// Auth is handled by the session cookie set at /login — no Bearer header needed.
+// The _apiKey is kept only for the SSE ?token= fallback (EventSource can't set headers).
+const _apiKey = '%%SAMARITAN_API_KEY%%';
+function authHeaders() { return {}; }
+
+// ── Session ID ────────────────────────────────────────────────
+const SESSION_KEY = 'chat_session_id';
+let SESSION_ID = sessionStorage.getItem(SESSION_KEY);
+if (!SESSION_ID) {
+  SESSION_ID = 'chat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  sessionStorage.setItem(SESSION_KEY, SESSION_ID);
+}
+
+// ── Theme ─────────────────────────────────────────────────────
+(function applyTheme() {
+  const h = new Date().getHours();
+  document.documentElement.setAttribute('data-theme', (h < 7 || h >= 20) ? 'dark' : 'light');
+})();
+
+// ── DOM refs ──────────────────────────────────────────────────
+const sidebar       = document.getElementById('sidebar');
+const sidebarOvl    = document.getElementById('sidebar-overlay');
+const hamburger     = document.getElementById('hamburger');
+const newChatBtn    = document.getElementById('new-chat-btn');
+const dbList        = document.getElementById('db-list');
+const currentDbLbl  = document.getElementById('current-db-label');
+const chatMessages  = document.getElementById('chat-messages');
+const chatScroll    = document.getElementById('chat-scroll');
+const emptyState    = document.getElementById('empty-state');
+const textInput     = document.getElementById('text-input');
+const sendBtn       = document.getElementById('send-btn');
+const micBtn        = document.getElementById('mic-btn');
+const ttsBtn        = document.getElementById('tts-btn');
+const modelSelect   = document.getElementById('model-select');
+const statusText    = document.getElementById('status-text');
+
+// ── State ─────────────────────────────────────────────────────
+let currentDb       = null;
+let knownDbs        = [];
+let activeEvtSource = null;
+let isStreaming     = false;
+let ttsEnabled      = false;
+let micActive       = false;
+let currentAsst     = null; // current streaming assistant bubble element
+let currentAsstText = '';   // raw text accumulating in current bubble
+
+// Protected DBs — no delete allowed
+const PROTECTED_DBS = new Set(['mymcp', 'qwen']);
+
+// ── Sidebar toggle ────────────────────────────────────────────
+function openSidebar() {
+  sidebar.classList.remove('collapsed');
+  sidebarOvl.classList.add('visible');
+}
+function closeSidebar() {
+  sidebar.classList.add('collapsed');
+  sidebarOvl.classList.remove('visible');
+}
+
+hamburger.addEventListener('click', () => {
+  sidebar.classList.contains('collapsed') ? openSidebar() : closeSidebar();
+});
+sidebarOvl.addEventListener('click', closeSidebar);
+
+// Start collapsed on mobile
+if (window.innerWidth <= 600) sidebar.classList.add('collapsed');
+
+// ── Status helper ─────────────────────────────────────────────
+function setStatus(msg) { statusText.textContent = msg; }
+
+// ── Simple markdown renderer ──────────────────────────────────
+// Run KaTeX auto-render on a DOM element after its innerHTML is set.
+function renderMath(el) {
+  if (!window._katexReady || typeof renderMathInElement === 'undefined') return;
+  // NOTE: single $...$ deliberately omitted — conflicts with currency ($20, $5 etc.)
+  // Use \(...\) for inline math and \[...\] or $$...$$ for display math.
+  renderMathInElement(el, {
+    delimiters: [
+      { left: '\\(', right: '\\)', display: false },
+      { left: '\\[', right: '\\]', display: true  },
+      { left: '$$',  right: '$$',  display: true  },
+    ],
+    throwOnError: false,
+  });
+}
+
+// Wrap bare math expressions (e.g. 2^3, x^2) in $...$ so KaTeX renders them.
+// Protects existing math zones and code blocks from double-wrapping.
+function preprocessMath(text) {
+  // Fix JSON decoding artifact: \t (tab) from \times, \theta etc.
+  text = text.replace(/\t/g, '\\t');
+  const saved = [];
+  text = text.replace(/```[\s\S]*?```|`[^`]+`|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, function(m) {
+    const idx = saved.length; saved.push(m); return '\x01M' + idx + '\x01';
+  });
+  // Convert $...$ → \(...\) only when content looks like LaTeX (has \, {, ^, _)
+  text = text.replace(/\$([^$\n]+)\$/g, function(m, inner) {
+    return /[\\{^_]/.test(inner) ? '\\(' + inner + '\\)' : m;
+  });
+  // Wrap math operators in \(...\).
+  // Handles both bare ("times") and already-backslashed ("\times").
+  // (?<!\w) avoids subwords like "dividend", "sometimes".
+  // \\? optionally consumes an existing preceding backslash.
+  // Uses string concat — NOT template literals — to avoid \t tab-escape ambiguity.
+  text = text.replace(/(?<!\w)\\?(times|div|cdot|pm|leq|geq|neq|approx|infty|rightarrow|leftarrow|equiv|subset|cup|cap|mod)(?!\w)/g,
+    function(m, cmd) { return '\\(' + '\\' + cmd + '\\)'; });
+  // Wrap bare exponents: 2^3 → \(2^3\)
+  text = text.replace(/([a-zA-Z]?[0-9]+|[a-zA-Z])\^(\{[^}]+\}|[0-9]+[a-zA-Z]?|[a-zA-Z])/g,
+    function(m) { return '\\(' + m + '\\)'; });
+  // Restore protected zones
+  text = text.replace(/\x01M(\d+)\x01/g, function(_, i) { return saved[i]; });
+  return text;
+}
+
+function renderMarkdown(text) {
+  // Escape HTML
+  const esc = (s) => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Process code blocks first (triple backtick)
+  const codeBlocks = [];
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code>${esc(code.trim())}</code></pre>`);
+    return `\x00CODE${idx}\x00`;
+  });
+
+  // Inline code
+  text = text.replace(/`([^`]+)`/g, (_, code) => `<code>${esc(code)}</code>`);
+
+  // Bold and italic
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  text = text.replace(/___(.+?)___/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  text = text.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  // Headings
+  text = text.replace(/^### (.+)$/gm, '<strong>$1</strong>');
+  text = text.replace(/^## (.+)$/gm, '<strong>$1</strong>');
+  text = text.replace(/^# (.+)$/gm, '<strong>$1</strong>');
+
+  // Unordered lists
+  text = text.replace(/^[\*\-] (.+)$/gm, '<li>$1</li>');
+  text = text.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
+
+  // Ordered lists
+  text = text.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+  // Paragraphs: double newline
+  const paras = text.split(/\n{2,}/);
+  text = paras.map(p => {
+    p = p.trim();
+    if (!p) return '';
+    if (p.startsWith('<ul>') || p.startsWith('<pre>') || p.startsWith('\x00CODE')) return p;
+    return '<p>' + p.replace(/\n/g, '<br>') + '</p>';
+  }).join('');
+
+  // Restore code blocks
+  text = text.replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)]);
+
+  return text;
+}
+
+// ── Chat UI ───────────────────────────────────────────────────
+function exitEmptyMode() {
+  if (!document.body.classList.contains('empty-mode')) return;
+  document.body.classList.remove('empty-mode');
+  emptyState.classList.add('hidden');
+}
+
+function addMessage(role, text, streaming = false) {
+  exitEmptyMode();
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + role;
+
+  const label = document.createElement('div');
+  label.className = 'msg-label';
+  label.textContent = role === 'user' ? 'You' : 'Assistant';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  if (streaming) bubble.classList.add('streaming-cursor');
+
+  if (role === 'user') {
+    bubble.textContent = text;
+  } else {
+    bubble.innerHTML = renderMarkdown(text);
+    renderMath(bubble);
+  }
+
+  row.appendChild(label);
+  row.appendChild(bubble);
+  chatMessages.appendChild(row);
+  scrollToBottom();
+  return bubble;
+}
+
+function addMemorySeparator() {
+  const sep = document.createElement('div');
+  sep.className = 'memory-sep';
+  sep.textContent = '— Memory —';
+  chatMessages.appendChild(sep);
+}
+
+function clearChat() {
+  chatMessages.innerHTML = '';
+  document.body.classList.add('empty-mode');
+  emptyState.classList.remove('hidden');
+  currentAsst = null;
+  currentAsstText = '';
+}
+
+function scrollToBottom() {
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
+// ── DB sidebar rendering ──────────────────────────────────────
+function renderDbList() {
+  dbList.innerHTML = '';
+  knownDbs.forEach(name => {
+    const row = document.createElement('div');
+    row.className = 'db-row' + (name === currentDb ? ' active' : '');
+    row.dataset.db = name;
+
+    const isProtected = PROTECTED_DBS.has(name);
+
+    const icon = document.createElement('span');
+    icon.className = 'db-row-icon';
+    icon.textContent = isProtected ? '🔒' : '💬';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'db-row-name';
+    nameEl.textContent = name;
+
+    row.appendChild(icon);
+    row.appendChild(nameEl);
+
+    if (!isProtected) {
+      const trash = document.createElement('button');
+      trash.className = 'db-trash';
+      trash.title = 'Delete chat';
+      trash.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+      trash.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete chat "${name}"? This cannot be undone.`)) return;
+        await deleteDb(name);
+      });
+      row.appendChild(trash);
+    }
+
+    row.addEventListener('click', () => switchToDb(name));
+    dbList.appendChild(row);
+  });
+}
+
+function updateDbLabel() {
+  currentDbLbl.textContent = currentDb || '—';
+}
+
+// ── API helpers ───────────────────────────────────────────────
+// runCommand: submit a command and return the full streamed text response.
+// Uses a unique per-call client_id so it never collides with the main chat stream.
+// Uses fetch-based SSE reading instead of EventSource — EventSource auto-reconnects
+// after the server closes the connection (which it does after sending 'done'), causing
+// a spurious onerror that races with the message handler. fetch reads until EOF cleanly.
+async function runCommand(cmd, timeoutMs = 15000) {
+  const id = SESSION_ID + '-cmd-' + Date.now().toString(36);
+  await fetch('/api/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: cmd, client_id: id }),
+  });
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let reader = null;
+  try {
+    const resp = await fetch(
+      `/api/stream/${encodeURIComponent(id)}?token=${encodeURIComponent(_apiKey)}`,
+      { signal: ctrl.signal }
+    );
+    reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', full = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let msg; try { msg = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+        if (msg.type === 'tok' || msg.type === 'flush') full += (msg.text || '');
+        else if (msg.type === 'done') { clearTimeout(timer); reader.cancel(); return full; }
+        else if (msg.type === 'error') throw new Error(msg.message || 'stream error');
+      }
+    }
+    return full;
+  } finally {
+    clearTimeout(timer);
+    if (reader) try { reader.cancel(); } catch (_) {}
+  }
+}
+
+// ── Model list ────────────────────────────────────────────────
+// Parse !model output:
+//   Available models:
+//     key          model_id (current)
+//     key2         model_id2
+//     key3         model_id3  [disabled]
+function parseModelList(text) {
+  const models = [];
+  let current = null;
+  for (const line of text.split('\n')) {
+    // Match lines like "  key   model_id (current)" or "  key   model_id  [disabled]"
+    const m = line.match(/^\s+([a-zA-Z0-9_\-\.]+)\s+(\S.*?)(\s+\(current\))?(\s+\[disabled\])?\s*$/);
+    if (!m) continue;
+    const key     = m[1];
+    const label   = m[2].trim();
+    const isCur   = !!m[3];
+    const disabled = !!m[4];
+    if (disabled) continue;  // skip disabled models
+    models.push({ key, label });
+    if (isCur) current = key;
+  }
+  return { models, current };
+}
+
+let currentModel = 'default-chat';
+
+async function loadModelList() {
+  try {
+    // Use throwaway session for the list — model list is global.
+    // currentModel is already set by switchSessionModel; pre-select it in the dropdown.
+    const text = await runCommand('!model');
+    const { models } = parseModelList(text);
+    modelSelect.innerHTML = '';
+    if (models.length === 0) {
+      modelSelect.innerHTML = '<option value="">No models</option>';
+      return;
+    }
+    for (const { key } of models) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = key;
+      if (key === currentModel) opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+  } catch (e) {
+    modelSelect.innerHTML = '<option value="">Error</option>';
+  }
+}
+
+// ── Memory display ────────────────────────────────────────────
+// Strip llmem-gw metadata from !memory list output:
+//   [ N] imp=X [tag] content       → show content
+//   [content] imp= []              → show content
+//   [content] imp=session [N] role → show content
+// Skips header/footer lines.
+// Known LaTeX commands that may be stored without backslash
+const _LATEX_CMDS = 'frac|sqrt|sum|int|prod|lim|sin|cos|tan|log|ln|exp|binom|cdot|times|pm|pi|alpha|beta|gamma|delta|theta|sigma|omega|mu|lambda|epsilon|phi|infty|partial|hat|bar|vec|overline|underline|text|mathrm|mathbf';
+const _LATEX_RE = new RegExp(`(?<!\\\\)\\b(${_LATEX_CMDS})\\b(?=\\s*[_{])`, 'g');
+
+// Strip leading [ (and trailing ] if fully wrapped) from a content string.
+// Preserves real markdown links which always contain ]( somewhere.
+function _stripBrackets(s) {
+  if (!s.startsWith('[')) return s;
+  if (s.includes('](')) return s;      // looks like [text](url) — keep
+  s = s.slice(1);                       // strip leading [
+  if (s.endsWith(']')) s = s.slice(0, -1); // strip trailing ] if fully wrapped
+  return s;
+}
+
+// Apply LaTeX/math post-processing to assistant content
+function _processAssistantContent(text) {
+  text = text.replace(/\t/g, '\\t');
+  text = text.replace(_LATEX_RE, '\\$1');
+  text = text.replace(/(?<!\\[\(\[])\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '\\(\\frac{$1}{$2}\\)');
+  text = text.replace(/(?<!\\[\(\[])\\sqrt\{([^{}]*)\}/g, '\\(\\sqrt{$1}\\)');
+  text = text.replace(/(?<!\\[\(\[])\\binom\{([^{}]*)\}\{([^{}]*)\}/g, '\\(\\binom{$1}{$2}\\)');
+  return preprocessMath(text);
+}
+
+// Parse pipe-delimited !db_query output into [{source, content}]
+// Format: "id | source | content\n---+--------+-------\n1 | user | hello\n..."
+// Content may contain embedded newlines — use id column as row anchor.
+function parseDbQueryRows(text) {
+  var rows = [];
+  var lines = text.split('\n');
+  // Find separator line (---+---+---)
+  var dataStart = -1;
+  for (var i = 0; i < lines.length; i++) {
+    if (/^-+\+-/.test(lines[i].trim())) { dataStart = i + 1; break; }
+  }
+  if (dataStart < 0) return rows;
+
+  // Each data row starts with "id | source | content"
+  var current = null;
+  for (var i = dataStart; i < lines.length; i++) {
+    var line = lines[i];
+    // Row anchor: starts with digits (id column) then " | "
+    var m = line.match(/^\d+\s*\|\s*(user|session|assistant|directive)\s*\|\s*(.*)/);
+    if (m) {
+      if (current) rows.push(current);
+      current = { source: m[1].trim(), content: m[2].trimEnd() };
+    } else if (current && line.trim()) {
+      // Continuation of previous row's content (embedded newline)
+      current.content += '\n' + line;
+    }
+  }
+  if (current) rows.push(current);
+  return rows;
+}
+
+// Load and display short-term memory as individual chat turns
+async function loadMemoryTurns(dbName) {
+  if (!dbName) return;
+  var table = '`' + dbName + '`.`' + dbName + '_memory_shortterm`';
+  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
+  var result = await runOnSession('!db_query ' + sql);
+  if (!result || result.trim() === '(no rows)') return;
+
+  var rows = parseDbQueryRows(result);
+  if (!rows.length) return;
+
+  addMemorySeparator();
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var text = row.content.replace(/\n{3,}/g, '\n\n').trim();
+    if (!text) continue;
+
+    if (row.source === 'user') {
+      addMessage('user', text);
+    } else if (row.source === 'session' || row.source === 'assistant') {
+      var bubble = addMessage('assistant', '');
+      bubble.innerHTML = renderMarkdown(_processAssistantContent(text));
+      renderMath(bubble);
+    }
+    // Skip directive entries
+  }
+}
+
+// ── DB management ─────────────────────────────────────────────
+// Parse `!db sessions` output:
+//   User-created databases (N)  [...]:
+//     name  tables=N  created=TIMESTAMP  (current)
+// Also handles "No user-created databases" → empty list.
+function parseSessionsList(text) {
+  const names = [];
+  let current = null;
+  for (const line of text.split('\n')) {
+    // Match lines like "  leegeneral  tables=19  created=2026-03-15T01:36:12Z  (current)"
+    const m = line.match(/^\s+([a-zA-Z0-9_]+)\s+tables=/);
+    if (!m) continue;
+    const name = m[1];
+    names.push(name);
+    if (/\(current\)/.test(line)) current = name;
+  }
+  return { names, current };
+}
+
+async function loadDbList() {
+  setStatus('Loading chats…');
+  try {
+    const text = await runCommand('!db sessions');
+    const { names } = parseSessionsList(text);
+    // Don't trust the throwaway session's (current) — only track currentDb via runOnSession calls
+    knownDbs = names;
+    updateDbLabel();
+    renderDbList();
+    setStatus('');
+  } catch (e) {
+    setStatus('Failed to load chats');
+    console.error('loadDbList:', e);
+  }
+}
+
+async function switchToDb(name) {
+  if (name === currentDb && knownDbs.includes(name)) {
+    // Already here — just reload memory
+  } else {
+    setStatus(`Switching to ${name}…`);
+    try {
+      await runOnSession(`!db switch ${name}`);
+    } catch (e) {
+      setStatus('Switch failed');
+      return;
+    }
+    currentDb = name;
+    if (!knownDbs.includes(name)) knownDbs.push(name);
+    updateDbLabel();
+    renderDbList();
+  }
+
+  // Load memory for this db
+  clearChat();
+  setStatus(`Loading history…`);
+  try {
+    await loadMemoryTurns(currentDb);
+    setStatus('');
+  } catch (e) {
+    setStatus('');
+  }
+
+  // Close sidebar on mobile after switching
+  if (window.innerWidth <= 600) closeSidebar();
+}
+
+async function createNewChat() {
+  // Prompt user for a chat name (lowercase letters, digits, underscores)
+  const raw = prompt('Chat name (lowercase letters, digits, underscores):');
+  if (!raw) return;
+  const name = raw.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (!name || !/^[a-z]/.test(name)) {
+    alert('Name must start with a letter and contain only lowercase letters, digits, or underscores.');
+    return;
+  }
+  setStatus(`Creating ${name}…`);
+  try {
+    await runOnSession(`!db switch ${name}`);
+    currentDb = name;
+    if (!knownDbs.includes(name)) knownDbs.unshift(name);
+    updateDbLabel();
+    renderDbList();
+    clearChat();
+    setStatus('New chat ready');
+    setTimeout(() => setStatus(''), 2000);
+  } catch (e) {
+    setStatus('Failed to create chat');
+  }
+}
+
+async function deleteDb(name) {
+  setStatus(`Deleting ${name}…`);
+  try {
+    await runOnSession(`!db delete ${name} confirm`);
+    knownDbs = knownDbs.filter(d => d !== name);
+    if (currentDb === name) {
+      // Switch to first available
+      if (knownDbs.length) {
+        await switchToDb(knownDbs[0]);
+      } else {
+        clearChat();
+        currentDb = null;
+        updateDbLabel();
+      }
+    }
+    renderDbList();
+    setStatus('');
+  } catch (e) {
+    setStatus('Delete failed');
+  }
+}
+
+// ── Submit / stream ───────────────────────────────────────────
+function ttsClean(t) {
+  return t
+    .replace(/<<[^>]*>>\s*(?::\s*)?/g, '')
+    .replace(/\[thinking[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*[▶◀][^\]]*\]/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*/g, '').replace(/\*/g, '').replace(/_/g, '')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`{3}[\s\S]*?`{3}/g, '').replace(/`([^`]*)`/g, '$1')
+    .replace(/'''[\s\S]*?'''/g, '')
+    .replace(/^[-*_]{3,}$/gm, '').replace(/[-*_]{3,}/g, ', ')
+    .replace(/^[\*\-]\s+/gm, '').replace(/^\d+\.\s+/gm, '')
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/\|/g, ' ')
+    .replace(/\\/g, '')
+    .replace(/—|–/g, ', ')
+    .replace(/…/g, '...')
+    .replace(/[""]/g, '"').replace(/['']/g, "'")
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&[a-z]+;/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[^\x00-\x7F]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+async function submitText(text) {
+  if (!text.trim() || isStreaming) return;
+
+  // Close any existing stream
+  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
+  isStreaming = true;
+  sendBtn.disabled = true;
+  setStatus('Thinking…');
+
+  addMessage('user', text);
+
+  // Start assistant bubble
+  currentAsstText = '';
+  currentAsst = addMessage('assistant', '', true);
+
+  try {
+    await fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ text, client_id: SESSION_ID }),
+    });
+  } catch (e) {
+    currentAsst.classList.remove('streaming-cursor');
+    currentAsst.textContent = '[Error submitting: ' + e.message + ']';
+    finishStream();
+    return;
+  }
+
+  const mySessionId = SESSION_ID;
+  const es = new EventSource(`/api/stream/${encodeURIComponent(SESSION_ID)}?token=${encodeURIComponent(_apiKey)}`);
+  activeEvtSource = es;
+
+  // samaritan.py wraps all SSE as plain `data:` (no event: line) → all arrive as 'message'.
+  // Payload is JSON: {"type": "tok"|"flush"|"done"|"error"|"vtok", ...}
+  es.onmessage = (e) => {
+    if (SESSION_ID !== mySessionId) { es.close(); activeEvtSource = null; return; }
+    let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
+    if (msg.type === 'tok' || msg.type === 'flush') {
+      currentAsstText += (msg.text || '');
+      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
+      scrollToBottom();
+    } else if (msg.type === 'done') {
+      es.close();
+      activeEvtSource = null;
+      currentAsst.classList.remove('streaming-cursor');
+      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
+      renderMath(currentAsst);
+      scrollToBottom();
+      if (ttsEnabled && currentAsstText.trim()) {
+        speakInworld(ttsClean(currentAsstText));
+      }
+      finishStream();
+    } else if (msg.type === 'error') {
+      es.close();
+      activeEvtSource = null;
+      currentAsst.classList.remove('streaming-cursor');
+      if (!currentAsstText) currentAsst.textContent = '[Error: ' + (msg.message || 'stream error') + ']';
+      finishStream();
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    activeEvtSource = null;
+    currentAsst.classList.remove('streaming-cursor');
+    if (!currentAsstText) currentAsst.textContent = '[Connection error]';
+    finishStream();
+  };
+}
+
+function finishStream() {
+  isStreaming = false;
+  sendBtn.disabled = false;
+  setStatus('');
+  currentAsst = null;
+}
+
+// ── Send button / Enter key ───────────────────────────────────
+// Run a command on SESSION_ID (so it persists in the main chat session) and
+// return the full streamed text. Used for !db switch, !model, !memory list, etc.
+// IMPORTANT: always cancel the reader on done/error/abort so the HTTP connection
+// closes immediately — a lingering reader blocks the next runOnSession call since
+// both would share the same SESSION_ID queue in llmem-gw.
+async function runOnSession(cmd, timeoutMs = 15000) {
+  await fetch('/api/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: cmd, client_id: SESSION_ID }),
+  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let reader = null;
+  try {
+    const resp = await fetch(
+      `/api/stream/${encodeURIComponent(SESSION_ID)}?token=${encodeURIComponent(_apiKey)}`,
+      { signal: ctrl.signal }
+    );
+    reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', full = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let msg; try { msg = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+        if (msg.type === 'tok' || msg.type === 'flush') full += (msg.text || '');
+        else if (msg.type === 'done') { clearTimeout(timer); reader.cancel(); return full; }
+      }
+    }
+    return full;
+  } finally {
+    clearTimeout(timer);
+    if (reader) try { reader.cancel(); } catch (_) {}
+  }
+}
+
+async function switchSessionModel(model) {
+  try { await runOnSession(`!model ${model}`); currentModel = model; } catch (_) {}
+}
+
+function handleSend() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  // Intercept #mode commands — don't send to LLM
+  if (text.startsWith('#mode ')) {
+    textInput.value = '';
+    autoResize(textInput);
+    const mode = text.slice(6).trim().toLowerCase();
+    if (mode === 'default' || mode === 'cognitive') {
+      setStatus('Switching mode…');
+      switchSessionModel('samaritan-voice').finally(() => {
+        window.location.href = '/';
+      });
+    } else {
+      setStatus('Unknown mode: ' + mode);
+      setTimeout(() => setStatus(''), 2000);
+    }
+    return;
+  }
+  textInput.value = '';
+  autoResize(textInput);
+  submitText(text);
+}
+
+sendBtn.addEventListener('click', handleSend);
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+});
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  const maxH = 6 * 1.5 * 15;
+  el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+}
+textInput.addEventListener('input', () => autoResize(textInput));
+
+// ── Model selector ────────────────────────────────────────────
+modelSelect.addEventListener('change', async () => {
+  const val = modelSelect.value;
+  if (!val) return;
+  setStatus(`Switching model…`);
+  try {
+    await runOnSession(`!model ${val}`);
+    currentModel = val;
+    setStatus(`Model: ${modelSelect.options[modelSelect.selectedIndex].text}`);
+    setTimeout(() => setStatus(''), 2500);
+  } catch (e) {
+    setStatus('Model switch failed');
+    // Revert selector to previous model
+    if (currentModel) modelSelect.value = currentModel;
+  }
+});
+
+// ── New chat button ───────────────────────────────────────────
+newChatBtn.addEventListener('click', createNewChat);
+
+// ── Audio / TTS ───────────────────────────────────────────────
+let audioCtx = null;
+let nextPlayAt = 0;
+const activeSrcs = new Set();
+
+function initAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}
+
+function pcmBytesToAudioBuf(bytes, sampleRate) {
+  const samples = bytes.length / 2;
+  const buf = audioCtx.createBuffer(1, samples, sampleRate);
+  const data = buf.getChannelData(0);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < samples; i++) {
+    data[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return buf;
+}
+
+function scheduleAudioChunk(audioBuf) {
+  if (!audioCtx) return 0;
+  const now = audioCtx.currentTime;
+  const startAt = Math.max(now, nextPlayAt);
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuf;
+  src.connect(audioCtx.destination);
+  src.start(startAt);
+  nextPlayAt = startAt + audioBuf.duration;
+  activeSrcs.add(src);
+  src.onended = () => activeSrcs.delete(src);
+  return (startAt + audioBuf.duration - now) * 1000;
+}
+
+function stopAllAudio() {
+  nextPlayAt = 0;
+  activeSrcs.forEach(s => { try { s.stop(); } catch (_) {} });
+  activeSrcs.clear();
+}
+
+let _inworldAbort = null;
+function speakInworld(text) {
+  if (_inworldAbort) { _inworldAbort.abort(); _inworldAbort = null; }
+  stopAllAudio();
+  initAudioCtx();
+  const ctrl = new AbortController();
+  _inworldAbort = ctrl;
+  const WAV_HEADER = 44;
+
+  (async () => {
+    let resp;
+    try {
+      resp = await fetch('/api/tts/inworld', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ text }),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      if (e.name !== 'AbortError') setStatus('TTS error');
+      return;
+    }
+    if (!resp.ok) { setStatus('TTS error ' + resp.status); return; }
+
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    const scheduleWav = (b64) => {
+      const bin = atob(b64);
+      if (bin.length <= WAV_HEADER) return;
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      scheduleAudioChunk(pcmBytesToAudioBuf(bytes.subarray(WAV_HEADER), 24000));
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t) continue;
+          try {
+            const chunk = JSON.parse(t);
+            const b64 = chunk.result?.audioContent || chunk.audioContent;
+            if (b64) scheduleWav(b64);
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') setStatus('TTS stream error');
+    }
+  })();
+}
+
+ttsBtn.addEventListener('click', () => {
+  initAudioCtx();
+  ttsEnabled = !ttsEnabled;
+  ttsBtn.classList.toggle('active', ttsEnabled);
+  if (!ttsEnabled && _inworldAbort) { _inworldAbort.abort(); _inworldAbort = null; stopAllAudio(); }
+  setStatus(ttsEnabled ? 'Voice on' : 'Voice off');
+  setTimeout(() => setStatus(''), 1500);
+});
+
+// ── Deepgram STT ──────────────────────────────────────────────
+const DG_MODEL        = 'flux-general-en';
+const DG_ENCODING     = 'linear16';
+const DG_EOT_THRESHOLD = 0.8;
+
+// Confirmation beep on EndOfTurn (880 Hz, 80 ms)
+function beepConfirm() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 880; osc.type = 'sine';
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08);
+    osc.onended = () => ctx.close();
+  } catch (_) {}
+}
+
+const WORKLET_CODE = `
+class PcmCaptureChat extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture-chat', PcmCaptureChat);
+`;
+
+let dgWs      = null;
+let dgAudioCtx = null;
+let dgWorklet  = null;
+let dgStream   = null;
+let dgActive   = false;
+let _pcmBuf = [], _pcmBufLen = 0;
+
+function sendPcm(f32) {
+  if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+  _pcmBuf.push(f32);
+  _pcmBufLen += f32.length;
+  // Buffer to ~80ms chunks (Flux requirement)
+  const target = Math.round((dgAudioCtx.sampleRate || 48000) * 0.08);
+  if (_pcmBufLen < target) return;
+  const merged = new Float32Array(_pcmBufLen);
+  let off = 0;
+  for (const c of _pcmBuf) { merged.set(c, off); off += c.length; }
+  _pcmBuf = []; _pcmBufLen = 0;
+  const i16 = new Int16Array(merged.length);
+  for (let i = 0; i < merged.length; i++)
+    i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
+  dgWs.send(i16.buffer);
+}
+
+async function startDg() {
+  if (dgActive) return;
+  dgActive = true;
+  _pcmBuf = []; _pcmBufLen = 0;
+  micBtn.classList.add('active');
+
+  // Get mic stream first to learn the real sample rate
+  try {
+    dgStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (e) {
+    setStatus('Mic access denied');
+    dgActive = false; micActive = false; micBtn.classList.remove('active'); return;
+  }
+
+  // Use native AudioContext rate — pass actual rate to Deepgram
+  dgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const actualRate = dgAudioCtx.sampleRate;
+
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams({
+    model:         DG_MODEL,
+    encoding:      DG_ENCODING,
+    sample_rate:   actualRate,
+    eot_threshold: String(DG_EOT_THRESHOLD),
+    token:         _apiKey,
+  });
+  dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
+  dgWs.binaryType = 'arraybuffer';
+
+  dgWs.onopen = async () => {
+    const source = dgAudioCtx.createMediaStreamSource(dgStream);
+    let usedWorklet = false;
+    try {
+      const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      await dgAudioCtx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      dgWorklet = new AudioWorkletNode(dgAudioCtx, 'pcm-capture-chat');
+      dgWorklet.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
+      source.connect(dgWorklet);
+      usedWorklet = true;
+    } catch (_) {}
+    if (!usedWorklet) {
+      const spn = dgAudioCtx.createScriptProcessor(4096, 1, 1);
+      spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
+      source.connect(spn);
+      spn.connect(dgAudioCtx.destination); // must connect to keep node alive
+      dgWorklet = spn;
+    }
+    // Resume if iOS suspended the context after getUserMedia
+    if (dgAudioCtx && dgAudioCtx.state === 'suspended') dgAudioCtx.resume().catch(() => {});
+    setStatus('Listening…');
+  };
+
+  dgWs.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch (_) { return; }
+    if (msg.type !== 'TurnInfo') return;
+    const transcript = (msg.transcript || '').trim();
+    if (msg.event === 'StartOfTurn') {
+      // Clear italic preview
+      textInput.value = '';
+      textInput.style.fontStyle = '';
+      autoResize(textInput);
+    } else if (msg.event === 'Update') {
+      if (transcript) {
+        textInput.value = transcript;
+        textInput.style.fontStyle = 'italic';
+        autoResize(textInput);
+      }
+    } else if (msg.event === 'EndOfTurn') {
+      if (transcript) {
+        textInput.value = transcript;
+        textInput.style.fontStyle = '';
+        autoResize(textInput);
+        beepConfirm();
+        // Defer out of WebSocket onmessage — calling fetch() directly from a WS
+        // message handler is unreliable on iOS/Safari and causes "Load failed".
+        setTimeout(() => handleSend(), 0);
+      }
+    }
+  };
+
+  dgWs.onerror = () => { setStatus('STT error'); stopDg(); };
+  dgWs.onclose = () => { if (dgActive) { setStatus(''); } dgActive = false; };
+}
+
+function stopDg() {
+  dgActive = false;
+  _pcmBuf = []; _pcmBufLen = 0;
+  if (dgWorklet) { try { dgWorklet.disconnect(); } catch (_) {} dgWorklet = null; }
+  if (dgStream)  { dgStream.getTracks().forEach(t => t.stop()); dgStream = null; }
+  if (dgAudioCtx){ try { dgAudioCtx.close(); } catch (_) {} dgAudioCtx = null; }
+  if (dgWs) {
+    try {
+      if (dgWs.readyState === WebSocket.OPEN) dgWs.send(JSON.stringify({ type: 'CloseStream' }));
+      dgWs.close();
+    } catch (_) {}
+    dgWs = null;
+  }
+  textInput.style.fontStyle = '';
+}
+
+micBtn.addEventListener('click', async () => {
+  initAudioCtx();
+  micActive = !micActive;
+  micBtn.classList.toggle('active', micActive);
+  if (micActive) {
+    await startDg();
+  } else {
+    stopDg();
+    setStatus('');
+  }
+});
+
+// ── Init ──────────────────────────────────────────────────────
+(async function init() {
+  // Disable input while init commands hold SESSION_ID stream open
+  textInput.disabled = true;
+  sendBtn.disabled = true;
+  try {
+    // 1. Switch model first — session inherits samaritan-voice db until we explicitly switch
+    await switchSessionModel('default-chat');
+    // 2. Switch to default-chat's database (defined as "default" in llm-models.json)
+    await runOnSession('!db switch default');
+    // 3. Populate sidebar (throwaway — don't set currentDb from it)
+    await loadDbList();
+    // 4. Populate model selector (SESSION_ID — correct (current) after model switch)
+    await loadModelList();
+    // 5. Load short-term memory from "default" db (post model+db switch)
+    currentDb = 'default';
+    updateDbLabel();
+    try {
+      await loadMemoryTurns(currentDb);
+    } catch (_) {}
+  } finally {
+    textInput.disabled = false;
+    sendBtn.disabled = false;
+    textInput.focus();
+  }
+})();
+</script>
+</body>
+</html>

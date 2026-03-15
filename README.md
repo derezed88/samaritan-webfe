@@ -37,6 +37,7 @@
   <summary>Table of Contents</summary>
   <ol>
     <li><a href="#screenshots">Screenshots</a></li>
+    <li><a href="#chat-ui-chathtml">Chat UI (chat.html)</a></li>
     <li><a href="#about-the-project">About The Project</a>
       <ul>
         <li><a href="#built-with">Built With</a></li>
@@ -72,6 +73,39 @@
   &nbsp;
   <img src="docs/IMG_7653.PNG" alt="Samaritan UI — voice mode" width="30%" />
 </div>
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+
+<!-- CHAT UI -->
+## Chat UI (chat.html)
+
+`static/chat.html` is a second, Claude-style chat interface served at `/chat` by the same `samaritan.py` server.
+It uses the same llmem-gw backend and auth cookie as the Samaritan voice UI, but presents conversations as a familiar scrolling chat transcript rather than the Samaritan word-flash animation.
+
+**When to use it instead of `index.html`:**
+
+- You want a persistent, scrollable conversation history rather than the Samaritan animation display.
+- You are doing math or technical work and want LaTeX/formula rendering.
+- You prefer keyboard/text-only interaction without the voice controls.
+- You want to inspect or resume short-term memory from a previous session.
+
+**Features:**
+
+| Feature | Details |
+|---------|---------|
+| Multi-turn chat | Scrolling user/assistant bubble layout; markdown rendered via [marked.js](https://marked.js.org/) |
+| LaTeX / math rendering | [KaTeX](https://katex.org/) auto-render; `preprocessMath()` wraps bare operators (`times`, `div`, `cdot`, …) and exponents into `\( \)` delimiters; handles JSON `\t`-escape corruption of `\times` |
+| Memory display on load | Loads short-term memory via `!db_query` and renders each past turn as a proper user/assistant bubble — not a raw dump |
+| Database switching | Type `#db <name>` in the chat to switch to a different llmem-gw memory database; header badge updates live |
+| Model selection | Dropdown to choose the active LLM model (passed as `model` in the submit body) |
+| Session continuity | `SESSION_ID` is persisted in `sessionStorage` so page reloads reuse the same llmem-gw session |
+| Token streaming | Same SSE `tok` / `flush` / `done` / `error` protocol as `index.html`; tokens appended to the assistant bubble in real time |
+
+**Architecture note:** `chat.html` is fully independent of `index.html` — it shares no JS globals, no audio pipeline, and no TTS/STT wiring. It is a plain chat client. Both pages talk to the same llmem-gw session via the same `SESSION_ID` cookie mechanism if you keep the tab open across both pages.
+
+**Accessing it:** Navigate to `https://<host>:8800/chat` (or the Pinggy URL + `/chat`). Auth uses the same login cookie as the main UI — log in once and both pages work.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
