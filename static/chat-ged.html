@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Claude Chat</title>
+  <title>GED Study — Lee</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -11,6 +11,12 @@
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"
     onload="window._katexReady=true"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+    window._mermaid = mermaid;
+    window._mermaidReady = true;
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -46,7 +52,7 @@
     html, body { height: 100%; overflow: hidden; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
       display: flex;
@@ -144,6 +150,20 @@
       white-space: nowrap;
     }
     .db-row-icon { flex-shrink: 0; font-size: 13px; opacity: 0.6; }
+    .ged-subject-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-muted);
+      user-select: none;
+      transition: background 0.1s;
+    }
+    .ged-subject-row:hover { background: var(--border); color: var(--text); }
+    .ged-subject-row.active { background: var(--accent-light); color: var(--accent); font-weight: 500; }
     .db-trash {
       flex-shrink: 0;
       background: none;
@@ -226,24 +246,57 @@
       gap: 20px;
     }
 
-    /* ── Empty state ── */
+    /* ── Empty state / Subject picker ── */
     #empty-state {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -60%);
-      text-align: center;
-      pointer-events: none;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
       transition: opacity 0.3s;
     }
-    #empty-state.hidden { opacity: 0; pointer-events: none; }
+    #empty-state.hidden { opacity: 0; pointer-events: none; display: none; }
     #empty-state h1 {
-      font-size: 26px;
+      font-size: 30px;
       font-weight: 600;
       color: var(--text);
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
-    #empty-state p { font-size: 15px; color: var(--text-muted); }
+    #empty-state p { font-size: 15px; color: var(--text-muted); margin-bottom: 32px; }
+    .subject-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      max-width: 640px;
+      width: 90%;
+    }
+    .subject-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 28px 16px;
+      border-radius: 14px;
+      background: var(--input-bg);
+      border: 1.5px solid var(--border);
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.12s;
+      user-select: none;
+    }
+    .subject-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 4px 20px var(--shadow);
+      transform: translateY(-2px);
+    }
+    .subject-card-icon { font-size: 36px; line-height: 1; }
+    .subject-card-label { font-size: 15px; font-weight: 500; color: var(--text); }
+
+    /* Hide chat + input + topbar when subject not yet chosen */
+    body.empty-mode #chat-scroll { display: none; }
+    body.empty-mode #input-area { display: none; }
+    body.empty-mode #topbar { display: none; }
 
     /* ── Message bubbles ── */
     .msg-row {
@@ -265,8 +318,8 @@
     .msg-bubble {
       padding: 12px 16px;
       border-radius: 16px;
-      line-height: 1.6;
-      font-size: 15px;
+      line-height: 1.7;
+      font-size: 16px;
       max-width: 85%;
       word-break: break-word;
     }
@@ -311,6 +364,8 @@
     .msg-bubble th, .msg-bubble td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
     .msg-bubble th { background: var(--bg-alt, rgba(0,0,0,0.04)); font-weight: 600; }
     [data-theme="dark"] .msg-bubble th { background: rgba(255,255,255,0.06); }
+    .mermaid-chart { margin: 10px 0; padding-bottom: 20px; overflow: visible; }
+    .mermaid-chart svg { max-width: 100%; height: auto; overflow: visible; }
 
     .memory-sep {
       text-align: center;
@@ -345,22 +400,7 @@
       margin: 0 auto;
     }
 
-    /* When in empty-state, lift the input to center of viewport */
-    body.empty-mode #chat-scroll { pointer-events: none; }
-    body.empty-mode #input-area {
-      position: absolute;
-      bottom: 50%;
-      left: 0; right: 0;
-      transform: translateY(50%);
-      border: none;
-      background: transparent;
-    }
-    body.empty-mode #input-wrapper {
-      background: var(--input-bg);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      box-shadow: 0 4px 24px var(--shadow);
-    }
+    /* (empty-mode hides chat + input via rules above) */
 
     #input-row {
       display: flex;
@@ -372,14 +412,7 @@
       padding: 6px 8px 6px 14px;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    body.empty-mode #input-row {
-      background: transparent;
-      border: none;
-      border-radius: 0;
-      padding: 10px 10px 10px 16px;
-    }
     #input-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
-    body.empty-mode #input-row:focus-within { box-shadow: none; border: none; }
 
     #text-input {
       flex: 1;
@@ -486,7 +519,7 @@
       }
       #sidebar-overlay.visible { display: block; }
       #chat-messages { padding: 16px 12px 8px; }
-      .msg-bubble { font-size: 14px; }
+      .msg-bubble { font-size: 15px; }
     }
   </style>
 </head>
@@ -498,15 +531,24 @@
   <!-- Sidebar -->
   <aside id="sidebar">
     <div id="sidebar-inner">
-      <div id="sidebar-header">
+      <div id="sidebar-header" style="display:none">
         <button id="new-chat-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           New Chat
         </button>
       </div>
-      <div id="sidebar-section-label">Chats</div>
-      <div id="db-list">
-        <!-- DB rows injected here -->
+      <div id="sidebar-section-label" style="display:none">Chats</div>
+      <div id="db-list" style="display:none">
+        <!-- DB rows hidden in GED mode -->
+      </div>
+      <!-- GED Subject Quick-Switch -->
+      <div class="sidebar-section-label" style="margin-top:4px">GED Subjects</div>
+      <div id="ged-subject-list">
+        <div class="ged-subject-row" data-model="ged-math">📐 Math</div>
+        <div class="ged-subject-row" data-model="ged-rla-reading">📖 Reading</div>
+        <div class="ged-subject-row" data-model="ged-rla-writing">✏️ Writing</div>
+        <div class="ged-subject-row" data-model="ged-science">🔬 Science</div>
+        <div class="ged-subject-row" data-model="ged-social">🌍 Social Studies</div>
       </div>
     </div>
   </aside>
@@ -526,10 +568,32 @@
       <div id="chat-messages"></div>
     </div>
 
-    <!-- Empty state -->
+    <!-- Subject picker (shown until a subject is chosen) -->
     <div id="empty-state">
-      <h1>Claude Chat</h1>
-      <p>Start a conversation below.</p>
+      <h1>GED Study</h1>
+      <p>Choose a subject to begin</p>
+      <div class="subject-grid">
+        <div class="subject-card" data-model="ged-math">
+          <span class="subject-card-icon">📐</span>
+          <span class="subject-card-label">Math</span>
+        </div>
+        <div class="subject-card" data-model="ged-rla-reading">
+          <span class="subject-card-icon">📖</span>
+          <span class="subject-card-label">Reading</span>
+        </div>
+        <div class="subject-card" data-model="ged-rla-writing">
+          <span class="subject-card-icon">✏️</span>
+          <span class="subject-card-label">Writing</span>
+        </div>
+        <div class="subject-card" data-model="ged-science">
+          <span class="subject-card-icon">🔬</span>
+          <span class="subject-card-label">Science</span>
+        </div>
+        <div class="subject-card" data-model="ged-social">
+          <span class="subject-card-icon">🌍</span>
+          <span class="subject-card-label">Social Studies</span>
+        </div>
+      </div>
     </div>
 
     <!-- Input area -->
@@ -636,8 +700,8 @@ hamburger.addEventListener('click', () => {
 });
 sidebarOvl.addEventListener('click', closeSidebar);
 
-// Start collapsed on mobile
-if (window.innerWidth <= 600) sidebar.classList.add('collapsed');
+// Start collapsed — subject picker is the entry point
+sidebar.classList.add('collapsed');
 
 // ── Status helper ─────────────────────────────────────────────
 function setStatus(msg) { statusText.textContent = msg; }
@@ -658,10 +722,101 @@ function renderMath(el) {
   });
 }
 
+// Render Mermaid diagrams inside a DOM element.
+async function renderMermaid(el) {
+  if (!window._mermaidReady || !window._mermaid) {
+    console.warn('Mermaid not ready:', !!window._mermaidReady, !!window._mermaid);
+    return;
+  }
+  // Find all code blocks — check both fenced mermaid and unfenced with mermaid keywords
+  const allPres = el.querySelectorAll('pre');
+  for (const pre of allPres) {
+    const code = pre.querySelector('code');
+    if (!code) continue;
+    let src = code.textContent.trim();
+    if (!src) continue;
+    const isMermaidClass = code.classList.contains('language-mermaid');
+    const isMermaidContent = /^(xychart-beta|xychart|pie|flowchart|graph|sequenceDiagram|gantt)\b/.test(src);
+    if (!isMermaidClass && !isMermaidContent) continue;
+    // Fix common xychart syntax issues from LLM output:
+    // 0. xychart-beta → xychart (v11 dropped -beta)
+    src = src.replace(/\bxychart-beta\b/g, 'xychart');
+    // 1. Common typos in keywords
+    src = src.replace(/\btitie\b/g, 'title').replace(/\btitel\b/g, 'title');
+    src = src.replace(/\bx-axs\b/g, 'x-axis').replace(/\by-axs\b/g, 'y-axis');
+    // 2. x-axis ["quoted" "values"] → x-axis ["quoted", "values"] (missing commas)
+    src = src.replace(/(x-axis\s*\[)([^\]]+)\]/g, (m, prefix, inner) => {
+      const fixed = inner.replace(/"\s+"/g, '", "').replace(/([a-zA-Z0-9°%)]+)\s+(?=")/g, '$1, ');
+      return prefix + fixed + ']';
+    });
+    // 3. Remove special chars that break parsing (°, parentheses in labels)
+    src = src.replace(/°/g, 'deg').replace(/\(([^)]*)\)/g, '$1');
+    // 4. "bar series "Name"\n  data [...]" → "bar [...]" (invalid v11 syntax)
+    src = src.replace(/bar\s+series\s+"[^"]*"\s*\n\s*data\s*/g, 'bar ');
+    src = src.replace(/line\s+series\s+"[^"]*"\s*\n\s*data\s*/g, 'line ');
+    // 5. x-axis "Label" or y-axis "Label" without data → strip quoted label (v11 wants x-axis [...])
+    src = src.replace(/x-axis\s+"[^"]*"\s*\n/g, 'x-axis\n');
+    src = src.replace(/y-axis\s+"[^"]*"\s*\n/g, 'y-axis\n');
+    // 6. Duplicate bar lines → keep only the one with actual data values
+    const barLines = src.split('\n').filter(l => /^\s*bar\s*\[/.test(l));
+    if (barLines.length > 1) {
+      // Keep the last bar line (usually has the actual values), remove others
+      let kept = false;
+      src = src.split('\n').reverse().map(l => {
+        if (/^\s*bar\s*\[/.test(l)) {
+          if (kept) return null;
+          kept = true;
+        }
+        return l;
+      }).reverse().filter(l => l !== null).join('\n');
+    }
+    try {
+      const id = 'mermaid-' + Math.random().toString(36).slice(2, 10);
+      const { svg } = await window._mermaid.render(id, src);
+      const div = document.createElement('div');
+      div.className = 'mermaid-chart';
+      div.innerHTML = svg;
+      pre.replaceWith(div);
+    } catch (e) {
+      // Show error inline so user can see what went wrong
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'color:red;font-size:12px;margin:4px 0';
+      errDiv.textContent = 'Chart error: ' + (e.message || e);
+      pre.after(errDiv);
+      console.warn('Mermaid render failed:', src.slice(0, 100), e);
+    }
+  }
+  // Fallback: detect unfenced mermaid in plain text (model forgot code fences)
+  const html = el.innerHTML;
+  const mermaidInText = html.match(/(xychart\s+title\s+[^<]+(?:<br>.*?(?:bar|line)\s*\[[^\]]+\]))/s);
+  if (mermaidInText) {
+    // Extract the mermaid block from HTML, convert <br> back to newlines
+    const raw = mermaidInText[1].replace(/<br\s*\/?>/g, '\n').replace(/<[^>]+>/g, '').trim();
+    try {
+      let src = raw;
+      src = src.replace(/\btitie\b/g, 'title');
+      src = src.replace(/(x-axis\s*\[)([^\]]+)\]/g, (m, prefix, inner) => {
+        return prefix + inner.replace(/"\s+"/g, '", "').replace(/([a-zA-Z0-9°%)]+)\s+(?=")/g, '$1, ') + ']';
+      });
+      src = src.replace(/°/g, 'deg').replace(/\(([^)]*)\)/g, '$1');
+      const id = 'mermaid-' + Math.random().toString(36).slice(2, 10);
+      const { svg } = await window._mermaid.render(id, src);
+      const div = document.createElement('div');
+      div.className = 'mermaid-chart';
+      div.innerHTML = svg;
+      // Replace the text in innerHTML
+      el.innerHTML = html.replace(mermaidInText[0], div.outerHTML);
+    } catch (e) {
+      console.warn('Mermaid inline fallback failed:', e);
+    }
+  }
+}
+
 // Wrap bare math expressions (e.g. 2^3, x^2) in $...$ so KaTeX renders them.
 // Protects existing math zones and code blocks from double-wrapping.
 function preprocessMath(text) {
   // Fix math delimiters split across lines — collapse all newlines inside math to spaces
+  // Handles $$, \(, \[ with any amount of whitespace/newlines in content
   text = text.replace(/\$\$([\s\S]+?)\$\$/g, function(_, expr) { return '$$' + expr.replace(/\s*\n\s*/g, ' ').trim() + '$$'; });
   text = text.replace(/\\\(([\s\S]+?)\\\)/g, function(_, expr) { return '\\(' + expr.replace(/\s*\n\s*/g, ' ').trim() + '\\)'; });
   text = text.replace(/\\\[([\s\S]+?)\\\]/g, function(_, expr) { return '\\[' + expr.replace(/\s*\n\s*/g, ' ').trim() + '\\]'; });
@@ -671,9 +826,16 @@ function preprocessMath(text) {
   text = text.replace(/```[\s\S]*?```|`[^`]+`|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, function(m) {
     const idx = saved.length; saved.push(m); return '\x01M' + idx + '\x01';
   });
-  // Convert $...$ → \(...\) only when content looks like LaTeX (has \, {, ^, _)
+  // Convert $...$ → \(...\) when content looks like math
+  // Matches: variables (x, y, n), expressions with operators, LaTeX commands
   text = text.replace(/\$([^$\n]+)\$/g, function(m, inner) {
-    return /[\\{^_]/.test(inner) ? '\\(' + inner + '\\)' : m;
+    // Skip if it looks like currency: $20, $5.99, etc. (pure number, no LaTeX)
+    if (/^\d/.test(inner.trim()) && !/[\\{^_]/.test(inner)) return m;
+    // Convert if: has LaTeX chars, is a single letter (variable), or has math operators
+    if (/[\\{^_]/.test(inner) || /^[a-zA-Z]$/.test(inner.trim()) || /[+\-=<>]/.test(inner)) {
+      return '\\(' + inner + '\\)';
+    }
+    return m;
   });
   // Wrap math operators in \(...\).
   // Handles both bare ("times") and already-backslashed ("\times").
@@ -682,6 +844,7 @@ function preprocessMath(text) {
   // Uses string concat — NOT template literals — to avoid \t tab-escape ambiguity.
   text = text.replace(/(?<!\w)\\?(times|div|cdot|pm|leq|geq|neq|approx|infty|rightarrow|leftarrow|equiv|subset|mod)(?!\w)/g,
     function(m, cmd) { return '\\(' + '\\' + cmd + '\\)'; });
+  // \cup and \cap only when preceded by backslash (avoid matching English words "cup", "cap")
   text = text.replace(/\\(cup|cap)(?!\w)/g,
     function(m, cmd) { return '\\(' + '\\' + cmd + '\\)'; });
   // Wrap bare exponents: 2^3 → \(2^3\)
@@ -699,11 +862,12 @@ function renderMarkdown(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Process code blocks first (triple backtick)
+  // Process code blocks first (triple backtick) — preserve language class for mermaid etc.
   const codeBlocks = [];
   text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
-    codeBlocks.push(`<pre><code>${esc(code.trim())}</code></pre>`);
+    const cls = lang ? ` class="language-${lang}"` : '';
+    codeBlocks.push(`<pre><code${cls}>${esc(code.trim())}</code></pre>`);
     return `\x00CODE${idx}\x00`;
   });
 
@@ -711,6 +875,7 @@ function renderMarkdown(text) {
   text = text.replace(/`([^`]+)`/g, (_, code) => `<code>${esc(code)}</code>`);
 
   // Convert inline $$...$$ to \(...\) when expression is within a line of text
+  // (display math = $$ on its own line; inline = $$ with text before/after on same line)
   text = text.replace(/^(.*\S.*?)\$\$([^$\n]+)\$\$(.*)/gm, function(m, before, expr, after) {
     return before + '\\(' + expr + '\\)' + after;
   });
@@ -733,14 +898,21 @@ function renderMarkdown(text) {
   // Pre-process: force newline before pipe-table header that's inline with text
   text = text.replace(/([^\n|])([ \t]*\|[^|\n]+\|)/g, '$1\n$2');
   // Split concatenated pipe-table rows onto separate lines.
+  // Detect: a line starting with | that has more pipes than a single row should.
+  // Strategy: find the first row (header), count its columns, then split remaining content.
   text = text.split('\n').map(line => {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return line;
     const parts = trimmed.split('|').filter(s => s !== undefined);
-    const cells = parts.slice(1, -1);
+    // parts includes empty strings at start/end from leading/trailing |
+    // A single row "| a | b | c |" has parts: ["", " a ", " b ", " c ", ""]
+    // Two concatenated "| a | b | | c | d |" has more parts with an empty one in the middle
+    // Look for empty-or-whitespace parts in the middle — those are row boundaries
+    const cells = parts.slice(1, -1); // remove leading/trailing empties
     const emptyIdx = [];
     cells.forEach((c, i) => { if (c.trim() === '') emptyIdx.push(i); });
     if (emptyIdx.length === 0) return line;
+    // Split at empty cell positions — these are the "| |" row boundaries
     let rows = [];
     let start = 0;
     for (const idx of emptyIdx) {
@@ -748,6 +920,7 @@ function renderMarkdown(text) {
       if (rowCells.length > 0) rows.push('| ' + rowCells.join('|') + ' |');
       start = idx + 1;
     }
+    // Remaining cells after last split
     const remaining = cells.slice(start);
     if (remaining.length > 0) rows.push('| ' + remaining.join('|') + ' |');
     return rows.length > 1 ? rows.join('\n') : line;
@@ -767,6 +940,7 @@ function renderMarkdown(text) {
   const tablePlaceholders = [];
   text = text.replace(/(^[ \t]*\|.+\|[ \t]*$(?:\n(?:[ \t]*\|.+\|[ \t]*$|[ \t]*$))*)/gm, (block) => {
     const rows = block.trim().split('\n').map(r => r.trim()).filter(r => r && r.includes('|'));
+    // Need at least a header + one data row
     const dataRows = rows.filter(r => !/^\|[\s\-:]+\|$/.test(r) && !/^\|(\s*[-:]+\s*\|)+$/.test(r));
     if (dataRows.length < 2) return block;
     let html = '<table>';
@@ -809,12 +983,11 @@ function renderMarkdown(text) {
   text = text.replace(/^# (.+)$/gm, '<strong>$1</strong>');
 
   // Ordered lists — ensure paragraph break before numbered items, then bold the number
+  // Force double newline before any "N. " that follows text (handles \n, space, or no separator)
   text = text.replace(/(\S[^\n]*)\n(1\. )/g, '$1\n\n$2');
   text = text.replace(/(\S) +(1\. )/g, '$1\n\n$2');
   text = text.replace(/^(\d+)\. (.+)$/gm, '<strong>$1.</strong> $2');
 
-  // Answer choices (A/B/C/D) — ensure line break before first choice if on same line as question
-  text = text.replace(/([^\n]) +([A-D]\) )/g, '$1\n$2');
   // Collapse any double newlines between consecutive answer choices
   text = text.replace(/([A-D]\) .+)\n\n([A-D]\) )/g, '$1\n$2');
 
@@ -834,6 +1007,7 @@ function renderMarkdown(text) {
   // Restore code blocks — convert table-like code blocks to styled <table>
   text = text.replace(/\x00CODE(\d+)\x00/g, (_, i) => {
     const block = codeBlocks[parseInt(i)];
+    // Skip mermaid blocks
     if (block.includes('language-mermaid')) return block;
     const codeMatch = block.match(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/);
     if (codeMatch) {
@@ -841,16 +1015,20 @@ function renderMarkdown(text) {
       const lines = raw.split('\n').filter(l => l.trim());
       if (lines.length < 2) return block;
 
+      // Detect format: pipe-separated or space-aligned
       const pipeLines = lines.filter(l => l.includes('|'));
       const isPipeTable = pipeLines.length >= lines.length * 0.5;
       const aligned = lines.filter(l => /\S {2,}\S/.test(l));
       const isSpaceAligned = aligned.length >= lines.length * 0.5;
 
       if (isPipeTable) {
+        // Pipe-separated: split on | and build table
+        // Filter out separator rows (---|---)
         const dataLines = lines.filter(l => !/^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$/.test(l));
         if (dataLines.length < 2) return block;
         let html = '<table>';
         dataLines.forEach((line, i) => {
+          // Split on | and trim — handle both "| a | b |" and "a | b" formats
           let cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
           const tag = i === 0 ? 'th' : 'td';
           html += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
@@ -858,6 +1036,7 @@ function renderMarkdown(text) {
         html += '</table>';
         return html;
       } else if (isSpaceAligned) {
+        // Space-aligned: split on 2+ spaces
         let html = '<table>';
         lines.forEach((line, i) => {
           const cells = line.split(/  {1,}/).filter(c => c.trim());
@@ -1157,6 +1336,7 @@ async function loadMemoryTurns(dbName) {
       var bubble = addMessage('assistant', '');
       bubble.innerHTML = renderMarkdown(_processAssistantContent(text));
       renderMath(bubble);
+      renderMermaid(bubble);
     }
     // Skip directive entries
   }
@@ -1339,14 +1519,17 @@ async function submitText(text) {
     let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
     if (msg.type === 'tok' || msg.type === 'flush') {
       currentAsstText += (msg.text || '');
-      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
+      const _dispText = currentAsstText.replace(/<<[^>]*>>\s*(?::\s*)?/g, '');
+      currentAsst.innerHTML = renderMarkdown(preprocessMath(_dispText));
       scrollToBottom();
     } else if (msg.type === 'done') {
       es.close();
       activeEvtSource = null;
       currentAsst.classList.remove('streaming-cursor');
-      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
+      const _finalText = currentAsstText.replace(/<<[^>]*>>\s*(?::\s*)?/g, '');
+      currentAsst.innerHTML = renderMarkdown(preprocessMath(_finalText));
       renderMath(currentAsst);
+      renderMermaid(currentAsst);
       scrollToBottom();
       if (ttsEnabled && currentAsstText.trim()) {
         speakInworld(ttsClean(currentAsstText));
@@ -1421,12 +1604,192 @@ async function runOnSession(cmd, timeoutMs = 15000) {
 }
 
 async function switchSessionModel(model) {
-  try { await runOnSession(`!model ${model}`); currentModel = model; } catch (_) {}
+  try { await runOnSession(`!model ${model} database=target`); currentModel = model; _updateGedActiveRow(); } catch (_) {}
+}
+
+// ── #ged commands — client-side GED progress dashboards ──────
+const _GED_SUBJECTS = {
+  'ged-math':        { db: 'gedmath',    label: 'Mathematical Reasoning' },
+  'ged-rla-reading': { db: 'gedreading', label: 'RLA Reading' },
+  'ged-rla-writing': { db: 'gedwriting', label: 'RLA Writing' },
+  'ged-science':     { db: 'gedscience', label: 'Science' },
+  'ged-social':      { db: 'gedsocial',  label: 'Social Studies' },
+};
+
+const _GED_TOPIC_LABELS = {
+  number_ops:'Number Operations', ratio_proportion:'Ratio & Proportion',
+  expressions_equations:'Expressions & Equations', inequalities:'Inequalities',
+  functions:'Functions', geometry:'Geometry', statistics:'Statistics',
+  data_analysis:'Data Analysis',
+  informational_text:'Informational Text', literary_text:'Literary Text',
+  main_idea:'Main Idea', evidence_inference:'Evidence & Inference',
+  vocab_context:'Vocabulary in Context', text_structure:'Text Structure',
+  compare_texts:'Comparing Texts', authors_purpose:"Author's Purpose",
+  extended_response:'Extended Response', grammar_usage:'Grammar & Usage',
+  sentence_structure:'Sentence Structure', punctuation:'Punctuation',
+  capitalization:'Capitalization', organization:'Organization',
+  evidence_use:'Evidence Use', revision_editing:'Revision & Editing',
+  life_science:'Life Science', physical_science:'Physical Science',
+  earth_space_science:'Earth & Space Science', scientific_reasoning:'Scientific Reasoning',
+  data_interpretation:'Data Interpretation', experimental_design:'Experimental Design',
+  scientific_vocabulary:'Scientific Vocabulary', environmental_science:'Environmental Science',
+  us_history:'US History', civics_government:'Civics & Government',
+  economics:'Economics', geography_world:'Geography',
+  reading_maps_charts:'Maps & Charts', historical_documents:'Historical Documents',
+  current_events:'Current Events', critical_thinking:'Critical Thinking',
+};
+
+function _gedBar(score, width = 10) {
+  const filled = Math.round(score * width);
+  return '\u2588'.repeat(filled) + '\u2591'.repeat(width - filled);
+}
+
+function _gedLabel(score) {
+  if (score >= 0.75) return '\u2713 Strong';
+  if (score >= 0.5)  return '\u2192 Building';
+  return '\u2717 Focus area';
+}
+
+// Parse !db_query tabular output into array of objects
+function _parseDbQueryRows(text) {
+  const lines = text.trim().split('\n').filter(l => l.trim() && !/^[\-+|]+$/.test(l.trim()));
+  if (lines.length < 2) return [];
+  // First non-separator line is header
+  const headers = lines[0].split('|').map(h => h.trim()).filter(Boolean);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split('|').map(c => c.trim()).filter(Boolean);
+    if (cols.length < headers.length) continue;
+    const row = {};
+    headers.forEach((h, j) => { row[h] = cols[j]; });
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function _gedQueryScores(dbName) {
+  const tbl = dbName + '_ged_topic_scores';
+  const raw = await runOnSession(`!db_query SELECT topic, score, attempts, correct FROM ${tbl} ORDER BY score ASC`);
+  if (raw.includes('(no rows)') || raw.includes('ERROR')) return [];
+  return _parseDbQueryRows(raw);
+}
+
+async function _handleGedCommand(subcmd) {
+  const subj = _GED_SUBJECTS[currentModel];
+
+  // #ged all — cross-subject summary
+  if (subcmd === 'all' || (!subcmd && !subj)) {
+    setStatus('Loading all subjects…');
+    let tableRows = [];
+    let totals = [];
+    for (const [model, { db, label }] of Object.entries(_GED_SUBJECTS)) {
+      try {
+        const rows = await _gedQueryScores(db);
+        if (!rows.length) {
+          tableRows.push(`${label.padEnd(28)} ${'\u2591'.repeat(10)}  0%     Not started`);
+        } else {
+          const avg = rows.reduce((s, r) => s + parseFloat(r.score), 0) / rows.length;
+          totals.push(avg);
+          const pct = Math.round(avg * 100) + '%';
+          const status = avg >= 0.75 ? 'Ready for exam' : 'In progress';
+          tableRows.push(`${label.padEnd(28)} ${_gedBar(avg)}  ${pct.padEnd(6)} ${status}`);
+        }
+      } catch (_) {
+        tableRows.push(`${label.padEnd(28)} ${'?'.padEnd(10)}  ?      Error`);
+      }
+    }
+    const overall = totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : 0;
+    tableRows.push('');
+    tableRows.push(`${'Overall GED Readiness:'.padEnd(28)} ${_gedBar(overall)}  ${Math.round(overall * 100)}%`);
+    const hint = addMessage('assistant', '');
+    hint.innerHTML = '<strong>GED Progress — All Subjects</strong><pre style="margin:8px 0;font-size:13px">' + tableRows.join('\n') + '</pre>';
+    scrollToBottom();
+    setStatus('');
+    return;
+  }
+
+  if (!subj) {
+    const hint = addMessage('assistant', '');
+    hint.innerHTML = renderMarkdown('Switch to a GED subject first.');
+    scrollToBottom();
+    return;
+  }
+
+  setStatus('Loading scores…');
+  const rows = await _gedQueryScores(subj.db);
+
+  // #ged scores — raw table
+  if (subcmd === 'scores') {
+    if (!rows.length) {
+      const hint = addMessage('assistant', '');
+      hint.innerHTML = renderMarkdown(`## GED ${subj.label} — No scores yet\nStart a session to begin the assessment.`);
+    } else {
+      let lines = [`## GED ${subj.label} — Topic Scores\n`];
+      lines.push(`| Topic | Score | Correct | Attempts |`);
+      lines.push(`|---|---:|---:|---:|`);
+      for (const r of rows) {
+        const label = _GED_TOPIC_LABELS[r.topic] || r.topic;
+        lines.push(`| ${label} | ${parseFloat(r.score).toFixed(2)} | ${r.correct} | ${r.attempts} |`);
+      }
+      const hint = addMessage('assistant', '');
+      hint.innerHTML = renderMarkdown(lines.join('\n'));
+    }
+    scrollToBottom();
+    setStatus('');
+    return;
+  }
+
+  // #ged (default) — visual dashboard
+  if (!rows.length) {
+    const hint = addMessage('assistant', '');
+    hint.innerHTML = renderMarkdown(`## GED ${subj.label} Progress\nNo progress recorded yet. Start a session to begin the assessment.\n\n_Type #ged all to view all subjects_`);
+    scrollToBottom();
+    setStatus('');
+    return;
+  }
+
+  let lines = [`## GED ${subj.label} Progress\n`, '**Topic Scores**\n```'];
+  let totalScore = 0;
+  for (const r of rows) {
+    const score = parseFloat(r.score);
+    const label = (_GED_TOPIC_LABELS[r.topic] || r.topic).padEnd(28);
+    lines.push(`  ${label} ${_gedBar(score)}  ${score.toFixed(2)}  ${_gedLabel(score)}`);
+    totalScore += score;
+  }
+  lines.push('```');
+  const overall = totalScore / rows.length;
+  const need = overall < 0.75 ? ' (Need 75% to attempt exam)' : ' \u2713 Ready for exam!';
+  lines.push(`\n**Overall Readiness: ${Math.round(overall * 100)}%**  ${_gedBar(overall)}${need}`);
+
+  // Quiz stats
+  try {
+    const resultsTbl = subj.db + '_ged_quiz_results';
+    const countRaw = await runOnSession(`!db_query SELECT COUNT(*) as cnt FROM ${resultsTbl}`);
+    const countRows = _parseDbQueryRows(countRaw);
+    const sessRaw = await runOnSession(`!db_query SELECT COUNT(DISTINCT session_id) as cnt FROM ${resultsTbl} WHERE phase='quiz'`);
+    const sessRows = _parseDbQueryRows(sessRaw);
+    if (countRows.length && sessRows.length) {
+      lines.push(`\nQuizzes taken: ${sessRows[0].cnt}  |  Questions answered: ${countRows[0].cnt}`);
+    }
+  } catch (_) {}
+
+  lines.push(`\n_#ged all — all subjects  |  #ged scores — raw data_`);
+  const hint = addMessage('assistant', '');
+  hint.innerHTML = renderMarkdown(lines.join('\n'));
+  scrollToBottom();
+  setStatus('');
 }
 
 function handleSend() {
   const text = textInput.value.trim();
   if (!text) return;
+  // Intercept #ged commands — client-side progress dashboards
+  if (text === '#ged' || text.startsWith('#ged ')) {
+    textInput.value = '';
+    autoResize(textInput);
+    _handleGedCommand(text.slice(4).trim().toLowerCase());
+    return;
+  }
   // Intercept #mode commands — don't send to LLM
   if (text.startsWith('#mode ')) {
     textInput.value = '';
@@ -1437,9 +1800,9 @@ function handleSend() {
       switchSessionModel('samaritan-voice').finally(() => {
         window.location.href = '/';
       });
-    } else if (mode === 'chat-ged') {
-      setStatus('Switching to GED mode…');
-      window.location.href = '/chat-ged';
+    } else if (mode === 'chat') {
+      setStatus('Switching to Chat mode…');
+      window.location.href = '/chat';
     } else {
       setStatus('Unknown mode: ' + mode);
       setTimeout(() => setStatus(''), 2000);
@@ -1469,15 +1832,66 @@ modelSelect.addEventListener('change', async () => {
   if (!val) return;
   setStatus(`Switching model…`);
   try {
-    await runOnSession(`!model ${val}`);
+    await runOnSession(`!model ${val} database=target`);
     currentModel = val;
     setStatus(`Model: ${modelSelect.options[modelSelect.selectedIndex].text}`);
     setTimeout(() => setStatus(''), 2500);
+    _updateGedActiveRow();
   } catch (e) {
     setStatus('Model switch failed');
     // Revert selector to previous model
     if (currentModel) modelSelect.value = currentModel;
   }
+});
+
+// ── GED subject switching (shared by cards + sidebar rows) ─────
+const _GED_LABELS = {};
+document.querySelectorAll('.subject-card').forEach(c => {
+  _GED_LABELS[c.dataset.model] = c.querySelector('.subject-card-label').textContent;
+});
+
+function _updateGedActiveRow() {
+  document.querySelectorAll('.ged-subject-row').forEach(row => {
+    row.classList.toggle('active', row.dataset.model === currentModel);
+  });
+}
+
+async function _switchGedSubject(model) {
+  if (model === currentModel && !document.body.classList.contains('empty-mode')) return;
+  setStatus(`Loading ${_GED_LABELS[model] || model}…`);
+  try {
+    // Summarize departing subject's conversation before switching (non-blocking)
+    if (currentModel && currentModel.startsWith('ged-')) {
+      try { await runOnSession('!reset'); } catch (_) {}
+    }
+    await runOnSession(`!model ${model} database=target`);
+    currentModel = model;
+    if (modelSelect) modelSelect.value = model;
+    _updateGedActiveRow();
+    closeSidebar();
+    // Clear previous subject's chat and start fresh
+    chatMessages.innerHTML = '';
+    exitEmptyMode();
+    setStatus('');
+    const hint = addMessage('assistant', '');
+    hint.innerHTML = renderMarkdown(
+      `*Use the ☰ menu to switch subjects anytime.*\n\n*Track your progress:*\n\`#ged\` — topic scores and readiness for this subject\n\`#ged all\` — overview across all GED subjects\n\`#ged scores\` — detailed score data with attempt counts`
+    );
+    // Auto-send a greeting so the tutor starts immediately
+    setTimeout(() => submitText("Hi, let's start"), 300);
+  } catch (e) {
+    setStatus('Subject switch failed');
+  }
+}
+
+// Center cards
+document.querySelectorAll('.subject-card').forEach(card => {
+  card.addEventListener('click', () => _switchGedSubject(card.dataset.model));
+});
+
+// Sidebar rows
+document.querySelectorAll('.ged-subject-row').forEach(row => {
+  row.addEventListener('click', () => _switchGedSubject(row.dataset.model));
 });
 
 // ── New chat button ───────────────────────────────────────────

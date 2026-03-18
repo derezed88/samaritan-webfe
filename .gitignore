@@ -16,6 +16,11 @@ __pycache__/
 *.log
 *.pid
 
+# Pinggy tunnel scripts (local-only)
+start-pinggy.sh
+stop-pinggy.sh
+pinggy_url.txt
+
 # Editor / OS
 .claude/
 .DS_Store

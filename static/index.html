@@ -789,7 +789,9 @@
       height: 32px;
     }
 
-    #mic-btn:hover { background: var(--red-dark); border-color: var(--red); }
+    @media (hover: hover) {
+      #mic-btn:hover { background: var(--red-dark); border-color: var(--red); }
+    }
 
     #mic-btn.listening {
       background: var(--red);
@@ -839,17 +841,19 @@
       border: 1px solid rgba(255,255,255,0.2);
       color: rgba(255,255,255,0.4);
       cursor: pointer;
-      padding: 0;
-      width: 28px;
+      padding: 0 4px;
+      min-width: 28px;
       font-family: var(--font);
       font-size: 13px;
       flex-shrink: 0;
       transition: all 200ms;
       height: 28px;
     }
-    #voice-provider-btn:hover {
-      border-color: rgba(255,255,255,0.5);
-      color: var(--bar-text);
+    @media (hover: hover) {
+      #voice-provider-btn:hover {
+        border-color: rgba(255,255,255,0.5);
+        color: var(--bar-text);
+      }
     }
     #voice-provider-btn.xai-persistent {
       background: #f0a500;
@@ -878,9 +882,11 @@
       height: 28px;
     }
 
-    #full-voice-btn:hover {
-      border-color: var(--red-mid);
-      color: var(--bar-text);
+    @media (hover: hover) {
+      #full-voice-btn:hover {
+        border-color: var(--red-mid);
+        color: var(--bar-text);
+      }
     }
 
     #full-voice-btn.active {
@@ -1111,7 +1117,7 @@
 
     /* ─── Memstats — full-height column, left of toolstats ─── */
     #cogn-mem-panel {
-      width: 468px;
+      width: 384px;
       flex-shrink: 0;
       overflow-y: auto;
       padding: 8px 10px;
@@ -1877,7 +1883,8 @@ function handleCommand(raw) {
       if (args[0] === 'cognitive') enterCognMode();
       else if (args[0] === 'default') exitCognMode();
       else if (args[0] === 'chat') enterChatMode();
-      else flashError('usage: #mode <cognitive|default|chat>');
+      else if (args[0] === 'chat-ged') enterChatGedMode();
+      else flashError('usage: #mode <cognitive|default|chat|chat-ged>');
       break;
     case '#db':
       if (!args[0]) { flashError('usage: #db <name>'); break; }
@@ -1891,6 +1898,10 @@ function handleCommand(raw) {
 // ── Mode: enter chat ─────────────────────────────────────────
 function enterChatMode() {
   window.location.href = '/chat';
+}
+
+function enterChatGedMode() {
+  window.location.href = '/chat-ged';
 }
 
 // ── Keyword card engine ───────────────────────────────────────
@@ -2724,7 +2735,7 @@ const ttsProviders = {
 
 // ── Wire voice provider button (after ttsProviders is defined) ───────────────
 (function() {
-  const PROVIDER_LABELS = { deepgram: 'D', inworld: 'I', xai: 'X', 'xai-persistent': 'X' };
+  const PROVIDER_LABELS = { deepgram: 'D', inworld: 'I', xai: 'X', 'xai-persistent': 'XP' };
   const PROVIDER_TITLES = {
     deepgram: 'TTS: Deepgram Aura — tap to switch',
     inworld: 'TTS: Inworld — tap to switch',
@@ -2756,7 +2767,7 @@ const ttsProviders = {
     }).catch(() => {});
   }
 
-  const providerOrder = Object.keys(ttsProviders);
+  const providerOrder = ['inworld', 'deepgram', 'xai', 'xai-persistent'];
   updateVoiceProviderBtn();
 
   voiceProviderBtn.addEventListener('click', () => {
@@ -3786,7 +3797,7 @@ resetIdleTimer();   // start idle countdown immediately on page load
         // Restore TTS provider — click the button until we reach the saved provider.
         // Using click() ensures destroy/prefetch side-effects fire correctly.
         if (saved.ttsProvider && ttsProviders[saved.ttsProvider] && saved.ttsProvider !== TTS_PROVIDER) {
-          const order = Object.keys(ttsProviders);
+          const order = ['inworld', 'deepgram', 'xai', 'xai-persistent'];
           const steps = (order.indexOf(saved.ttsProvider) - order.indexOf(TTS_PROVIDER) + order.length) % order.length;
           for (let i = 0; i < steps; i++) voiceProviderBtn.click();
         }
@@ -3869,13 +3880,18 @@ const COGN_LOOPS = [
 ];
 
 // ── Poll session IDs (separate from user chat session) ──────
-const COGN_SID_T = 'cogn-timers';
-const COGN_SID_M = 'cogn-mem';
-const COGN_SID_P = 'cogn-plan';
-const COGN_SID_C = 'cogn-cogn';
+// Derive cognitive SIDs from SESSION_ID so each tab gets isolated llmem-gw sessions
+const _cognSuffix   = SESSION_ID.replace(/^sam-/, '');
+const COGN_SID_T = 'cogn-timers-' + _cognSuffix;
+const COGN_SID_M = 'cogn-mem-' + _cognSuffix;
+const COGN_SID_P = 'cogn-plan-' + _cognSuffix;
+const COGN_SID_C = 'cogn-cogn-' + _cognSuffix;
+const COGN_SID_DG = 'cogn-dc-g-' + _cognSuffix;
+const COGN_SID_DB = 'cogn-dc-b-' + _cognSuffix;
+const COGN_SID_DT = 'cogn-dc-t-' + _cognSuffix;
 // All session IDs used by cognitive mode (for db switching)
 const COGN_ALL_SIDS = [COGN_SID_T, COGN_SID_M, COGN_SID_P, COGN_SID_C,
-                       'cogn-dc-g', 'cogn-dc-b', 'cogn-dc-t'];
+                       COGN_SID_DG, COGN_SID_DB, COGN_SID_DT];
 
 let cognDb = null;  // currently active db for cognitive sessions
 
@@ -4018,14 +4034,14 @@ function calcProgress(lastTs, nextTs) {
 // ── Data card definitions ───────────────────────────────────
 // Left stack: goals, beliefs, prospective, plans
 const COGN_DATA_CARDS_LEFT = [
-  { id: 'cogn-dc-goals',  label: 'GOALS',       cmd: '!cogn goals',  sid: 'cogn-dc-g',  color: '#8b5cf6', lines: 3 },
-  { id: 'cogn-dc-beliefs',label: 'BELIEFS',      cmd: '!cogn flags',  sid: 'cogn-dc-b',  color: '#0ea5e9', lines: 3 },
+  { id: 'cogn-dc-goals',  label: 'GOALS',       cmd: '!cogn goals',  sid: COGN_SID_DG,  color: '#8b5cf6', lines: 3 },
+  { id: 'cogn-dc-beliefs',label: 'BELIEFS',      cmd: '!cogn flags',  sid: COGN_SID_DB,  color: '#0ea5e9', lines: 3 },
   { id: 'cogn-dc-prosp',  label: 'PROSPECTIVE',  cmd: '!cogn',        sid: COGN_SID_C,   color: '#f59e0b', lines: 3 },
   { id: 'cogn-dc-plans',  label: 'PLANS',        cmd: '!plan',        sid: COGN_SID_P,   color: '#22c55e', lines: 3 },
 ];
 // Right stack (under cognition timer cards): toolstats
 const COGN_DATA_CARDS_RIGHT = [
-  { id: 'cogn-dc-tools',  label: 'TOOLSTATS',    cmd: '!toolstats',   sid: 'cogn-dc-t',  color: '#6b7280', lines: 5, fill: true },
+  { id: 'cogn-dc-tools',  label: 'TOOLSTATS',    cmd: '!toolstats',   sid: COGN_SID_DT,  color: '#6b7280', lines: 5, fill: true },
 ];
 const COGN_DATA_CARDS = [...COGN_DATA_CARDS_LEFT, ...COGN_DATA_CARDS_RIGHT];
 // Store current line-count per card for +/- resize
@@ -4193,11 +4209,11 @@ async function cognPoll() {
       if (!cognMode) return;
       cognLastCogn = await cognCmd('!cogn', COGN_SID_C);
       if (!cognMode) return;
-      cognDcText['cogn-dc-goals']   = await cognCmd('!cogn goals', 'cogn-dc-g');
+      cognDcText['cogn-dc-goals']   = await cognCmd('!cogn goals', COGN_SID_DG);
       if (!cognMode) return;
-      cognDcText['cogn-dc-beliefs'] = await cognCmd('!cogn flags', 'cogn-dc-b');
+      cognDcText['cogn-dc-beliefs'] = await cognCmd('!cogn flags', COGN_SID_DB);
       if (!cognMode) return;
-      cognDcText['cogn-dc-tools']   = await cognCmd('!toolstats',  'cogn-dc-t');
+      cognDcText['cogn-dc-tools']   = await cognCmd('!toolstats',  COGN_SID_DT);
       if (!cognMode) return;
 
       cognFeedback = parseCognFeedback(cognLastCogn);

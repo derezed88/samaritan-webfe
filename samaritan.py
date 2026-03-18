@@ -210,6 +210,19 @@ async def chat(request: Request):
     })
 
 
+@app.get("/chat-ged", response_class=HTMLResponse)
+async def chat_ged(request: Request):
+    """Serve the GED study chat UI for Lee."""
+    if not _check_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    html_path = Path(__file__).parent / "static" / "chat-ged.html"
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    return HTMLResponse(content=content, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+    })
+
+
 @app.post("/api/submit")
 async def submit(request: Request):
     """Submit a message to llmem-gw."""
