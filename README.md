@@ -96,6 +96,7 @@
 ### `#mode cognitive` — Live Monitoring Dashboard
 
 <!-- TODO: Add screenshot here -->
+![2026-03-21_17-37-36](https://github.com/user-attachments/assets/a855afef-5171-43c4-9281-aa6746e19b05)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
