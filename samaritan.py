@@ -308,6 +308,14 @@ async def stream_proxy(client_id: str, request: Request):
                                     response_tokens.append(token)
                                     yield f"data: {json.dumps({'type': 'flush', 'text': token})}\n\n"
 
+                            elif event_type == "progress":
+                                try:
+                                    msg = json.loads(raw_data).get("text", raw_data)
+                                except (json.JSONDecodeError, ValueError):
+                                    msg = raw_data
+                                logger.info("PROGRESS: %s", msg)
+                                yield f"data: {json.dumps({'type': 'progress', 'text': msg})}\n\n"
+
                             elif event_type == "done":
                                 full_response = "".join(response_tokens)
                                 logger.info("RESP (%d chars): %s", len(full_response), full_response[:200])
@@ -330,6 +338,14 @@ async def stream_proxy(client_id: str, request: Request):
                                         pass  # browser will fall back to direct fetch
                                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                                 return
+
+                            elif event_type == "notif":
+                                try:
+                                    msg = json.loads(raw_data).get("text", raw_data)
+                                except (json.JSONDecodeError, ValueError):
+                                    msg = raw_data
+                                logger.info("NOTIF: %s", msg[:120])
+                                yield f"data: {json.dumps({'type': 'notif', 'text': msg})}\n\n"
 
                             elif event_type == "error":
                                 try:
@@ -604,6 +620,26 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
             await websocket.close(code=1011, reason=str(e)[:100])
         except Exception:
             pass
+
+
+@app.get("/api/sms-notifications")
+async def sms_notifications(request: Request):
+    """Poll for pending SMS notifications for the current session."""
+    if not _check_auth(request):
+        return _auth_error()
+    client_id = request.query_params.get("client_id", "")
+    if not client_id:
+        return {"notifications": []}
+    try:
+        async with httpx.AsyncClient(headers=_agent_headers(), timeout=5) as http:
+            resp = await http.get(
+                f"{LLMEM_GW_URL}/sms/notifications",
+                params={"client_id": client_id},
+            )
+            return resp.json()
+    except Exception as e:
+        logger.warning("SMS notification poll failed: %s", e)
+        return {"notifications": []}
 
 
 @app.get("/api/health")

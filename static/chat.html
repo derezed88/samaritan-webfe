@@ -935,6 +935,31 @@ function scrollToBottom() {
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
+// ── SMS notification poller ──────────────────────────────────
+const SMS_POLL_INTERVAL = 4000;
+let _smsPolling = false;
+async function pollSmsNotifications() {
+  if (_smsPolling) return;
+  _smsPolling = true;
+  try {
+    const resp = await fetch(`/api/sms-notifications?client_id=${encodeURIComponent(SESSION_ID)}&token=${encodeURIComponent(_apiKey)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const notifs = data.notifications || [];
+    for (const n of notifs) {
+      const text = n.text || '';
+      if (!text) continue;
+      // Display as a system message in the chat
+      addMessage('assistant', text);
+      // TTS if enabled
+      if (ttsEnabled && typeof speakInworld === 'function') {
+        speakInworld(text);
+      }
+    }
+  } catch (_) {} finally { _smsPolling = false; }
+}
+setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
+
 // ── DB sidebar rendering ──────────────────────────────────────
 function renderDbList() {
   dbList.innerHTML = '';

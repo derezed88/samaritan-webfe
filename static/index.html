@@ -612,6 +612,15 @@
     .loader-dot:nth-child(6) { animation-delay: 600ms; }
     .loader-dot:nth-child(7) { animation-delay: 720ms; }
 
+    #loader-status {
+      width: 100%;
+      text-align: center;
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.5);
+      margin-top: 6px;
+      min-height: 1em;
+    }
+
     @keyframes loader-wave {
       0%, 100% { transform: scaleY(1);   opacity: 0.3; }
       50%       { transform: scaleY(2.2); opacity: 1; }
@@ -688,7 +697,6 @@
       font-family: var(--font);
       font-size: 1.5em;
       letter-spacing: 4px;
-      text-transform: uppercase;
       outline: none;
       padding: 4px 0;
       caret-color: var(--red);
@@ -935,6 +943,7 @@
       transition: opacity 300ms;
       pointer-events: none;
       white-space: nowrap;
+      z-index: 300;
     }
 
     #error-flash.show { opacity: 1; }
@@ -1353,7 +1362,6 @@
       font-family: var(--font);
       font-size: 13px;
       letter-spacing: 2px;
-      text-transform: uppercase;
       outline: none;
       padding: 6px 0;
       caret-color: #c00;
@@ -1546,6 +1554,7 @@
         <div class="loader-dot"></div>
         <div class="loader-dot"></div>
         <div class="loader-dot"></div>
+        <div id="loader-status"></div>
       </div>
     </div>
 
@@ -1709,6 +1718,7 @@ const clockEl        = document.getElementById('clock');
 // ── Keyboard / voice mode toggle ─────────────────────────────
 let kbdOpen      = false;
 let voiceMode    = false;  // true only when user explicitly enabled mic
+let _micStateBeforeKbd = null;  // saved mic state when keyboard opens
 let fullVoiceMode = false; // true when xAI TTS is active
 
 // ── Mic mode: 'off' | 'barge' | 'speaker' | 'deepgram-di' ───────────────────
@@ -1752,19 +1762,31 @@ fullVoiceBtn.addEventListener('click', () => {
 
 function setKbdMode(open) {
   kbdOpen = open;
-  if (open) voiceMode = false;  // entering keyboard mode disables auto-restart
   // Swap panels: show text input OR response panel, never both
   textInputPanel.classList.toggle('open', open);
   // responsePanel visibility is managed independently via .active class
   kbdBtn.classList.toggle('active', open);
   voicePreview.style.visibility = open ? 'hidden' : '';
-  if (!open) {
+  if (open) {
+    // Save mic state before disabling
+    _micStateBeforeKbd = { voiceMode, micMode, wasListening: isListening };
+    voiceMode = false;
+    if (isListening) {
+      const provider = typeof getActiveProvider === 'function' ? getActiveProvider() : sttProviders[STT_PROVIDER];
+      if (provider) provider.stop();
+    }
+  } else {
     textInput.blur();
-    voicePreview.textContent = 'TAP MIC TO SPEAK';
-  }
-  // Stop mic when switching to keyboard mode
-  if (open && isListening) {
-    sttProviders[STT_PROVIDER]?.stop();
+    voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+    // Restore mic state from before keyboard was opened
+    if (_micStateBeforeKbd && _micStateBeforeKbd.micMode !== 'off') {
+      voiceMode = _micStateBeforeKbd.voiceMode;
+      if (_micStateBeforeKbd.wasListening && !isStreaming) {
+        const provider = typeof getActiveProvider === 'function' ? getActiveProvider() : sttProviders[STT_PROVIDER];
+        if (provider) provider.start();
+      }
+    }
+    _micStateBeforeKbd = null;
   }
 }
 
@@ -1796,7 +1818,7 @@ const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewrite
 const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
 let   TTS_PROVIDER            = 'inworld';              // active TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
 const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
-const INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
+let   INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
 const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en'; // Deepgram Aura TTS model
 // Model to auto-switch to when xai-persistent TTS is selected, and back when leaving.
 // Set to null to disable auto-switch (use !model manually instead).
@@ -1856,6 +1878,38 @@ function flashError(msg) {
   errorFlash.classList.add('show');
   setTimeout(() => errorFlash.classList.remove('show'), 3000);
 }
+function flashCmd(msg) {
+  errorFlash.textContent = '[ ' + msg.toUpperCase() + ' ]';
+  errorFlash.classList.add('show');
+  setTimeout(() => errorFlash.classList.remove('show'), 3000);
+}
+
+// ── SMS notification poller ──────────────────────────────────
+// Polls llmem-gw for incoming SMS notifications every few seconds.
+// Displays them visually and speaks them in voice mode.
+const SMS_POLL_INTERVAL = 4000; // ms
+let _smsPolling = false;
+async function pollSmsNotifications() {
+  if (_smsPolling) return;
+  _smsPolling = true;
+  try {
+    const resp = await fetch(authedUrl(`/api/sms-notifications?client_id=${encodeURIComponent(SESSION_ID)}`));
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const notifs = data.notifications || [];
+    for (const n of notifs) {
+      const text = n.text || '';
+      if (!text) continue;
+      // Display in panel
+      appendToPanel('\n' + text + '\n');
+      // TTS in voice mode
+      if ((voiceMode || fullVoiceMode) && typeof speakWithSamaritan === 'function') {
+        speakWithSamaritan(text, false, true);
+      }
+    }
+  } catch (_) {} finally { _smsPolling = false; }
+}
+setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
 
 // ── #command handler ─────────────────────────────────────────
 // Commands starting with # are intercepted client-side and never sent to llmem-gw.
@@ -1890,6 +1944,11 @@ function handleCommand(raw) {
       if (!args[0]) { flashError('usage: #db <name>'); break; }
       if (cognMode) cognSwitchDb(args[0]);
       else flashError('#db only applies in cognitive mode');
+      break;
+    case '#inworld_voice':
+      if (!args[0]) { flashCmd('Inworld voice: ' + INWORLD_VOICE); break; }
+      INWORLD_VOICE = args[0];
+      flashCmd('Inworld voice set to: ' + INWORLD_VOICE);
       break;
     default: flashError('unknown command: ' + cmd);
   }
@@ -2076,8 +2135,10 @@ function showIdle(show) {
   idleEl.style.display = show ? 'block' : 'none';
 }
 
-function showLoader(show) {
+function showLoader(show, statusText) {
   loaderEl.classList.toggle('active', show);
+  const statusEl = document.getElementById('loader-status');
+  if (statusEl) statusEl.textContent = statusText || '';
 }
 
 // ── Terminal display (long responses) ────────────────────────
@@ -2906,7 +2967,10 @@ async function submit(textOverride) {
   const wasKbd = kbdOpen;
   textInput.value = '';
   textInput.blur();          // dismiss iOS keyboard immediately
-  if (kbdOpen) setKbdMode(false);  // switch to response panel while waiting
+  if (kbdOpen) {
+    _micStateBeforeKbd = null;  // don't restore mic — submit flow handles post-response restart
+    setKbdMode(false);
+  }
   voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
   isStreaming = true;
   wordQueue   = [];
@@ -3066,6 +3130,9 @@ async function submit(textOverride) {
           const token = data.text || '';
           if (token) { appendToPanel(token); enqueueTokens(token); }
           ttsBuf = '';  // discard pre-flush content from TTS (thinking/tool markers)
+        } else if (data.type === 'progress') {
+          showLoader(true, data.text || 'Still working…');
+          if (fullVoiceMode) speakWithSamaritan(data.text || 'Still working…', wasKbd, false);
         } else if (data.type === 'vtok') {
           // xAI voice token pre-delivered over SSE — store directly on xAI provider
           ttsProviders.xai._cachedVtok = data.token;

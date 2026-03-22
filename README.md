@@ -21,7 +21,7 @@
     A <em>Person of Interest</em>-themed web front-end for the llmem-gw AI service.
     Streams LLM responses word-by-word in the Samaritan UI style with full voice I/O — speak to Samaritan and hear it speak back.
     <br />
-    <a href="https://github.com/derezed88/samaritan-webfe"><strong>Explore the docs »</strong></a>
+    <a href="https://github.com/derezed88/samaritan-webfe"><strong>Explore the docs &raquo;</strong></a>
     <br />
     <br />
     <a href="https://github.com/derezed88/samaritan-webfe/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
@@ -37,9 +37,9 @@
   <summary>Table of Contents</summary>
   <ol>
     <li><a href="#screenshots">Screenshots</a></li>
-    <li><a href="#chat-ui-chathtml">Chat UI (chat.html)</a></li>
     <li><a href="#about-the-project">About The Project</a>
       <ul>
+        <li><a href="#three-frontends-one-portfolio">Three Frontends, One Portfolio</a></li>
         <li><a href="#built-with">Built With</a></li>
       </ul>
     </li>
@@ -49,11 +49,28 @@
         <li><a href="#installation">Installation</a></li>
       </ul>
     </li>
-    <li><a href="#usage">Usage</a></li>
+    <li><a href="#mode-default---samaritan-voice-ui">Mode: Default</a>
+      <ul>
+        <li><a href="#voice-input-live-mode">Voice Input</a></li>
+        <li><a href="#full-voice-hands-free-mode">Full-Voice Hands-Free</a></li>
+        <li><a href="#keyboard-mode">Keyboard Mode</a></li>
+        <li><a href="#idle-behaviour">Idle Behaviour</a></li>
+      </ul>
+    </li>
+    <li><a href="#mode-cognitive---live-monitoring-dashboard">Mode: Cognitive</a></li>
+    <li><a href="#voice-io">Voice I/O</a>
+      <ul>
+        <li><a href="#tts-providers-text-to-speech">TTS Providers</a></li>
+        <li><a href="#stt-providers-speech-to-text">STT Providers</a></li>
+        <li><a href="#mic-modes">Mic Modes</a></li>
+      </ul>
+    </li>
+    <li><a href="#commands">Commands</a></li>
     <li><a href="#configuration">Configuration</a></li>
-    <li><a href="#remote-access">Remote Access via Pinggy</a></li>
+    <li><a href="#other-frontends">Other Frontends</a></li>
+    <li><a href="#remote-access-via-pinggy">Remote Access via Pinggy</a></li>
     <li><a href="#security">Security</a></li>
-    <li><a href="#developer-notes-adapting-this-frontend">Developer Notes: Adapting This Frontend</a></li>
+    <li><a href="#developer-notes-adapting-this-frontend">Developer Notes</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
     <li><a href="#contact">Contact</a></li>
@@ -66,6 +83,8 @@
 <!-- SCREENSHOTS -->
 ## Screenshots
 
+### `#mode default` — Samaritan Voice UI
+
 <div align="center">
   <img src="docs/IMG_7650.PNG" alt="Samaritan UI — word flash animation" width="30%" />
   &nbsp;
@@ -74,40 +93,9 @@
   <img src="docs/IMG_7653.PNG" alt="Samaritan UI — voice mode" width="30%" />
 </div>
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+### `#mode cognitive` — Live Monitoring Dashboard
 
-
-
-<!-- CHAT UI -->
-## Chat UI (chat.html)
-
-`static/chat.html` is a second, Claude-style chat interface served at `/chat` by the same `samaritan.py` server.
-It uses the same llmem-gw backend and auth cookie as the Samaritan voice UI, but presents conversations as a familiar scrolling chat transcript rather than the Samaritan word-flash animation.
-
-**When to use it instead of `index.html`:**
-
-- You want a persistent, scrollable conversation history rather than the Samaritan animation display.
-- You are doing math or technical work and want LaTeX/formula rendering.
-- You prefer keyboard/text-only interaction without the voice controls.
-- You want to inspect or resume short-term memory from a previous session.
-
-**Features:**
-
-| Feature | Details |
-|---------|---------|
-| Multi-turn chat | Scrolling user/assistant bubble layout; markdown rendered via [marked.js](https://marked.js.org/) |
-| LaTeX / math rendering | [KaTeX](https://katex.org/) auto-render; `preprocessMath()` wraps bare operators (`times`, `div`, `cdot`, …) and exponents into `\( \)` delimiters; handles JSON `\t`-escape corruption of `\times` |
-| Memory display on load | Loads short-term memory via `!db_query` and renders each past turn as a proper user/assistant bubble — not a raw dump |
-| Database switching | Type `#db <name>` in the chat to switch to a different llmem-gw memory database; header badge updates live |
-| Model selection | Dropdown to choose the active LLM model (passed as `model` in the submit body) |
-| Session continuity | `SESSION_ID` is persisted in `sessionStorage` so page reloads reuse the same llmem-gw session |
-| Token streaming | Same SSE `tok` / `flush` / `done` / `error` protocol as `index.html`; tokens appended to the assistant bubble in real time |
-| Voice input | Deepgram STT via `/api/stt-proxy` WebSocket; mic button toggles listen/stop |
-| Voice output | Inworld TTS toggle; speaks the full assistant response on turn completion |
-
-**Architecture note:** `chat.html` is fully independent of `index.html` — it shares no JS globals and no code. It includes its own Inworld TTS (`speakInworld`) and Deepgram STT pipeline (same `/api/stt-proxy` WebSocket), so `INWORLD_API_KEY` and `DEEPGRAM_API_KEY` are still needed for voice features. Both pages talk to the same llmem-gw session via the same `SESSION_ID` cookie mechanism if you keep the tab open across both pages.
-
-**Accessing it:** Navigate to `https://<host>:8800/chat` (or the Pinggy URL + `/chat`). Auth uses the same login cookie as the main UI — log in once and both pages work.
+<!-- TODO: Add screenshot here -->
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -117,22 +105,26 @@ It uses the same llmem-gw backend and auth cookie as the Samaritan voice UI, but
 ## About The Project
 
 `samaritan-webfe` is a Python web service that provides a browser-based AI chat client styled
-after the **Samaritan** interface from the CBS television series *Person of Interest* (2011–2016).
+after the **Samaritan** interface from the CBS television series *Person of Interest* (2011-2016).
 It acts as a front-end proxy to the [llmem-gw](https://github.com/derezed88/llmem-gw)
-AI agent service, streaming responses token-by-token in the show's distinctive word-flash animation style.
+AI agent service, streaming responses token-by-token.
 
-**Key features:**
+The Samaritan UI (`index.html`) operates in two modes:
 
-- Samaritan visual style — white radial-gradient background, ALL-CAPS monospace font, red accent triangle, scanline overlay
-- Word-by-word token animation (one word flashes center-screen at a time); longer responses use a typewriter terminal panel
-- **Voice input** via [Deepgram](https://deepgram.com) streaming STT (server-proxied WebSocket) with AudioWorklet PCM capture; falls back to the Web Speech API on browsers without AudioWorklet support — auto-submits on recognition, mic restarts automatically after each response
-- **Voice output (TTS)** via a pluggable provider architecture — switch between Deepgram Aura, xAI Realtime (per-turn or persistent low-latency), and Inworld AI with a single tap at runtime
-- **Full-voice hands-free loop** — speak a prompt, hear the response, mic reopens automatically for the next turn; works continuously for multiple turns
-- Keyboard mode for typed input — reopens automatically after each response; typed prompts also get spoken responses in full-voice mode
-- Configurable idle screen: returns to `CONNECTION ESTABLISHED.` after inactivity
-- HTTP Basic Auth gate — browser credential dialog prevents unauthorized access before the page loads
-- Dual-port server: HTTPS on 8800 (local, mic-capable) and HTTP on 8801 (pinggy tunnel endpoint)
-- Self-signed TLS certificate auto-generated on first start for local HTTPS
+- **`#mode default`** — The main voice/text chat with Samaritan's word-flash animation, terminal panel display, full-voice hands-free loop, and pluggable TTS/STT providers
+- **`#mode cognitive`** — A real-time monitoring dashboard that polls llmem-gw's cognitive engine at 10-second resolution, displaying goals, beliefs, plans, tools, and live timer countdowns
+
+### Three Frontends, One Portfolio
+
+This repo contains three independent frontend UIs served by the same `samaritan.py` FastAPI server. They share the same llmem-gw backend and auth cookie, but each is a self-contained single-file HTML/CSS/JS application with no shared code between them:
+
+| Frontend | Route | Description | Docs |
+|----------|-------|-------------|------|
+| **Samaritan Voice UI** | `/` | Person of Interest-themed voice interface (this README) | — |
+| **Chat** | `/chat` | Claude-style scrolling chat with markdown, LaTeX, memory display | [docs/CHAT.md](docs/CHAT.md) |
+| **Chat-GED** | `/chat-ged` | GED exam prep tutor with subject isolation, score tracking, Mermaid charts | [docs/CHAT-GED.md](docs/CHAT-GED.md) |
+
+If you want to use any of these separately, you would need to pull them apart — each HTML file is standalone but relies on the `samaritan.py` proxy for auth, API key management, and SSE/WebSocket proxying. I keep them together as a **frontend portfolio** demonstrating different approaches to the same backend.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -181,26 +173,35 @@ AI agent service, streaming responses token-by-token in the show's distinctive w
 
 4. Open in your browser
    - **Local network:** `https://<your-host-ip>:8800`
-   - **Pinggy tunnel:** `https://<assigned-pinggy-url>` (see [Remote Access](#remote-access))
+   - **Pinggy tunnel:** `https://<assigned-pinggy-url>` (see [Remote Access](#remote-access-via-pinggy))
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
 
-<!-- USAGE EXAMPLES -->
-## Usage
+## `#mode default` — Samaritan Voice UI
 
-Once the page loads, the browser prompts for credentials (HTTP Basic Auth).
-Enter anything as the username and your `SAMARITAN_API_KEY` as the password.
-The browser caches this for the session — you will not be prompted again until the tab is closed.
+The default mode is the Person of Interest-styled interface. Short responses (< 10 words) animate center-screen in the show's word-flash style — one word at a time. Longer responses use a typewriter terminal panel at the top of the screen.
 
-**Voice input (LIVE mode):**
+**Key features:**
+
+- Samaritan visual style — white radial-gradient background, ALL-CAPS monospace font, red accent triangle, scanline overlay
+- Word-by-word token animation; longer responses use a typewriter terminal panel
+- Full-voice hands-free loop — speak, hear the response, mic reopens automatically
+- Pluggable TTS providers (Deepgram Aura, Inworld, xAI, xAI Persistent) switchable at runtime
+- Deepgram STT with multiple mic modes (barge-in, speaker-safe, diarization)
+- Dark/light theme via `#screen_mode dark|light` with a 3-second crossfade
+- Keyword-triggered Samaritan-style cards (INITIATIVE, ASSET, TASK, THREAT)
+
+### Voice Input (LIVE mode)
+
 1. Tap the **MIC** button — the label changes to **LIVE** and the interface listens
 2. Speak your query — it auto-submits when you finish speaking
 3. The response streams word-by-word on screen
 4. When the response finishes, the mic restarts automatically for the next turn
 
-**Full-voice hands-free mode (FULL VOICE + LIVE):**
+### Full-Voice Hands-Free Mode
+
 1. Tap **D / I / X** (TTS provider button) to cycle through Deepgram Aura, Inworld, xAI, or xAI Persistent
 2. Tap **FULL VOICE** to enable spoken responses, then tap **MIC** to start listening
 3. Speak your query — Samaritan responds in text *and* speaks the response aloud via AI voice
@@ -209,17 +210,125 @@ The browser caches this for the session — you will not be prompted again until
 
 > **Note:** Voice responses require at least one TTS provider API key in `.env` (see [Configuration](#configuration)).
 > Tap the provider button in the control bar to cycle providers at any time without reloading.
-> Supported browsers: Chrome, Edge, Safari (iOS 14.5+). Firefox does not support the Web Speech API.
 
-**Keyboard mode:**
-1. Tap the **⌫** button to open the text input
+### Keyboard Mode
+
+1. Tap the **keyboard** button to open the text input
 2. Type your query and press **Enter** or tap **SEND**
 3. The input panel closes while the response streams, then reopens ready for the next message
 4. If FULL VOICE is active, typed prompts also receive a spoken response
 
-**Idle behaviour:**
-After `IDLE_TIMEOUT_SEC` seconds (default 30, configurable at the top of the JS in `static/index.html`),
-the screen clears and returns to the blinking `CONNECTION ESTABLISHED.` state.
+### Idle Behaviour
+
+After `IDLE_TIMEOUT_SEC` seconds (default 300 / 5 minutes), the screen clears and returns to the blinking `CONNECTION ESTABLISHED.` state.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+
+## `#mode cognitive` — Live Monitoring Dashboard
+
+Type `#mode cognitive` to switch to the real-time monitoring dashboard. This mode polls llmem-gw's cognitive engine and displays the internal state of the AI agent.
+
+**Layout — 4-column display:**
+
+| Column | Width | Content |
+|--------|-------|---------|
+| Left data stack | 220px | Goals, beliefs, prospective memory, plans (auto-scrolling cards) |
+| Center top | flex | Dashboard with live timer table |
+| Center bottom | flex | Chat log with input field |
+| Right | 352px | Samaritan-style countdown timer cards |
+
+**Live data cards** (refreshed every 30 seconds):
+
+- `!cogn goals` — Current LLM goals
+- `!cogn flags` — Belief flags
+- `!plan` — Current plan breakdown
+- `!cogn` — Full cognition state (prospective memory)
+- `!toolstats` — Tool usage and availability
+- `!memstats` — Memory pool statistics
+
+**Timer cards** (right column, refreshed every second):
+
+- Parsed from the `!timers` command
+- Each card shows timer name, live countdown, status, last/next run, duration, run count
+- Multiple timers auto-cycle through groups of 3
+
+**Chat input:**
+
+The center-bottom panel has a live input field for interacting with the agent while monitoring. Type `#mode default` to return to the main Samaritan UI.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+
+## Voice I/O
+
+### TTS Providers (Text-to-Speech)
+
+Samaritan uses a pluggable TTS provider architecture. Switch at runtime via the **VOICE** button in the control bar, or set the default via `TTS_PROVIDER` in the JS config block of `index.html`.
+
+| Provider | Button | API Key | Audio Format | Notes |
+|----------|--------|---------|--------------|-------|
+| **Deepgram Aura** | `D` | `DEEPGRAM_API_KEY` | HTTP streaming PCM16-LE @ 24kHz | Server proxy at `/api/tts/deepgram`. Model: `aura-asteria-en` (configurable). |
+| **Inworld AI** | `I` | `INWORLD_API_KEY` | Streaming NDJSON, base64 WAV chunks | Server proxy at `/api/tts/inworld`. Voice: `Evelyn`. Model: `inworld-tts-1.5-mini`. 44-byte RIFF header stripped per chunk. |
+| **xAI Realtime** | `X` | `XAI_API_KEY` | Per-turn WebSocket | Ephemeral token minted server-side per response. Voices: Eve, Ara, Rex, Sal, Leo. Sentence-level streaming. |
+| **xAI Persistent** | `XP` (amber) | `XAI_API_KEY` | Persistent WebSocket | Keeps connection open across turns; auto-refreshes token before expiry. Pairs with `XAI_PERSISTENT_MODEL` for low-latency responses. |
+
+All API keys are kept server-side — they are never sent to the browser.
+
+**Configurable constants** (top of JS in `index.html`):
+
+```js
+let   TTS_PROVIDER            = 'inworld';            // default: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
+const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en';
+const XAI_VOICE               = 'ara';                // Eve | Ara | Rex | Sal | Leo
+const INWORLD_VOICE           = 'Evelyn';
+const INWORLD_MODEL           = 'inworld-tts-1.5-mini';
+```
+
+**Audio pipeline:** All providers feed into a shared Web Audio API pipeline (`scheduleAudioChunk`) for gapless playback. Barge-in support stops all queued audio immediately via `stopAllAudio()`.
+
+### STT Providers (Speech-to-Text)
+
+| Provider | Model | API | Notes |
+|----------|-------|-----|-------|
+| **Deepgram Flux** | `flux-general-en` | v2 `/listen` | Default STT. Native turn detection via `TurnInfo` events. EOT threshold: 0.8. Do NOT send `language` or `punctuate` params. |
+| **Deepgram Nova-3 (Diarize)** | `nova-3` | v1 `/listen` | Used in DI mic mode only. `diarize=true`, labels each speaker as `[Speaker N]: text`. |
+
+Audio capture uses an AudioWorklet (PCM16-LE) with ScriptProcessorNode fallback for iOS Safari. PCM is buffered to ~80ms chunks before sending (Flux requirement). The server-side WebSocket proxy (`/api/stt-proxy`) injects the Deepgram `Authorization` header so the API key never reaches the browser.
+
+### Mic Modes
+
+The rightmost button cycles through four STT modes:
+
+| Mode | Icon | Behavior |
+|------|------|----------|
+| **Off** | mic icon | Mic disabled in full-voice mode |
+| **Barge-in** | **B** (red) | Incoming speech during TTS immediately stops playback — best for headphones/AirPods |
+| **Speaker** | **S** (amber) | Mic stays on but transcripts are suppressed during TTS — safe for phone speaker use. 1500ms cooldown after audio ends. |
+| **Diarize** | **DI** (blue/red pulse) | Deepgram nova-3 + speaker diarization; each turn prefixed with `[Speaker N]:` for multi-person conversations |
+
+If you are using a phone or tablet without headphones, use **S** or **DI** mode to prevent feedback loops.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+
+
+## Commands
+
+These commands are typed in the input field (keyboard mode in default, or the chat input in cognitive mode):
+
+| Command | Mode | Effect |
+|---------|------|--------|
+| `#mode default` | Any | Switch to the Samaritan voice UI |
+| `#mode cognitive` | Any | Switch to the cognitive monitoring dashboard |
+| `#mode chat` | Default | Redirect to `/chat` (Chat UI) |
+| `#mode chat-ged` | Default | Redirect to `/chat-ged` (GED Study UI) |
+| `#screen_mode dark` | Default | Switch to dark theme (3s crossfade) |
+| `#screen_mode light` | Default | Switch to light theme |
+| `#inworld_voice <name>` | Default | Change Inworld TTS voice at runtime |
+| `#db <name>` | Cognitive | Switch active database across all cognitive sessions |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -238,42 +347,35 @@ cp .env.example .env
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SAMARITAN_API_KEY` | Yes | Access password for the web UI (HTTP Basic Auth). Set to any strong secret string. |
+| `SAMARITAN_API_KEY` | Yes | Access password for the web UI. Set to any strong secret string. Must not end with `!` (iOS autofill strips it). |
 | `LLMEM_GW_API_KEY` | No | Bearer token forwarded to llmem-gw. Leave blank if llmem-gw has no key set. |
 | `LLMEM_GW_URL` | No | Base URL of the llmem-gw service. Default: `http://localhost:8767`. |
-| `DEEPGRAM_API_KEY` | For Deepgram TTS | Deepgram API key. Used server-side only for the TTS proxy (`/api/tts/deepgram`) — never sent to the browser. Also used for the STT WebSocket proxy. Get one at [console.deepgram.com](https://console.deepgram.com/). |
-| `XAI_API_KEY` | For xAI voice | xAI API key. Used server-side only to mint ephemeral WebSocket tokens — never sent to the browser. Get one at [console.x.ai](https://console.x.ai/). |
-| `INWORLD_API_KEY` | For Inworld voice | Inworld API key (Base64-encoded credential from the Inworld Portal under Settings → API Keys). Used server-side only — never sent to the browser. |
+| `DEEPGRAM_API_KEY` | For STT + Deepgram TTS | Used server-side for STT WebSocket proxy and TTS streaming. Never sent to browser. [console.deepgram.com](https://console.deepgram.com/) |
+| `XAI_API_KEY` | For xAI voice | Used server-side to mint ephemeral WebSocket tokens. Never sent to browser. [console.x.ai](https://console.x.ai/) |
+| `INWORLD_API_KEY` | For Inworld voice | Base64-encoded credential from Inworld Portal (Settings > API Keys). Never sent to browser. |
 
-The idle timeout, word animation timings, and voice provider settings are constants at the top
-of the JavaScript block in `static/index.html`:
+Additional JS constants at the top of `static/index.html`:
 
 ```js
-const IDLE_TIMEOUT_SEC        = 30;                  // seconds before screen returns to idle message
-const WORD_FADE               = 180;                 // ms opacity transition per word
-const WORD_HOLD               = 380;                 // ms each word is visible
-const WORD_GAP                = 60;                  // ms gap between words
-const LONG_RESPONSE_THRESHOLD = 10;                  // words — responses >= this use terminal typewriter display
-let   TTS_PROVIDER            = 'inworld';           // default TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
-const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en';   // Deepgram Aura model name
-const XAI_VOICE               = 'ara';               // xAI voice: Eve | Ara | Rex | Sal | Leo
-const XAI_PERSISTENT_MODEL    = 'samaritan-voice-fast'; // llmem-gw model key auto-switched with xai-persistent
-const INWORLD_VOICE           = 'Evelyn';            // Inworld voice name
-const INWORLD_MODEL           = 'inworld-tts-1.5-mini'; // Inworld model ID
+const IDLE_TIMEOUT_SEC        = 300;                   // seconds before idle screen
+const WORD_FADE               = 180;                   // ms opacity transition per word
+const WORD_HOLD               = 380;                   // ms each word is visible
+const WORD_GAP                = 60;                     // ms gap between words
+const LONG_RESPONSE_THRESHOLD = 10;                    // words — responses >= this use terminal display
 ```
 
-### Voice Providers
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-Samaritan uses a pluggable TTS provider architecture. The active provider can be switched at runtime via the **VOICE:** button in the control bar, or set permanently via `TTS_PROVIDER` in the JS config block.
 
-| Provider | Button label | API key required | Notes |
-|----------|-------------|-----------------|-------|
-| **Deepgram Aura** | `D` | `DEEPGRAM_API_KEY` | HTTP streaming PCM; server proxy strips WAV header (`container=none`). Model: `DEEPGRAM_TTS_MODEL`. |
-| **Inworld AI** | `I` | `INWORLD_API_KEY` | Streaming NDJSON; server proxy returns raw PCM16-LE. Voice: `INWORLD_VOICE`. |
-| **xAI Realtime** | `X` | `XAI_API_KEY` | Per-turn WebSocket; ephemeral token minted server-side per response. Voices: Eve, Ara, Rex, Sal, Leo. |
-| **xAI Persistent** | `X` (amber) | `XAI_API_KEY` | Keeps WebSocket open across turns; auto-refreshes token before expiry. Pairs with `XAI_PERSISTENT_MODEL` for low-latency responses. |
 
-To add a new provider, implement the `speak(text, token, onDone, onError)` / `stop()` interface in the `ttsProviders` registry in `static/index.html` and add the corresponding server-side proxy route in `samaritan.py` if the API key must stay server-side.
+## Other Frontends
+
+This repo includes two additional chat-style frontends. Each is a self-contained single-file HTML application with its own feature set:
+
+- **[Chat UI](docs/CHAT.md)** (`/chat`) — Claude-style scrolling chat with markdown rendering, KaTeX math, database sidebar, model selection, Inworld TTS, and Deepgram STT
+- **[Chat-GED](docs/CHAT-GED.md)** (`/chat-ged`) — GED exam prep tutor with 5-subject isolation, score tracking, progress dashboards, Mermaid diagram rendering, and quiz analytics
+
+See the linked docs for full feature descriptions and usage instructions.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -300,7 +402,7 @@ ssh -p 443 \
 ```
 
 Pinggy prints the assigned public URL on connect. Share only with trusted users —
-the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
+the `SAMARITAN_API_KEY` auth prompt is the access gate.
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
@@ -314,12 +416,12 @@ the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
 <!-- SECURITY -->
 ## Security
 
-- **HTTP Basic Auth** is enforced on every route including `/`. Unauthorized clients never see the page.
-- The `SAMARITAN_API_KEY` is the password. Username is ignored.
-- The browser caches credentials per-session (cleared on tab close).
-- `LLMEM_GW_API_KEY` is a separate server-side secret forwarded to llmem-gw — it is never exposed to the browser.
-- The self-signed cert on port 8800 will trigger a browser warning on first visit; accept it once. It is valid for 10 years for the configured local IP.
-- When using the Pinggy tunnel, the obscure URL provides minimal protection on its own — always set a strong `SAMARITAN_API_KEY`.
+- **Cookie-based auth** is enforced on every route including `/`. Unauthorized clients are redirected to `/login`.
+- `POST /login` validates the password against `SAMARITAN_API_KEY` and sets an `HttpOnly; SameSite=lax` cookie (30 days).
+- Auth also accepts: `Bearer` token header or `?token=` query param (for SSE streams).
+- `LLMEM_GW_API_KEY` and all voice provider keys are server-side secrets — never exposed to the browser.
+- The self-signed cert on port 8800 will trigger a browser warning on first visit; accept it once.
+- Cookie persists in iOS PWA (WKWebView) across launches.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -328,19 +430,17 @@ the `SAMARITAN_API_KEY` Basic Auth prompt is the access gate.
 <!-- DEVELOPER NOTES -->
 ## Developer Notes: Adapting This Frontend
 
-Developers should understand why I created this front end: because I wanted to combine the memory capabilities of llmem-gw, allowing me to choose any mainstream or locally hosted LLM with the voice providers of my choice.
+I created this front end because I wanted to combine the memory capabilities of llmem-gw, allowing me to choose any mainstream or locally hosted LLM with the voice providers of my choice.
 
 As an example, let's say you like the Grok app's ability to handle text and voice in the same chat. What's really going on in the backend is that when in text mode, Grok is using models that have a much bigger context window than when in live voice mode — in live voice mode, as of this writing the Voice Agent is used and that is backed by a model with a much smaller 32k-token context window. There are good reasons for that, and the biggest reason I can see is optimizing for voice quality: your voice and the model handling the voice are the same, or at least together, reducing API turns.
 
-This project is therefore a workaround, with some performance hit and possible cost implications. If you want to send voice to e.g. `grok-4-1-fast-reasoning` (or any other model that llmem-gw supports — and that includes all mainstream models and any OpenAI-compatible or llama/ollama-hosted model), then you need to process STT (your voice speech-to-text) and TTS (the model's text response to voice), with the LLM of your choice in the middle. I first started with simple Web Speech API for input and text response only. That wasn't good enough for me, so I went with Deepgram for STT and xAI and Inworld for TTS. I don't have enough resources to locally host models to do it on my own, so cloud APIs it is for me. Of course if you want to go keyboard and text only, that works too. There is also a `#screen_mode <dark|light>` command for your ambient light matching needs.
+This project is therefore a workaround, with some performance hit and possible cost implications. If you want to send voice to e.g. `grok-4-1-fast-reasoning` (or any other model that llmem-gw supports — and that includes all mainstream models and any OpenAI-compatible or llama/ollama-hosted model), then you need to process STT (your voice speech-to-text) and TTS (the model's text response to voice), with the LLM of your choice in the middle. I first started with simple Web Speech API for input and text response only. That wasn't good enough for me, so I went with Deepgram for STT and xAI and Inworld for TTS. I don't have enough resources to locally host models to do it on my own, so cloud APIs it is for me. Of course if you want to go keyboard and text only, that works too.
 
-**The performance implication:** API turns for the LLM (plus possible tool calls), for voice input, and for voice response. I am seeing about 8–10 seconds for voice input to voice response — and for the enhanced memory, I'm okay with that.
+**The performance implication:** API turns for the LLM (plus possible tool calls), for voice input, and for voice response. I am seeing about 8-10 seconds for voice input to voice response — and for the enhanced memory, I'm okay with that.
 
 **The cost implication:** API and token usage for everything. Figure that out based on your perceived amount of use.
 
-**Platform note:** Since the frontend is a web browser talking to a Python service, it can run from just about anywhere — macOS, iPhones with Safari, etc. The downside of browser mode is speaker-phone use: you should run voice input in the second orange "speaker-phone" mic mode so that barge-in is suppressed and the speaker doesn't pick up the audio output of the response. I am not willing at this time to develop a standalone native app for better acoustic separation.
-
-I modeled the UI after the Samaritan interface in the *Person of Interest* series. Samaritan will animate center text just like the TV show if the response is small. If the response is large it will print grey text at the top. Feel free to clone and rewrite to support voice providers of your choice.
+**Platform note:** Since the frontend is a web browser talking to a Python service, it can run from just about anywhere — macOS, iPhones with Safari, etc. The downside of browser mode is speaker-phone use: you should run voice input in the **S** (speaker) mic mode so that barge-in is suppressed and the speaker doesn't pick up the audio output of the response.
 
 ---
 
@@ -358,8 +458,6 @@ The project has two layers:
 ---
 
 ### Service Coupling Map
-
-The following services are used and where they are coupled:
 
 | Service | Where coupled | How to swap |
 |---------|--------------|-------------|
@@ -385,132 +483,19 @@ The frontend and backend share an internal SSE contract. As long as `samaritan.p
 To replace llmem-gw with a different LLM (OpenAI, Anthropic, Ollama, etc.), rewrite only `samaritan.py`:
 
 1. **Submit route** (`POST /api/submit`) — translate `{text, client_id}` into your backend's request format and start a streaming response.
-2. **Stream route** (`GET /api/stream/{client_id}`) — parse your backend's streaming format (OpenAI JSON lines, Anthropic delta events, Ollama chunks, etc.) and emit `tok` / `flush` / `done` / `error` SSE events to the browser.
-3. **Session management** — llmem-gw correlates a submitted request to its SSE stream via `client_id`. If your backend streams directly in the POST response body, you can simplify or eliminate the separate stream route; you would also need to update the frontend's `submit()` function (around the `EventSource` setup) to match.
+2. **Stream route** (`GET /api/stream/{client_id}`) — parse your backend's streaming format and emit `tok` / `flush` / `done` / `error` SSE events to the browser.
+3. **Session management** — llmem-gw correlates a submitted request to its SSE stream via `client_id`. If your backend streams directly in the POST response body, you can simplify or eliminate the separate stream route.
 4. **Health check** (`GET /api/health`) — point at your backend's health endpoint.
 
-**Effort estimates:**
-
-| Backend | Estimated effort | Notes |
-|---------|-----------------|-------|
-| Custom backend with llmem-gw-compatible protocol | ~1–2 h | Just update `LLMEM_GW_URL` and endpoint paths |
-| OpenAI / Anthropic streaming API | ~4–6 h | Rewrite `event_generator()` in `samaritan.py`; frontend unchanged |
-| Ollama or other non-SSE backends | ~6–8 h | Same as above plus handle direct-stream-in-response pattern |
-
 ---
 
-### Swapping or Adding TTS Providers
+### iOS Safari Notes
 
-TTS providers are a registry object in `index.html`:
-
-```js
-const ttsProviders = {
-  deepgram:       { speak(text, _, onDone, onError) {...}, stop() {...} },
-  inworld:        { speak(text, _, onDone, onError) {...}, stop() {...} },
-  xai:            { speak(text, _, onDone, onError) {...}, stop() {...} },
-  'xai-persistent': { speak(...) {...}, stop() {...}, prefetch() {...}, destroy() {...} },
-  // add yours here
-};
-```
-
-To add a provider:
-1. Implement `speak(text, token, onDone, onError)` and `stop()` in the registry.
-2. If the provider's API key must stay server-side, add a proxy route to `samaritan.py` (see `/api/tts/deepgram` or `/api/tts/inworld` as patterns).
-3. Add a button label to `PROVIDER_LABELS` in the wire-up block below `ttsProviders`.
-
-**Existing patterns:** Deepgram streams raw PCM16-LE via HTTP (`container=none` query param — critical to avoid WAV header artifacts). Inworld streams NDJSON where each line is a base64-encoded WAV chunk (strip the 44-byte RIFF header before feeding to `pcmBytesToAudioBuf`). xAI uses a WebSocket with a short-lived ephemeral token minted server-side. xAI Persistent keeps the WebSocket open and refreshes the token proactively.
-
----
-
-### Swapping STT (Speech-to-Text)
-
-Deepgram STT is split across two places:
-
-- **`samaritan.py`** — `WS /api/stt-proxy` proxies the browser WebSocket to Deepgram and injects the `Authorization` header server-side.
-- **`index.html`** — `connectDeepgram()` and the AudioWorklet pipeline handle mic capture, PCM16-LE encoding, and Deepgram message parsing (`SpeechStarted`, `Results`, `UtteranceEnd`).
-
-To swap to a different STT provider:
-1. Update the proxy in `samaritan.py` to forward to your provider's WebSocket endpoint with appropriate auth.
-2. Rewrite `connectDeepgram()` in `index.html` to match your provider's message protocol.
-3. The AudioWorklet/ScriptProcessorNode mic capture is generic PCM and can stay as-is for most providers that accept raw audio.
-
-If you want to use the browser's native Web Speech API instead (no server proxy needed, no API key), remove the Deepgram path and wire `SpeechRecognition` events directly to `onSttFinal()`.
-
----
-
-### TTS Response Cleaning (`ttsClean()`)
-
-Before sending LLM output to TTS, `ttsClean()` in `index.html` strips formatting artifacts. The current strip list is tuned for Claude/llmem-gw output:
-
-- `[thinking…]` and `[tool ▶/◀]` markers (llmem-gw specific)
-- Markdown (`#`, `*`, `_`, `` ` ``, `---`, `~~`, links, tables, bullets)
-- Smart quotes, em/en dashes, ellipsis, HTML entities, non-ASCII characters
-
-If you switch LLM backends, audit this function for your model's output quirks. Adding `"respond in plain text only, no markdown formatting"` to your system prompt reduces the need for most of these strips.
-
----
-
-### Topic-Prefix Stripping (`<<topic>>` Schema)
-
-llmem-gw can be configured to prefix LLM responses with a topic tag for context routing and memory optimization:
-
-```
-<<greeting>> Good afternoon, admin.
-<<memory-system>> Tiers redesign (in-history/short/long/off-site) active.
-```
-
-The frontend strips these tags before displaying or speaking the response. Because tokens arrive as a rapid word-by-word burst, the stripping logic uses a small streaming accumulator rather than a simple string replace:
-
-```js
-let _pfxBuf = '';       // accumulates tokens until prefix is resolved
-let _pfxDone = false;   // true once the decision is settled for this turn
-
-function processToken(raw) {
-  if (_pfxDone) { emitToken(raw); return; }
-  _pfxBuf += raw;
-  if (!_pfxBuf.startsWith('<')) {          // not a tag — flush immediately
-    _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = ''; return;
-  }
-  const m = _pfxBuf.match(/^(<<[^>]*>>\s*(?::\s*)?)+/);
-  if (m && m[0].includes('>>')) {          // one or more tags matched — strip them all
-    _pfxDone = true;
-    const rest = _pfxBuf.slice(m[0].length);
-    _pfxBuf = '';
-    if (rest) emitToken(rest);
-    return;
-  }
-  if (_pfxBuf.length > 80) {              // safety valve — flush as-is
-    _pfxDone = true; emitToken(_pfxBuf); _pfxBuf = '';
-  }
-}
-```
-
-`emitToken()` feeds cleaned text to `appendToPanel()`, `enqueueTokens()`, and the TTS buffer. The optional `: ` separator after `>>` is handled by the regex (`(?::\s*)?`) since the LLM may or may not include it. Both `_pfxBuf` and `_pfxDone` are scoped to the submit closure, so they reset automatically each turn.
-
----
-
-### Session ID
-
-`SESSION_ID` is generated once on page load and reused for all turns in that browser session. It is sent as `client_id` in `POST /api/submit` and used in `GET /api/stream/{client_id}`.
-
-**Do not rotate it per submit.** llmem-gw uses it to maintain conversation memory across turns — a new `client_id` starts a fresh session and exhausts the session limit. If your backend manages conversation context differently (e.g. you build and send the full message history client-side), you can remove this correlation entirely.
-
----
-
-### Mic Modes
-
-The rightmost button cycles through four STT modes:
-
-| Mode | Icon | Behavior |
-|------|------|----------|
-| Off | 🎤 | Mic disabled in full-voice mode |
-| Barge-in | **B** (red) | Incoming speech during TTS immediately stops playback — best for headphones/AirPods |
-| Speaker | **S** (amber) | Mic stays on but transcripts are suppressed during TTS — safe for phone-speaker/speakerphone use |
-| Diarize | **DI** (blue↔red pulse) | Deepgram nova-3 + speaker diarization; each turn is prefixed with `[Speaker N]:` so the LLM can track who said what in multi-person conversations |
-
-**Diarize mode** uses the Deepgram nova-3 model with `diarize=true`. Transcripts are held until an utterance boundary is detected, then submitted with speaker labels (e.g. `[Speaker 1]: Hello`). The LLM should be prompted to resolve speaker labels to real names once a speaker self-identifies, and never to say "Speaker N" aloud in responses. Like Speaker mode, barge-in is suppressed and mic audio is gated during TTS playback.
-
-If you are using this on a phone or tablet without headphones, use **S** or **DI** mode to prevent feedback loops.
+- `AudioContext` must be created/unlocked during a direct user gesture
+- `initAudioCtx()` called on every tap handler; also listens for `statechange` to auto-resume after iOS notification interruptions
+- iOS kills the hardware mic when Safari backgrounds — on return, `visibilitychange` saves state to `sessionStorage` and triggers `location.reload()` to recover
+- State persisted across reload: `micMode`, `ttsProvider`, `fullVoiceMode`, `SESSION_ID`
+- Cookie persists in iOS PWA (WKWebView) across launches
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -560,7 +545,7 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
   — The structure and shield/badge conventions used in this README are based on this template.
 
 ### Visual design sources
-* **Samaritan UI style** — inspired by the *Person of Interest* television series (CBS/Warner Bros., 2011–2016),
+* **Samaritan UI style** — inspired by the *Person of Interest* television series (CBS/Warner Bros., 2011-2016),
   created by Jonathan Nolan. The colour scheme (white radial gradient, red `#fe2d2d` accents, inverted
   black highlight), ALL-CAPS typography, animated triangle marker, and word-flash animation are a
   fan recreation for personal/educational use. No assets from the show are included.
@@ -583,12 +568,12 @@ Project Link: [https://github.com/derezed88/samaritan-webfe](https://github.com/
 * [Web Audio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API) — browser-native
   PCM audio scheduling for real-time TTS playback
 * [xAI Realtime API](https://docs.x.ai/docs/realtime) — WebSocket-based AI voice synthesis
-* [Inworld AI TTS API](https://docs.inworld.ai/docs/quickstart-tts) — Batch HTTP AI voice synthesis
+* [Inworld AI TTS API](https://docs.inworld.ai/docs/quickstart-tts) — Streaming AI voice synthesis
 * [Pinggy](https://pinggy.io) — SSH-based HTTPS tunnel service
 
 ### AI assistance
 * Interface design, architecture, and implementation assisted by
-  [Claude](https://claude.ai) (Anthropic, claude-sonnet-4-6).
+  [Claude](https://claude.ai) (Anthropic, claude-opus-4-6).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

@@ -366,6 +366,9 @@
     [data-theme="dark"] .msg-bubble th { background: rgba(255,255,255,0.06); }
     .mermaid-chart { margin: 10px 0; padding-bottom: 20px; overflow: visible; }
     .mermaid-chart svg { max-width: 100%; height: auto; overflow: visible; }
+    .svg-diagram { margin: 10px 0; text-align: center; overflow: visible; }
+    .svg-diagram svg { max-width: 100%; height: auto; overflow: visible; }
+    .svg-diagram svg text { fill: #000 !important; }
 
     .memory-sep {
       text-align: center;
@@ -862,12 +865,25 @@ function renderMarkdown(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
+  // Extract unfenced SVG blocks BEFORE HTML escaping (model may omit ```svg fences)
+  const svgBlocks = [];
+  text = text.replace(/<svg[\s\S]*?<\/svg>/gi, (svg) => {
+    const idx = svgBlocks.length;
+    svgBlocks.push(`<div class="svg-diagram">${svg.trim()}</div>`);
+    return `\x00SVG${idx}\x00`;
+  });
+
   // Process code blocks first (triple backtick) — preserve language class for mermaid etc.
   const codeBlocks = [];
   text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
-    const cls = lang ? ` class="language-${lang}"` : '';
-    codeBlocks.push(`<pre><code${cls}>${esc(code.trim())}</code></pre>`);
+    if (lang === 'svg') {
+      // SVG blocks rendered directly (geometry diagrams) — inject raw SVG
+      codeBlocks.push(`<div class="svg-diagram">${code.trim()}</div>`);
+    } else {
+      const cls = lang ? ` class="language-${lang}"` : '';
+      codeBlocks.push(`<pre><code${cls}>${esc(code.trim())}</code></pre>`);
+    }
     return `\x00CODE${idx}\x00`;
   });
 
@@ -1007,8 +1023,8 @@ function renderMarkdown(text) {
   // Restore code blocks — convert table-like code blocks to styled <table>
   text = text.replace(/\x00CODE(\d+)\x00/g, (_, i) => {
     const block = codeBlocks[parseInt(i)];
-    // Skip mermaid blocks
-    if (block.includes('language-mermaid')) return block;
+    // Skip mermaid and SVG blocks
+    if (block.includes('language-mermaid') || block.includes('svg-diagram')) return block;
     const codeMatch = block.match(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/);
     if (codeMatch) {
       const raw = codeMatch[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
@@ -1051,6 +1067,7 @@ function renderMarkdown(text) {
   });
   text = text.replace(/\x00TBL(\d+)\x00/g, (_, i) => '</p>' + tablePlaceholders[parseInt(i)] + '<p>');
   text = text.replace(/\x00MATH(\d+)\x00/g, (_, i) => mathBlocks[parseInt(i)]);
+  text = text.replace(/\x00SVG(\d+)\x00/g, (_, i) => svgBlocks[parseInt(i)]);
 
   // Answer choices: ensure each A) B) C) D) starts on its own line (post-HTML)
   text = text.replace(/([^<br>\n>])(\s*)(A\) )/g, '$1<br>$3');
