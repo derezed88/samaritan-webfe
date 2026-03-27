@@ -35,6 +35,7 @@ logger = logging.getLogger("uvicorn.error")
 # ── Config ────────────────────────────────────────────────────────────────────
 STT_DEBUG        = os.getenv("STT_DEBUG", "").lower() in ("1", "true", "yes")
 LLMEM_GW_URL     = os.getenv("LLMEM_GW_URL", "http://localhost:8767")
+MCP_DIRECT_URL   = os.getenv("MCP_DIRECT_URL", "http://localhost:8769")  # Claude Code MCP Direct
 SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 
@@ -642,6 +643,20 @@ async def sms_notifications(request: Request):
         return {"notifications": []}
 
 
+@app.get("/api/sms-health")
+async def sms_health(request: Request):
+    """Check SMS proxy plugin health (is macOS proxy connected?)."""
+    if not _check_auth(request):
+        return _auth_error()
+    try:
+        async with httpx.AsyncClient(headers=_agent_headers(), timeout=5) as http:
+            resp = await http.get(f"{LLMEM_GW_URL}/sms/health")
+            return resp.json()
+    except Exception as e:
+        logger.warning("SMS health check failed: %s", e)
+        return {"proxy_connected": False}
+
+
 @app.get("/api/health")
 async def health(request: Request):
     """Check llmem-gw health — also validates the caller's token."""
@@ -653,6 +668,45 @@ async def health(request: Request):
             return resp.json()
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ── Claude Code voice relay proxy ─────────────────────────────────────────
+# Proxies voice frontend requests to the MCP Direct plugin's voice relay
+# endpoints on llmem-gw port 8769.
+
+@app.post("/api/claude-relay/submit")
+async def claude_relay_submit(request: Request):
+    """Proxy voice message to Claude Code via MCP Direct voice relay."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=10) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/voice_relay/submit", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.get("/api/claude-relay/poll")
+async def claude_relay_poll(request: Request):
+    """Proxy long-poll for Claude Code's response."""
+    if not _check_auth(request):
+        return _auth_error()
+    wait = request.query_params.get("wait", "10")
+    async with httpx.AsyncClient(timeout=35) as http:
+        resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/poll", params={"wait": wait})
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.get("/api/claude-relay/status")
+async def claude_relay_status(request: Request):
+    """Check if Claude Code voice relay is enabled."""
+    if not _check_auth(request):
+        return _auth_error()
+    try:
+        async with httpx.AsyncClient(timeout=5) as http:
+            resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/status")
+            return JSONResponse(resp.json())
+    except Exception:
+        return JSONResponse({"enabled": False, "error": "MCP Direct unreachable"})
 
 
 if __name__ == "__main__":

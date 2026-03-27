@@ -1831,12 +1831,13 @@ const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
-const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
+const DG_EOT_THRESHOLD        = 0.9;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
 const STT_CONFIRM_BEEP        = true;               // audible beep on STT prompt received
 const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
-// Speaker-mode ambient noise guards (applied only when micMode === 'speaker')
+// Ambient noise guards
+const STT_BARGE_MIN_WORDS        = 2;               // barge mode: ignore finals with fewer words (filters crowd noise)
 const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
@@ -1854,6 +1855,13 @@ const KEYWORD_CARDS = {
   'TASK:':       { type: 'task'       },
   'THREAT:':     { type: 'threat'     },
 };
+
+// ── Claude relay mode ────────────────────────────────────────
+// When active, all STT/text input routes through the MCP Direct
+// voice relay to Claude Code instead of llmem-gw's LLM pipeline.
+let claudeMode       = false;
+let _claudePollTimer = null;
+const CLAUDE_RELAY_URL = '/api/claude-relay';  // proxied through samaritan.py
 
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
@@ -1884,13 +1892,32 @@ function flashCmd(msg) {
   setTimeout(() => errorFlash.classList.remove('show'), 3000);
 }
 
-// ── SMS notification poller ──────────────────────────────────
-// Polls llmem-gw for incoming SMS notifications every few seconds.
-// Displays them visually and speaks them in voice mode.
-const SMS_POLL_INTERVAL = 4000; // ms
+// ── SMS notification poller (only when macOS proxy is connected) ──
+const SMS_POLL_INTERVAL = 4000;
+const SMS_HEALTH_INTERVAL = 30000;
 let _smsPolling = false;
+let _smsProxyConnected = false;
+let _smsNotifTimer = null;
+
+async function checkSmsHealth() {
+  try {
+    const resp = await fetch(authedUrl('/api/sms-health'));
+    if (!resp.ok) { _smsProxyConnected = false; return; }
+    const data = await resp.json();
+    _smsProxyConnected = !!(data.proxy_connected && data.enabled);
+    if (_smsProxyConnected && !_smsNotifTimer) {
+      _smsNotifTimer = setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
+    } else if (!_smsProxyConnected && _smsNotifTimer) {
+      clearInterval(_smsNotifTimer);
+      _smsNotifTimer = null;
+    }
+  } catch (_) { _smsProxyConnected = false; }
+}
+setInterval(checkSmsHealth, SMS_HEALTH_INTERVAL);
+checkSmsHealth();
+
 async function pollSmsNotifications() {
-  if (_smsPolling) return;
+  if (_smsPolling || !_smsProxyConnected) return;
   _smsPolling = true;
   try {
     const resp = await fetch(authedUrl(`/api/sms-notifications?client_id=${encodeURIComponent(SESSION_ID)}`));
@@ -1900,16 +1927,13 @@ async function pollSmsNotifications() {
     for (const n of notifs) {
       const text = n.text || '';
       if (!text) continue;
-      // Display in panel
       appendToPanel('\n' + text + '\n');
-      // TTS in voice mode
       if ((voiceMode || fullVoiceMode) && typeof speakWithSamaritan === 'function') {
         speakWithSamaritan(text, false, true);
       }
     }
   } catch (_) {} finally { _smsPolling = false; }
 }
-setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
 
 // ── #command handler ─────────────────────────────────────────
 // Commands starting with # are intercepted client-side and never sent to llmem-gw.
@@ -1935,10 +1959,11 @@ function handleCommand(raw) {
     case '#screen_mode': cmdScreenMode(args[0]); break;
     case '#mode':
       if (args[0] === 'cognitive') enterCognMode();
-      else if (args[0] === 'default') exitCognMode();
+      else if (args[0] === 'default') { exitCognMode(); exitClaudeMode(); }
       else if (args[0] === 'chat') enterChatMode();
       else if (args[0] === 'chat-ged') enterChatGedMode();
-      else flashError('usage: #mode <cognitive|default|chat|chat-ged>');
+      else if (args[0] === 'claude') enterClaudeMode();
+      else flashError('usage: #mode <cognitive|default|chat|chat-ged|claude>');
       break;
     case '#db':
       if (!args[0]) { flashError('usage: #db <name>'); break; }
@@ -1961,6 +1986,119 @@ function enterChatMode() {
 
 function enterChatGedMode() {
   window.location.href = '/chat-ged';
+}
+
+// ── Mode: Claude relay ──────────────────────────────────────
+// Routes all voice/text input to Claude Code via MCP Direct voice relay.
+// llmem-gw's LLM pipeline is bypassed — Claude Opus handles everything.
+
+async function enterClaudeMode() {
+  if (claudeMode) { flashCmd('Already in Claude mode'); return; }
+
+  // Check if relay is enabled on the server
+  try {
+    const r = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
+    const d = await r.json();
+    if (!d.enabled) {
+      flashError('Claude relay not enabled. Run "enter voice relay mode" in Claude Code first.');
+      return;
+    }
+  } catch (e) {
+    flashError('Cannot reach Claude relay: ' + e.message);
+    return;
+  }
+
+  claudeMode = true;
+
+  // Visual indicator — change status bar
+  const statusEl = document.getElementById('status-dot');
+  if (statusEl) statusEl.style.background = '#a855f7';  // purple for Claude
+  setStatus('CLAUDE MODE', true);
+  flashCmd('Claude mode active — all input routes to Claude Code');
+
+  // Swap the voice preview label
+  voicePreview.textContent = 'CLAUDE CODE ACTIVE';
+}
+
+function exitClaudeMode() {
+  if (!claudeMode) return;
+  claudeMode = false;
+
+  const statusEl = document.getElementById('status-dot');
+  if (statusEl) statusEl.style.background = '';
+  setStatus('IDLE', false);
+  voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+  flashCmd('Claude mode exited — back to Samaritan');
+}
+
+async function claudeSubmit(text) {
+  // Submit to Claude Code via voice relay, poll for response, speak it
+  isStreaming = true;
+  setStatus('CLAUDE THINKING', true);
+  showLoader(true);
+  responsePanel.textContent = '';
+  responsePanel.classList.remove('active');
+
+  try {
+    // 1. Submit to relay
+    const submitResp = await fetch(CLAUDE_RELAY_URL + '/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ text, source: 'voice' }),
+    });
+    if (!submitResp.ok) throw new Error('Relay submit failed: ' + submitResp.status);
+    const submitData = await submitResp.json();
+    const msgId = submitData.message_id;
+
+    // 2. Long-poll for response (up to 60s with retries)
+    setStatus('CLAUDE RESPONDING', true);
+    showLoader(false);
+    let response = null;
+    const deadline = Date.now() + 60000;
+    while (!response && Date.now() < deadline) {
+      const pollResp = await fetch(CLAUDE_RELAY_URL + '/poll?wait=10', {
+        headers: authHeaders(),
+      });
+      const pollData = await pollResp.json();
+      if (pollData.status === 'ok') {
+        response = pollData;
+        break;
+      }
+      // Empty — keep polling
+    }
+
+    if (!response) {
+      flashError('Claude did not respond in time');
+      return;
+    }
+
+    // 3. Display + speak response
+    const replyText = response.text;
+    fullResponse = replyText;
+
+    const wordCount = replyText.trim().split(/\s+/).filter(w => w).length;
+    if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+      // Long response — use terminal typewriter (same as normal mode)
+      runTerminal(replyText.trim(), () => {});
+    } else {
+      // Short response — word-flash animation
+      appendToPanel(replyText);
+      enqueueTokens(replyText);
+    }
+
+    if (fullVoiceMode) {
+      speakWithSamaritan(replyText, false, true);
+    }
+
+  } catch (e) {
+    flashError('Claude relay error: ' + e.message);
+    console.error('[claude-relay]', e);
+  } finally {
+    isStreaming = false;
+    showLoader(false);
+    setStatus(claudeMode ? 'CLAUDE MODE' : 'IDLE', claudeMode);
+    sendBtn.disabled = false;
+  }
 }
 
 // ── Keyword card engine ───────────────────────────────────────
@@ -2963,6 +3101,13 @@ async function submit(textOverride) {
     return;
   }
 
+  // Claude mode — route to voice relay instead of llmem-gw
+  if (claudeMode) {
+    textInput.value = '';
+    claudeSubmit(text);
+    return;
+  }
+
   resetIdleTimer();   // user is active — reset idle countdown
   const wasKbd = kbdOpen;
   textInput.value = '';
@@ -3341,6 +3486,11 @@ function startSpeakerCooldown() {
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
+  // Barge mode: require minimum word count to filter crowd/ambient noise
+  if (micMode === 'barge' && query.split(/\s+/).length < STT_BARGE_MIN_WORDS) {
+    console.log('[STT] barge skip (too few words):', query);
+    return;
+  }
   // Drop transcript if agent is still processing a prior turn — prevents
   // mid-ramble pauses from firing a second submit and getting a 0-char response.
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
@@ -3447,7 +3597,10 @@ registerProcessor('pcm-capture', PcmCapture);`;
 
       // Get mic + AudioContext first so we know the real sample rate before connecting
       try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
+          video: false,
+        });
       } catch (e) {
         flashError('mic denied: ' + e.message.slice(0, 30));
         active = false; onSttStop(); return;
@@ -3620,7 +3773,10 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
     onSttStart();
     try {
       try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
+          video: false,
+        });
       } catch (e) {
         flashError('mic denied: ' + e.message.slice(0, 30));
         active = false; onSttStop(); return;
