@@ -935,11 +935,32 @@ function scrollToBottom() {
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
-// ── SMS notification poller ──────────────────────────────────
+// ── SMS notification poller (only when macOS proxy is connected) ──
 const SMS_POLL_INTERVAL = 4000;
+const SMS_HEALTH_INTERVAL = 30000;
 let _smsPolling = false;
+let _smsProxyConnected = false;
+let _smsNotifTimer = null;
+
+async function checkSmsHealth() {
+  try {
+    const resp = await fetch(`/api/sms-health?token=${encodeURIComponent(_apiKey)}`);
+    if (!resp.ok) { _smsProxyConnected = false; return; }
+    const data = await resp.json();
+    _smsProxyConnected = !!(data.proxy_connected && data.enabled);
+    if (_smsProxyConnected && !_smsNotifTimer) {
+      _smsNotifTimer = setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
+    } else if (!_smsProxyConnected && _smsNotifTimer) {
+      clearInterval(_smsNotifTimer);
+      _smsNotifTimer = null;
+    }
+  } catch (_) { _smsProxyConnected = false; }
+}
+setInterval(checkSmsHealth, SMS_HEALTH_INTERVAL);
+checkSmsHealth();
+
 async function pollSmsNotifications() {
-  if (_smsPolling) return;
+  if (_smsPolling || !_smsProxyConnected) return;
   _smsPolling = true;
   try {
     const resp = await fetch(`/api/sms-notifications?client_id=${encodeURIComponent(SESSION_ID)}&token=${encodeURIComponent(_apiKey)}`);
@@ -949,16 +970,13 @@ async function pollSmsNotifications() {
     for (const n of notifs) {
       const text = n.text || '';
       if (!text) continue;
-      // Display as a system message in the chat
       addMessage('assistant', text);
-      // TTS if enabled
       if (ttsEnabled && typeof speakInworld === 'function') {
         speakInworld(text);
       }
     }
   } catch (_) {} finally { _smsPolling = false; }
 }
-setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
 
 // ── DB sidebar rendering ──────────────────────────────────────
 function renderDbList() {
@@ -1159,18 +1177,8 @@ function parseDbQueryRows(text) {
   return rows;
 }
 
-// Load and display short-term memory as individual chat turns
-async function loadMemoryTurns(dbName) {
-  if (!dbName) return;
-  var table = '`' + dbName + '`.`' + dbName + '_memory_shortterm`';
-  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
-  var result = await runOnSession('!db_query ' + sql);
-  if (!result || result.trim() === '(no rows)') return;
-
-  var rows = parseDbQueryRows(result);
-  if (!rows.length) return;
-
-  addMemorySeparator();
+// Render parsed memory rows into the chat window
+function _renderMemoryRows(rows) {
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var text = row.content.replace(/\n{3,}/g, '\n\n').trim();
@@ -1185,6 +1193,36 @@ async function loadMemoryTurns(dbName) {
     }
     // Skip directive entries
   }
+}
+
+// Load and display long-term memory as individual chat turns
+async function loadLongTermMemory(dbName) {
+  if (!dbName) return;
+  var table = '`' + dbName + '`.`' + dbName + '_memory_longterm`';
+  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
+  var result = await runOnSession('!db_query ' + sql);
+  if (!result || result.trim() === '(no rows)') return;
+
+  var rows = parseDbQueryRows(result);
+  if (!rows.length) return;
+
+  addMemorySeparator();
+  _renderMemoryRows(rows);
+}
+
+// Load and display short-term memory as individual chat turns
+async function loadMemoryTurns(dbName) {
+  if (!dbName) return;
+  var table = '`' + dbName + '`.`' + dbName + '_memory_shortterm`';
+  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
+  var result = await runOnSession('!db_query ' + sql);
+  if (!result || result.trim() === '(no rows)') return;
+
+  var rows = parseDbQueryRows(result);
+  if (!rows.length) return;
+
+  addMemorySeparator();
+  _renderMemoryRows(rows);
 }
 
 // ── DB management ─────────────────────────────────────────────
@@ -1239,10 +1277,11 @@ async function switchToDb(name) {
     renderDbList();
   }
 
-  // Load memory for this db
+  // Load memory for this db (long-term first, then short-term, oldest to newest)
   clearChat();
   setStatus(`Loading history…`);
   try {
+    await loadLongTermMemory(currentDb);
     await loadMemoryTurns(currentDb);
     setStatus('');
   } catch (e) {
@@ -1803,10 +1842,11 @@ micBtn.addEventListener('click', async () => {
     await loadDbList();
     // 4. Populate model selector (SESSION_ID — correct (current) after model switch)
     await loadModelList();
-    // 5. Load short-term memory from "default" db (post model+db switch)
+    // 5. Load memory from "default" db (long-term first, then short-term)
     currentDb = 'default';
     updateDbLabel();
     try {
+      await loadLongTermMemory(currentDb);
       await loadMemoryTurns(currentDb);
     } catch (_) {}
   } finally {

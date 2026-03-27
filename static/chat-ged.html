@@ -574,7 +574,7 @@
     <!-- Subject picker (shown until a subject is chosen) -->
     <div id="empty-state">
       <h1>GED Study</h1>
-      <p>Choose a subject to begin</p>
+      <p id="empty-subtitle">Choose a subject to begin</p>
       <div class="subject-grid">
         <div class="subject-card" data-model="ged-math">
           <span class="subject-card-icon">📐</span>
@@ -675,6 +675,95 @@ const ttsBtn        = document.getElementById('tts-btn');
 const modelSelect   = document.getElementById('model-select');
 const statusText    = document.getElementById('status-text');
 
+// ── Claude relay mode ─────────────────────────────────────────
+// Activated via ?claude URL param. Routes all input through MCP Direct
+// voice relay to Claude Code instead of the llmem-gw LLM pipeline.
+const CLAUDE_RELAY_URL = '/api/claude-relay';
+let claudeMode = true;  // chat-ged always routes through Claude Code
+let claudeChannel = 'default';  // set when subject is selected
+
+// Map GED model keys to relay channel names
+const _CLAUDE_CHANNEL_MAP = {
+  'ged-math':        'ged-math',
+  'ged-rla-reading': 'ged-reading',
+  'ged-rla-writing': 'ged-writing',
+  'ged-science':     'ged-science',
+  'ged-social':      'ged-social',
+};
+
+async function claudeSubmit(text) {
+  if (!claudeMode || isStreaming) return;
+  if (claudeChannel === 'default') {
+    setStatus('Select a subject first');
+    setTimeout(() => setStatus('🟣 Claude mode — select a subject'), 2000);
+    return;
+  }
+  isStreaming = true;
+  sendBtn.disabled = true;
+  setStatus('Claude thinking…');
+  addMessage('user', text);
+  const asst = addMessage('assistant', '', true);
+
+  try {
+    // Retry submit up to 3 times (mobile network can drop momentarily)
+    let submitResp;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1000));
+        submitResp = await fetch(CLAUDE_RELAY_URL + '/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ text, source: 'chat-ged', channel: claudeChannel }),
+        });
+        if (submitResp.ok) break;
+      } catch (e) {
+        if (attempt === 2) throw new Error('Relay submit failed after 3 retries');
+      }
+    }
+    if (!submitResp?.ok) throw new Error('Relay submit failed: ' + submitResp?.status);
+    const submitData = await submitResp.json();
+    const myMsgId = submitData.message_id;
+
+    setStatus('Claude responding…');
+    let response = null;
+    const deadline = Date.now() + 90000;
+    while (!response && Date.now() < deadline) {
+      const pollResp = await fetch(
+        CLAUDE_RELAY_URL + '/poll?wait=10&channel=' + encodeURIComponent(claudeChannel),
+        { headers: authHeaders() }
+      );
+      const pollData = await pollResp.json();
+      if (pollData.status === 'ok') {
+        // Only accept the response matching our message ID — discard stale ones
+        if (pollData.message_id === myMsgId) {
+          response = pollData;
+          break;
+        }
+        // Stale response from a prior question — discard and keep polling
+        console.log('[claude-relay] discarded stale response for msg', pollData.message_id);
+        continue;
+      }
+    }
+
+    if (response) {
+      asst.innerHTML = renderMarkdown(response.text);
+      // Re-render KaTeX/Mermaid/SVG using existing helpers
+      renderMath(asst);
+      renderMermaid(asst);
+      scrollToBottom();
+      if (ttsEnabled) speakText(response.text);
+    } else {
+      asst.innerHTML = '<em>Claude did not respond in time.</em>';
+    }
+  } catch (e) {
+    asst.innerHTML = '<em>Claude relay error: ' + e.message + '</em>';
+  } finally {
+    isStreaming = false;
+    sendBtn.disabled = false;
+    setStatus(claudeMode ? '🟣 Claude' : '');
+  }
+}
+
 // ── State ─────────────────────────────────────────────────────
 let currentDb       = null;
 let knownDbs        = [];
@@ -717,9 +806,7 @@ function renderMath(el) {
   // Use \(...\) for inline math and \[...\] or $$...$$ for display math.
   renderMathInElement(el, {
     delimiters: [
-      { left: '\\(', right: '\\)', display: false },
-      { left: '\\[', right: '\\]', display: true  },
-      { left: '$$',  right: '$$',  display: true  },
+      { left: '$$', right: '$$', display: true },
     ],
     throwOnError: false,
   });
@@ -890,24 +977,9 @@ function renderMarkdown(text) {
   // Inline code
   text = text.replace(/`([^`]+)`/g, (_, code) => `<code>${esc(code)}</code>`);
 
-  // Convert inline $$...$$ to \(...\) when expression is within a line of text
-  // (display math = $$ on its own line; inline = $$ with text before/after on same line)
-  text = text.replace(/^(.*\S.*?)\$\$([^$\n]+)\$\$(.*)/gm, function(m, before, expr, after) {
-    return before + '\\(' + expr + '\\)' + after;
-  });
-  text = text.replace(/\$\$([^$\n]+)\$\$(.+)$/gm, function(m, expr, after) {
-    return '\\(' + expr + '\\)' + after;
-  });
-
-  // Protect all math blocks from pipe-table processing (absolute value uses |)
+  // Protect all $$...$$ math blocks from markdown processing
   const mathBlocks = [];
   text = text.replace(/\$\$[\s\S]*?\$\$/g, (m) => {
-    const idx = mathBlocks.length; mathBlocks.push(m); return `\x00MATH${idx}\x00`;
-  });
-  text = text.replace(/\\\([\s\S]*?\\\)/g, (m) => {
-    const idx = mathBlocks.length; mathBlocks.push(m); return `\x00MATH${idx}\x00`;
-  });
-  text = text.replace(/\\\[[\s\S]*?\\\]/g, (m) => {
     const idx = mathBlocks.length; mathBlocks.push(m); return `\x00MATH${idx}\x00`;
   });
 
@@ -1330,18 +1402,8 @@ function parseDbQueryRows(text) {
   return rows;
 }
 
-// Load and display short-term memory as individual chat turns
-async function loadMemoryTurns(dbName) {
-  if (!dbName) return;
-  var table = '`' + dbName + '`.`' + dbName + '_memory_shortterm`';
-  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
-  var result = await runOnSession('!db_query ' + sql);
-  if (!result || result.trim() === '(no rows)') return;
-
-  var rows = parseDbQueryRows(result);
-  if (!rows.length) return;
-
-  addMemorySeparator();
+// Render parsed memory rows into the chat window
+function _renderMemoryRows(rows) {
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var text = row.content.replace(/\n{3,}/g, '\n\n').trim();
@@ -1357,6 +1419,36 @@ async function loadMemoryTurns(dbName) {
     }
     // Skip directive entries
   }
+}
+
+// Load a single memory table and render its rows; returns row count rendered
+async function _loadMemoryTable(dbName, suffix) {
+  var table = '`' + dbName + '`.`' + dbName + '_memory_' + suffix + '`';
+  var sql = 'SELECT id, source, content FROM ' + table + ' ORDER BY id ASC';
+  console.log('[memory] querying', suffix, ':', sql);
+  var result = await runOnSession('!db_query ' + sql);
+  console.log('[memory]', suffix, 'result length:', result ? result.length : 0,
+    'preview:', result ? result.slice(0, 120) : '(empty)');
+  if (!result || result.trim() === '(no rows)') return 0;
+
+  var rows = parseDbQueryRows(result);
+  if (!rows.length) return 0;
+
+  addMemorySeparator();
+  _renderMemoryRows(rows);
+  return rows.length;
+}
+
+// Load and display long-term memory as individual chat turns
+async function loadLongTermMemory(dbName) {
+  if (!dbName) return;
+  try { await _loadMemoryTable(dbName, 'longterm'); } catch (e) { console.warn('[memory] longterm failed:', e); }
+}
+
+// Load and display short-term memory as individual chat turns
+async function loadMemoryTurns(dbName) {
+  if (!dbName) return;
+  await _loadMemoryTable(dbName, 'shortterm');
 }
 
 // ── DB management ─────────────────────────────────────────────
@@ -1411,10 +1503,11 @@ async function switchToDb(name) {
     renderDbList();
   }
 
-  // Load memory for this db
+  // Load memory for this db (long-term first, then short-term, oldest to newest)
   clearChat();
   setStatus(`Loading history…`);
   try {
+    await loadLongTermMemory(currentDb);
     await loadMemoryTurns(currentDb);
     setStatus('');
   } catch (e) {
@@ -1500,6 +1593,9 @@ function ttsClean(t) {
 async function submitText(text) {
   if (!text.trim() || isStreaming) return;
 
+  // Claude mode — route through relay instead of LLM pipeline
+  if (claudeMode) { claudeSubmit(text); return; }
+
   // Close any existing stream
   if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
   isStreaming = true;
@@ -1507,6 +1603,16 @@ async function submitText(text) {
   setStatus('Thinking…');
 
   addMessage('user', text);
+
+  // Quiz answer disambiguation: when user sends a single letter (a-d) and the
+  // last assistant message contained answer choices, prepend the question so the
+  // LLM grades against the correct (most recent) question — not an older one
+  // that drifted into context.
+  let sendText = text;
+  const trimmed = text.trim().toLowerCase();
+  if (/^[a-d]$/.test(trimmed) && currentAsstText && /[A-D]\)\s/.test(currentAsstText)) {
+    sendText = currentAsstText.trim() + '\n\nWhat is your answer?\n' + text.trim();
+  }
 
   // Start assistant bubble
   currentAsstText = '';
@@ -1516,7 +1622,7 @@ async function submitText(text) {
     await fetch('/api/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ text, client_id: SESSION_ID }),
+      body: JSON.stringify({ text: sendText, client_id: SESSION_ID }),
     });
   } catch (e) {
     currentAsst.classList.remove('streaming-cursor');
@@ -1800,6 +1906,18 @@ async function _handleGedCommand(subcmd) {
 function handleSend() {
   const text = textInput.value.trim();
   if (!text) return;
+  // !reset in claude mode — run llmem-gw reset (summarize+clear ST), then fresh start
+  if (claudeMode && text === '!reset') {
+    textInput.value = '';
+    autoResize(textInput);
+    setStatus('Resetting…');
+    runOnSession('!reset').catch(() => {}).then(() => {
+      chatMessages.innerHTML = '';
+      setStatus('');
+      claudeSubmit('The user has reset the session. Start fresh — greet Lee and ask what she wants to work on.');
+    });
+    return;
+  }
   // Intercept #ged commands — client-side progress dashboards
   if (text === '#ged' || text.startsWith('#ged ')) {
     textInput.value = '';
@@ -1875,27 +1993,48 @@ function _updateGedActiveRow() {
 
 async function _switchGedSubject(model) {
   if (model === currentModel && !document.body.classList.contains('empty-mode')) return;
+  const prevModel = currentModel;
+  // Update claude channel when subject changes
+  if (claudeMode && _CLAUDE_CHANNEL_MAP[model]) {
+    claudeChannel = _CLAUDE_CHANNEL_MAP[model];
+    setStatus('🟣 Claude — ' + (_GED_LABELS[model] || model));
+  }
+  // Immediate visual feedback: close sidebar, clear chat, show loading
+  closeSidebar();
+  chatMessages.innerHTML = '';
+  exitEmptyMode();
+  currentModel = model;
+  if (modelSelect) modelSelect.value = model;
+  _updateGedActiveRow();
   setStatus(`Loading ${_GED_LABELS[model] || model}…`);
   try {
-    // Summarize departing subject's conversation before switching (non-blocking)
-    if (currentModel && currentModel.startsWith('ged-')) {
+    // Summarize departing subject's conversation before switching
+    if (prevModel && prevModel.startsWith('ged-')) {
       try { await runOnSession('!reset'); } catch (_) {}
     }
     await runOnSession(`!model ${model} database=target`);
-    currentModel = model;
-    if (modelSelect) modelSelect.value = model;
-    _updateGedActiveRow();
-    closeSidebar();
-    // Clear previous subject's chat and start fresh
-    chatMessages.innerHTML = '';
-    exitEmptyMode();
+    const subj = _GED_SUBJECTS[model];
+    const dbName = subj ? subj.db : null;
+    let hasHistory = false;
+    if (dbName) {
+      setStatus('Loading history…');
+      try {
+        const before = chatMessages.children.length;
+        await loadLongTermMemory(dbName);
+        await loadMemoryTurns(dbName);
+        hasHistory = chatMessages.children.length > before;
+      } catch (e) { console.error('Memory load failed:', e); }
+    }
     setStatus('');
     const hint = addMessage('assistant', '');
     hint.innerHTML = renderMarkdown(
       `*Use the ☰ menu to switch subjects anytime.*\n\n*Track your progress:*\n\`#ged\` — topic scores and readiness for this subject\n\`#ged all\` — overview across all GED subjects\n\`#ged scores\` — detailed score data with attempt counts`
     );
-    // Auto-send a greeting so the tutor starts immediately
-    setTimeout(() => submitText("Hi, let's start"), 300);
+    // Auto-send greeting only if no prior conversation history
+    // In claude mode, only auto-greet if the relay channel is set (subject selected)
+    if (!hasHistory && !(claudeMode && claudeChannel === 'default')) {
+      setTimeout(() => submitText("Hi, let's start"), 300);
+    }
   } catch (e) {
     setStatus('Subject switch failed');
   }
@@ -2201,20 +2340,30 @@ micBtn.addEventListener('click', async () => {
   textInput.disabled = true;
   sendBtn.disabled = true;
   try {
-    // 1. Switch model first — session inherits samaritan-voice db until we explicitly switch
-    await switchSessionModel('default-chat');
-    // 2. Switch to default-chat's database (defined as "default" in llm-models.json)
-    await runOnSession('!db switch default');
-    // 3. Populate sidebar (throwaway — don't set currentDb from it)
-    await loadDbList();
-    // 4. Populate model selector (SESSION_ID — correct (current) after model switch)
-    await loadModelList();
-    // 5. Load short-term memory from "default" db (post model+db switch)
-    currentDb = 'default';
-    updateDbLabel();
-    try {
-      await loadMemoryTurns(currentDb);
-    } catch (_) {}
+    if (claudeMode) {
+      // Claude mode — skip LLM model switching, show indicator
+      setStatus('🟣 Claude mode — select a subject');
+      const subtitle = document.getElementById('empty-subtitle');
+      if (subtitle) subtitle.innerHTML = '🟣 <strong>Claude Code</strong> — choose a subject';
+      // Still load sidebar DB list for subject history display
+      try { await loadDbList(); } catch (_) {}
+    } else {
+      // 1. Switch model first — session inherits samaritan-voice db until we explicitly switch
+      await switchSessionModel('default-chat');
+      // 2. Switch to default-chat's database (defined as "default" in llm-models.json)
+      await runOnSession('!db switch default');
+      // 3. Populate sidebar (throwaway — don't set currentDb from it)
+      await loadDbList();
+      // 4. Populate model selector (SESSION_ID — correct (current) after model switch)
+      await loadModelList();
+      // 5. Load memory from "default" db (long-term first, then short-term)
+      currentDb = 'default';
+      updateDbLabel();
+      try {
+        await loadLongTermMemory(currentDb);
+        await loadMemoryTurns(currentDb);
+      } catch (_) {}
+    }
   } finally {
     textInput.disabled = false;
     sendBtn.disabled = false;

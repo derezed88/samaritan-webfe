@@ -690,9 +690,10 @@ async def claude_relay_poll(request: Request):
     """Proxy long-poll for Claude Code's response."""
     if not _check_auth(request):
         return _auth_error()
-    wait = request.query_params.get("wait", "10")
+    # Pass all query params through (wait, channel)
+    params = dict(request.query_params)
     async with httpx.AsyncClient(timeout=35) as http:
-        resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/poll", params={"wait": wait})
+        resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/poll", params=params)
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
 
@@ -702,8 +703,9 @@ async def claude_relay_status(request: Request):
     if not _check_auth(request):
         return _auth_error()
     try:
+        params = dict(request.query_params)
         async with httpx.AsyncClient(timeout=5) as http:
-            resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/status")
+            resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/status", params=params)
             return JSONResponse(resp.json())
     except Exception:
         return JSONResponse({"enabled": False, "error": "MCP Direct unreachable"})

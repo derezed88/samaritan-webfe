@@ -1837,6 +1837,7 @@ const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4,
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Ambient noise guards
+const STT_NOISE_GATE             = 0.02;             // RMS threshold: below this, don't send audio to Deepgram (0.01–0.05)
 const STT_BARGE_MIN_WORDS        = 2;               // barge mode: ignore finals with fewer words (filters crowd noise)
 const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
@@ -2088,6 +2089,8 @@ async function claudeSubmit(text) {
 
     if (fullVoiceMode) {
       speakWithSamaritan(replyText, false, true);
+      // Restart mic after TTS finishes so user can speak again
+      waitForDrainThenListen(false);
     }
 
   } catch (e) {
@@ -3673,6 +3676,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
         for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
         _pcmBuf = [];
         _pcmBufLen = 0;
+        // Noise gate: compute RMS and skip if below threshold (filters ambient noise)
+        if (STT_NOISE_GATE > 0) {
+          let sumSq = 0;
+          for (let i = 0; i < merged.length; i++) sumSq += merged[i] * merged[i];
+          if (Math.sqrt(sumSq / merged.length) < STT_NOISE_GATE) return;
+        }
         const i16 = new Int16Array(merged.length);
         for (let i = 0; i < merged.length; i++)
           i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
