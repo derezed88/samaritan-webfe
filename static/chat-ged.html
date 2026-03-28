@@ -741,20 +741,54 @@ async function claudeSubmit(text) {
     );
     const statusData = await statusResp.json();
     if (!statusData.enabled) {
-      setStatus('Starting tutor…');
-      const startResp = await fetch('/api/ged/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ channel: claudeChannel }),
-      });
-      const startData = await startResp.json();
-      if (startData.status === 'timeout') {
-        setStatus('Tutor is starting — try again in a moment');
+      // Count-up timer so the user sees progress, not a frozen screen
+      let _startSecs = 0;
+      const _startTimer = setInterval(() => {
+        _startSecs++;
+        setStatus(`Starting tutor… ${_startSecs}s`);
+      }, 1000);
+
+      // Fire the launch request — may take up to 60s for cold start
+      let startData;
+      try {
+        const startResp = await fetch('/api/ged/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ channel: claudeChannel }),
+        });
+        startData = await startResp.json();
+      } catch (e) {
+        clearInterval(_startTimer);
+        setStatus('Could not reach server');
         isStreaming = false;
         sendBtn.disabled = false;
         return;
       }
+
       if (startData.status === 'started' || startData.status === 'already_running') {
+        clearInterval(_startTimer);
+        setStatus('Tutor ready!');
+      } else if (startData.status === 'timeout') {
+        // Server-side polling ran out — continue polling from frontend
+        let ready = false;
+        for (let i = 0; i < 15; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const recheck = await fetch(
+              CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
+              { headers: authHeaders() }
+            );
+            const recheckData = await recheck.json();
+            if (recheckData.enabled) { ready = true; break; }
+          } catch (_) {}
+        }
+        clearInterval(_startTimer);
+        if (!ready) {
+          setStatus('Tutor is still starting — send your message again in a moment');
+          isStreaming = false;
+          sendBtn.disabled = false;
+          return;
+        }
         setStatus('Tutor ready!');
       } else {
         setStatus('Could not start tutor: ' + (startData.error || startData.status));
@@ -2168,6 +2202,8 @@ async function _switchGedSubject(model) {
     claudeChannel = _CLAUDE_CHANNEL_MAP[model];
     setStatus('🟣 Claude — ' + (_GED_LABELS[model] || model));
   }
+  // Show subject name in topbar so user always knows which subject is active
+  currentDbLbl.textContent = _GED_LABELS[model] || model;
   // Immediate visual feedback: close sidebar, clear chat, show loading
   closeSidebar();
   chatMessages.innerHTML = '';
@@ -2177,32 +2213,49 @@ async function _switchGedSubject(model) {
   _updateGedActiveRow();
   setStatus(`Loading ${_GED_LABELS[model] || model}…`);
   try {
-    // Summarize departing subject's conversation before switching
-    if (prevModel && prevModel.startsWith('ged-')) {
-      try { await runOnSession('!reset'); } catch (_) {}
-    }
-    await runOnSession(`!model ${model} database=target`);
-    const subj = _GED_SUBJECTS[model];
-    const dbName = subj ? subj.db : null;
-    let hasHistory = false;
-    if (dbName) {
-      setStatus('Loading history…');
-      try {
-        const before = chatMessages.children.length;
-        await loadLongTermMemory(dbName);
-        await loadMemoryTurns(dbName);
-        hasHistory = chatMessages.children.length > before;
-      } catch (e) { console.error('Memory load failed:', e); }
-    }
-    setStatus('');
-    const hint = addMessage('assistant', '');
-    hint.innerHTML = renderMarkdown(
-      `*Use the ☰ menu to switch subjects anytime.*\n\n*Track your progress:*\n\`#ged\` — topic scores and readiness for this subject\n\`#ged all\` — overview across all GED subjects\n\`#ged scores\` — detailed score data with attempt counts`
-    );
-    // Auto-send greeting only if no prior conversation history
-    // In claude mode, only auto-greet if the relay channel is set (subject selected)
-    if (!hasHistory && !(claudeMode && claudeChannel === 'default')) {
+    if (claudeMode) {
+      // Claude mode — load history from DB, then always auto-greet.
+      const subj = _GED_SUBJECTS[model];
+      const dbName = subj ? subj.db : null;
+      if (dbName) {
+        setStatus('Loading history…');
+        try {
+          await loadLongTermMemory(dbName);
+          await loadMemoryTurns(dbName);
+        } catch (e) { console.error('Memory load failed:', e); }
+      }
+      setStatus('');
+      const hint = addMessage('assistant', '');
+      hint.innerHTML = renderMarkdown(
+        `*Use the ☰ menu to switch subjects anytime.*\n\n*Track your progress:*\n\`#ged\` — topic scores and readiness for this subject\n\`#ged all\` — overview across all GED subjects\n\`#ged scores\` — detailed score data with attempt counts`
+      );
       setTimeout(() => submitText("Hi, let's start"), 300);
+    } else {
+      // Non-claude mode — use llmem-gw pipeline
+      if (prevModel && prevModel.startsWith('ged-')) {
+        try { await runOnSession('!reset'); } catch (_) {}
+      }
+      await runOnSession(`!model ${model} database=target`);
+      const subj = _GED_SUBJECTS[model];
+      const dbName = subj ? subj.db : null;
+      let hasHistory = false;
+      if (dbName) {
+        setStatus('Loading history…');
+        try {
+          const before = chatMessages.children.length;
+          await loadLongTermMemory(dbName);
+          await loadMemoryTurns(dbName);
+          hasHistory = chatMessages.children.length > before;
+        } catch (e) { console.error('Memory load failed:', e); }
+      }
+      setStatus('');
+      const hint = addMessage('assistant', '');
+      hint.innerHTML = renderMarkdown(
+        `*Use the ☰ menu to switch subjects anytime.*\n\n*Track your progress:*\n\`#ged\` — topic scores and readiness for this subject\n\`#ged all\` — overview across all GED subjects\n\`#ged scores\` — detailed score data with attempt counts`
+      );
+      if (!hasHistory) {
+        setTimeout(() => submitText("Hi, let's start"), 300);
+      }
     }
   } catch (e) {
     setStatus('Subject switch failed');

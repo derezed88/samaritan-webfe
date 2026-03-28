@@ -1831,14 +1831,14 @@ const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
-const DG_EOT_THRESHOLD        = 0.9;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
+const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
 const STT_CONFIRM_BEEP        = true;               // audible beep on STT prompt received
 const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Ambient noise guards
-const STT_NOISE_GATE             = 0.02;             // RMS threshold: below this, don't send audio to Deepgram (0.01–0.05)
-const STT_BARGE_MIN_WORDS        = 2;               // barge mode: ignore finals with fewer words (filters crowd noise)
+const STT_NOISE_GATE             = 0;                // RMS threshold: 0=disabled. (0.01–0.05 to gate ambient noise, but can break Flux EndOfTurn)
+const STT_BARGE_MIN_WORDS        = 3;               // barge mode: ignore finals with fewer words (filters crowd noise)
 const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
@@ -1993,35 +1993,70 @@ function enterChatGedMode() {
 // Routes all voice/text input to Claude Code via MCP Direct voice relay.
 // llmem-gw's LLM pipeline is bypassed — Claude Opus handles everything.
 
-async function enterClaudeMode() {
-  // Always check relay and auto-start if needed — even if already in claude mode
-  // (handles re-entry after idle timeout)
+async function _ensureRelayUp(channel = 'default') {
+  // Check relay status; if down, auto-start with count-up timer + fallback polling.
+  // Returns true if relay is up, false if startup failed.
+  let needsStart = false;
   try {
-    const r = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
+    const r = await fetch(CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(channel), { headers: authHeaders() });
     const d = await r.json();
-    if (!d.enabled) {
-      setStatus('STARTING CLAUDE...', true);
-      voicePreview.textContent = 'STARTING CLAUDE CODE...';
-      try {
-        const startResp = await fetch('/api/ged/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ channel: 'default' }),
-        });
-        const startData = await startResp.json();
-        if (startData.status !== 'started' && startData.status !== 'already_running') {
-          flashError('Could not start Claude: ' + (startData.message || startData.status));
-          setStatus('IDLE', false);
-          voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
-          return;
-        }
-      } catch (e2) {
-        flashError('Auto-start failed: ' + e2.message);
-        return;
+    needsStart = !d.enabled;
+  } catch (e) {
+    needsStart = true;  // can't reach status — try starting anyway
+  }
+  if (!needsStart) return true;
+
+  // Count-up timer so the user sees progress
+  let secs = 0;
+  const timer = setInterval(() => {
+    secs++;
+    setStatus(`STARTING CLAUDE… ${secs}s`, true);
+    voicePreview.textContent = `STARTING CLAUDE… ${secs}s`;
+  }, 1000);
+
+  try {
+    const startResp = await fetch('/api/ged/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ channel }),
+    });
+    const startData = await startResp.json();
+    if (startData.status === 'started' || startData.status === 'already_running') {
+      clearInterval(timer);
+      return true;
+    }
+    if (startData.status === 'timeout') {
+      // Server-side polling ran out — continue polling from frontend
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const recheck = await fetch(
+            CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(channel),
+            { headers: authHeaders() }
+          );
+          const recheckData = await recheck.json();
+          if (recheckData.enabled) { clearInterval(timer); return true; }
+        } catch (_) {}
       }
     }
+    clearInterval(timer);
+    return false;
   } catch (e) {
-    flashError('Cannot reach Claude relay: ' + e.message);
+    clearInterval(timer);
+    return false;
+  }
+}
+
+async function enterClaudeMode() {
+  // Always check relay and auto-start if needed — even if already in claude mode
+  // (handles re-entry after idle timeout or server restart)
+  setStatus('STARTING CLAUDE...', true);
+  voicePreview.textContent = 'STARTING CLAUDE CODE...';
+  const ok = await _ensureRelayUp('default');
+  if (!ok) {
+    flashError('Could not start Claude — try again');
+    setStatus('IDLE', false);
+    voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
     return;
   }
 
@@ -2048,7 +2083,12 @@ function exitClaudeMode() {
   flashCmd('Claude mode exited — back to Samaritan');
 }
 
+let _claudeAbort = null;  // AbortController for in-flight claude poll
 async function claudeSubmit(text) {
+  // Cancel any in-flight claude poll from a prior turn
+  if (_claudeAbort) { _claudeAbort.abort(); _claudeAbort = null; }
+  _claudeAbort = new AbortController();
+  const signal = _claudeAbort.signal;
   // Submit to Claude Code via voice relay, poll for response, speak it
   isStreaming = true;
   resetTtsPipeline();   // clear stale _ttsBusy state from prior cycle
@@ -2061,47 +2101,13 @@ async function claudeSubmit(text) {
   responsePanel.classList.remove('active');
   showTerminal(false);
 
-  // Auto-start relay if it died (idle timeout)
-  try {
-    const statusResp = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
-    const statusData = await statusResp.json();
-    if (!statusData.enabled) {
-      setStatus('RESTARTING CLAUDE...', true);
-      const startResp = await fetch('/api/ged/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ channel: 'default' }),
-      });
-      const startData = await startResp.json();
-      if (startData.status !== 'started' && startData.status !== 'already_running') {
-        flashError('Could not restart Claude');
-        isStreaming = false;
-        showLoader(false);
-        return;
-      }
-    }
-  } catch (e) {
-    // Status check failed — try auto-start anyway
-    setStatus('RESTARTING CLAUDE...', true);
-    try {
-      const startResp = await fetch('/api/ged/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ channel: 'default' }),
-      });
-      const startData = await startResp.json();
-      if (startData.status !== 'started' && startData.status !== 'already_running') {
-        flashError('Claude offline — try #mode claude again');
-        isStreaming = false;
-        showLoader(false);
-        return;
-      }
-    } catch (e2) {
-      flashError('Cannot reach Claude');
-      isStreaming = false;
-      showLoader(false);
-      return;
-    }
+  // Auto-start relay if it died (idle timeout or server restart)
+  const relayOk = await _ensureRelayUp('default');
+  if (!relayOk) {
+    flashError('Claude offline — try #mode claude again');
+    isStreaming = false;
+    showLoader(false);
+    return;
   }
 
   setStatus('CLAUDE THINKING', true);
@@ -2122,9 +2128,10 @@ async function claudeSubmit(text) {
     showLoader(false);
     let response = null;
     const deadline = Date.now() + 60000;
-    while (!response && Date.now() < deadline) {
+    while (!response && Date.now() < deadline && !signal.aborted) {
       const pollResp = await fetch(CLAUDE_RELAY_URL + '/poll?wait=10', {
         headers: authHeaders(),
+        signal,
       });
       const pollData = await pollResp.json();
       if (pollData.status === 'ok') {
@@ -2154,9 +2161,18 @@ async function claudeSubmit(text) {
     }
 
     if (fullVoiceMode) {
-      speakWithSamaritan(replyText, false, true);
-      // Restart mic after TTS finishes so user can speak again
-      waitForDrainThenListen(false);
+      // Split into sentences and clean markdown before sending to TTS
+      // (Inworld truncates long single-call text; raw markdown breaks TTS)
+      const cleaned = ttsClean(replyText);
+      if (cleaned) {
+        const sentences = cleaned.match(/[^.!?]+[.!?]+[\s)]*/g) || [cleaned];
+        for (let i = 0; i < sentences.length; i++) {
+          const s = sentences[i].trim();
+          if (s) speakWithSamaritan(s, false, i === sentences.length - 1);
+        }
+      } else {
+        speakWithSamaritan('', false, true);  // signal done
+      }
     }
 
   } catch (e) {
@@ -3060,6 +3076,36 @@ const ttsProviders = {
   });
 })();
 
+// ── ttsClean — strip markdown/markers before sending text to TTS ──
+function ttsClean(t) {
+  return t
+    .replace(/<<[^>]*>>\s*(?::\s*)?/g, '') // <<topic>> routing tags
+    .replace(/\[thinking[^\]]*\]/gi, '')   // [thinking…] markers
+    .replace(/\[[^\]]*[▶◀][^\]]*\]/g, '')  // [tool ▶ name] and [tool ◀ result]
+    .replace(/#{1,6}\s*/g, '')             // markdown headings
+    .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1')  // bold/italic **x** *x* ***x***
+    .replace(/_{1,3}([^_]*)_{1,3}/g, '$1')    // underline/italic __x__ _x_
+    .replace(/~~([^~]*)~~/g, '$1')         // strikethrough
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')    // inline code and code blocks
+    .replace(/'{3}/g, '')                  // triple single-quotes (code fence variant)
+    .replace(/^[-*_]{3,}\s*$/gm, '')       // horizontal rules ---, ***, ___ (own line)
+    .replace(/\s[-]{3,}\s/g, ' ')          // inline --- sequences
+    .replace(/^\s*[-*+]\s+/gm, '')         // unordered list bullets
+    .replace(/^\s*\d+\.\s+/gm, '')         // ordered list numbers
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // links and images → label only
+    .replace(/[|\\]/g, ' ')                // table pipes, backslashes
+    .replace(/[—–]/g, ', ')               // em dash, en dash → pause
+    .replace(/…/g, '...')                  // ellipsis char → literal dots
+    .replace(/[""]/g, '"')                 // smart double quotes → straight
+    .replace(/['']/g, "'")                 // smart single quotes → straight apostrophe
+    .replace(/&[a-z]+;/gi, ' ')            // HTML entities
+    .replace(/[<>]/g, ' ')                 // angle brackets
+    .replace(/[^\x20-\x7E\s]/g, ' ')      // strip remaining non-ASCII
+    .replace(/\n+/g, ' ')
+    .replace(/\s{2,}/g, ' ')               // collapse multiple spaces
+    .trim();
+}
+
 // ── TTS sentence pipeline ─────────────────────────────────────
 // Sentences are queued as they arrive from SSE tok events.
 // Each sentence is spoken in order; the next starts as soon as the
@@ -3076,12 +3122,14 @@ function _ttsFlush() {
   if (_ttsBusy || _ttsSentenceQueue.length === 0) return;
   const sentence = _ttsSentenceQueue.shift();
   const provider = ttsProviders[TTS_PROVIDER];
+  const gen = _ttsGeneration;        // capture generation for stale-callback guard
   _ttsBusy = true;
   isSpeaking = true;
   provider.speak(
     sentence,
     null,
     () => {                          // onDone for this sentence
+      if (gen !== _ttsGeneration) return;  // stale callback from prior turn — discard
       _ttsBusy = false;
       if (_ttsSentenceQueue.length > 0) {
         _ttsFlush();                 // speak next sentence immediately
@@ -3090,6 +3138,7 @@ function _ttsFlush() {
         // then clear isSpeaking. Needed for xAI where response.done arrives
         // before all scheduled PCM chunks finish playing.
         (function waitForAudio() {
+          if (gen !== _ttsGeneration) return;
           if (activeSrcs.size > 0) {
             setTimeout(waitForAudio, 100);
           } else {
@@ -3102,6 +3151,7 @@ function _ttsFlush() {
       // else: SSE still streaming — more sentences may arrive, wait
     },
     (err) => {                       // onError for this sentence
+      if (gen !== _ttsGeneration) return;  // stale callback from prior turn — discard
       _ttsBusy = false;
       isSpeaking = false;
       if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
@@ -3145,6 +3195,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
 }
 
 // Reset TTS pipeline state at the start of each submit
+let _ttsGeneration = 0;  // increments each reset — stale callbacks check this to self-discard
 function resetTtsPipeline() {
   // Cancel any in-flight TTS (Inworld fetch or xAI WebSocket)
   const provider = ttsProviders[TTS_PROVIDER];
@@ -3152,6 +3203,8 @@ function resetTtsPipeline() {
   _ttsSentenceQueue = [];
   _ttsBusy          = false;
   _ttsDone          = false;
+  isSpeaking        = false;
+  _ttsGeneration++;
 }
 
 // ── Submit ───────────────────────────────────────────────────
@@ -3282,50 +3335,24 @@ async function submit(textOverride) {
       enqueueTokens(text);
       if (fullVoiceMode) {
         ttsBuf += text;
-        if (TTS_PROVIDER === 'xai' || TTS_PROVIDER === 'xai-persistent') {
-          let m;
-          while ((m = SENT_RE.exec(ttsBuf)) !== null) {
-            const end = m.index + m[0].length;
-            const sentence = ttsClean(ttsBuf.slice(0, end));
-            ttsBuf = ttsBuf.slice(end);
-            if (sentence) speakWithSamaritan(sentence, wasKbd, false);
-          }
+        // Sentence-level splitting for ALL providers (Inworld truncates long text)
+        let m;
+        while ((m = SENT_RE.exec(ttsBuf)) !== null) {
+          const end = m.index + m[0].length;
+          const sentence = ttsClean(ttsBuf.slice(0, end));
+          ttsBuf = ttsBuf.slice(end);
+          if (sentence) speakWithSamaritan(sentence, wasKbd, false);
         }
       }
     }
 
-    function ttsClean(t) {
-      return t
-        .replace(/<<[^>]*>>\s*(?::\s*)?/g, '') // <<topic>> routing tags
-        .replace(/\[thinking[^\]]*\]/gi, '')   // [thinking…] markers
-        .replace(/\[[^\]]*[▶◀][^\]]*\]/g, '')  // [tool ▶ name] and [tool ◀ result]
-        .replace(/#{1,6}\s*/g, '')             // markdown headings
-        .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1')  // bold/italic **x** *x* ***x***
-        .replace(/_{1,3}([^_]*)_{1,3}/g, '$1')    // underline/italic __x__ _x_
-        .replace(/~~([^~]*)~~/g, '$1')         // strikethrough
-        .replace(/`{1,3}[^`]*`{1,3}/g, '')    // inline code and code blocks
-        .replace(/'{3}/g, '')                  // triple single-quotes (code fence variant)
-        .replace(/^[-*_]{3,}\s*$/gm, '')       // horizontal rules ---, ***, ___ (own line)
-        .replace(/\s[-]{3,}\s/g, ' ')          // inline --- sequences
-        .replace(/^\s*[-*+]\s+/gm, '')         // unordered list bullets
-        .replace(/^\s*\d+\.\s+/gm, '')         // ordered list numbers
-        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // links and images → label only
-        .replace(/[|\\]/g, ' ')                // table pipes, backslashes
-        .replace(/[—–]/g, ', ')               // em dash, en dash → pause
-        .replace(/…/g, '...')                  // ellipsis char → literal dots
-        .replace(/[""]/g, '"')                 // smart double quotes → straight
-        .replace(/['']/g, "'")                 // smart single quotes → straight apostrophe
-        .replace(/&[a-z]+;/gi, ' ')            // HTML entities
-        .replace(/[<>]/g, ' ')                 // angle brackets
-        .replace(/[^\x20-\x7E\s]/g, ' ')      // strip remaining non-ASCII
-        .replace(/\n+/g, ' ')
-        .replace(/\s{2,}/g, ' ')               // collapse multiple spaces
-        .trim();
-    }
+    // ttsClean() is now at module level (used by both SSE and claude mode paths)
 
     function flushTtsBuf(isLast) {
       if (!fullVoiceMode) return;
       const clean = ttsClean(ttsBuf);
+      console.log('[TTS] flushTtsBuf isLast=%s busy=%s queue=%d speaking=%s clean=%s',
+        isLast, _ttsBusy, _ttsSentenceQueue.length, isSpeaking, clean.slice(0, 60));
       ttsBuf = '';
       if (clean) speakWithSamaritan(clean, wasKbd, isLast);
       else if (isLast) speakWithSamaritan('', wasKbd, true);  // signal done even if nothing to speak
@@ -3497,10 +3524,16 @@ function onSttStart() {
 
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
-  // Barge-in: only in 'barge' mode — stop TTS immediately when speech is heard
-  if (isSpeaking && micMode === 'barge') {
-    isSpeaking = false;
-    ttsProviders[TTS_PROVIDER].stop();  // closes WS/fetch AND calls stopAllAudio()
+  // Barge-in: only in 'barge' mode — stop TTS immediately when speech is heard.
+  // Require actual transcript text to avoid false barge-in from ambient noise
+  // triggering StartOfTurn with empty/short partials.
+  if (isSpeaking && micMode === 'barge' && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
+    console.log('[TTS] barge-in triggered:', text.trim().slice(0, 40));
+    stopAllAudio();
+    resetTtsPipeline();
+    // Kill the active SSE stream so onSttFinal's isStreaming guard doesn't block the new submit
+    if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
+    isStreaming = false;
   }
 }
 
@@ -3564,7 +3597,8 @@ function onSttFinal(text) {
   // mid-ramble pauses from firing a second submit and getting a 0-char response.
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
   // waiting for LLM response (isStreaming, !isSpeaking) there's nothing to barge into.
-  if (isStreaming && !(micMode === 'barge' && isSpeaking)) return;
+  // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
+  if (isStreaming && !claudeMode && !(micMode === 'barge' && isSpeaking)) return;
   // In speaker/diarize mode: suppress while TTS is playing or during post-TTS cooldown.
   if (micMode === 'speaker' || micMode === 'deepgram-di') {
     if (isSpeaking) return;
@@ -3760,9 +3794,10 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (msg.type !== 'TurnInfo') return;
         const transcript = (msg.transcript || '').trim();
         if (msg.event === 'StartOfTurn') {
-          // User started speaking — barge-in if in barge mode
-          onSttPartial('');  // clear preview
-          if (micMode === 'barge' && isSpeaking) stopAllAudio();
+          // User started speaking — clear preview but do NOT barge-in yet.
+          // Wait for Update/EndOfTurn with enough words to confirm real speech,
+          // otherwise ambient noise StartOfTurn kills TTS prematurely.
+          onSttPartial('');
         } else if (msg.event === 'Update') {
           if (transcript) onSttPartial(transcript);
         } else if (msg.event === 'EndOfTurn') {
