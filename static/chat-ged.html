@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GED Study — Lee</title>
+  <title>GED Study — Lee v2</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -333,6 +333,38 @@
       color: var(--text);
       border-bottom-left-radius: 4px;
       max-width: 100%;
+    }
+
+    /* Answer choices: letter + value in aligned rows */
+    .answer-choices {
+      margin: 8px 0;
+    }
+    .answer-row {
+      display: flex;
+      align-items: baseline;
+      margin: 5px 0;
+      line-height: 1.6;
+    }
+    .answer-letter {
+      font-weight: 600;
+      width: 2em;
+      flex-shrink: 0;
+    }
+    .answer-value {
+      margin-left: 0.5em;
+    }
+    /* Force KaTeX inside answer values to render inline and left-aligned */
+    .answer-value .katex-display {
+      display: inline !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      text-align: left !important;
+    }
+    .answer-value .katex-display > .katex {
+      text-align: left !important;
+    }
+    .answer-value .katex {
+      font-size: 1.1em;
     }
 
     /* Markdown inside bubbles */
@@ -746,9 +778,12 @@ async function claudeSubmit(text) {
     }
 
     if (response) {
-      asst.innerHTML = renderMarkdown(response.text);
-      // Re-render KaTeX/Mermaid/SVG using existing helpers
-      renderMath(asst);
+      // Fix math split across lines, then render
+      let cleaned = response.text;
+      cleaned = cleaned.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => '$$' + expr.replace(/\s*\n\s*/g, ' ').trim() + '$$');
+      asst.innerHTML = renderMarkdown(cleaned);
+      fixAnswerChoices(asst);  // restructure DOM before KaTeX renders
+      renderMath(asst);        // KaTeX converts $$ to .katex-display
       renderMermaid(asst);
       scrollToBottom();
       if (ttsEnabled) speakText(response.text);
@@ -802,13 +837,105 @@ function setStatus(msg) { statusText.textContent = msg; }
 // Run KaTeX auto-render on a DOM element after its innerHTML is set.
 function renderMath(el) {
   if (!window._katexReady || typeof renderMathInElement === 'undefined') return;
-  // NOTE: single $...$ deliberately omitted — conflicts with currency ($20, $5 etc.)
-  // Use \(...\) for inline math and \[...\] or $$...$$ for display math.
   renderMathInElement(el, {
     delimiters: [
       { left: '$$', right: '$$', display: true },
+      { left: '\\(', right: '\\)', display: false },
     ],
     throwOnError: false,
+  });
+  // Fix answer choices: convert display math to inline on lines starting with A) B) C) D)
+  // KaTeX renders $$...$$ as block-level .katex-display, which centers the math away from
+  // the answer letter. We find those and convert them to inline.
+  // fixAnswerChoices is called BEFORE renderMath by the caller,
+  // so KaTeX renders inside .answer-value spans (forced inline via CSS).
+}
+
+// Fix answer choices: DOM-based approach that handles both:
+// 1. Single <p> with <br>-separated choices: <p>A) ...<br>B) ...<br>C) ...<br>D) ...</p>
+// 2. Separate <p> per choice: <p>A) ...</p><p>B) ...</p>...
+// Must run BEFORE renderMath so $$ delimiters are still in text.
+function fixAnswerChoices(el) {
+  // Find <p> elements that contain answer choice patterns (A) B) C) D) after <br> tags).
+  // Choices may be mixed with question text and hints in the same <p>.
+  const allP = Array.from(el.querySelectorAll('p'));
+
+  for (let i = 0; i < allP.length; i++) {
+    const p = allP[i];
+    const html = p.innerHTML;
+    if (!html.includes('<br>')) continue;
+
+    const parts = html.split(/<br\s*\/?>/).map(s => s.trim());
+    const choiceIndices = [];
+    parts.forEach((s, idx) => { if (/^[A-D][):.]\s/.test(s)) choiceIndices.push(idx); });
+    if (choiceIndices.length < 2) continue;
+
+    // Split the <p> into: before choices, choice grid, after choices
+    const firstChoice = choiceIndices[0];
+    const lastChoice = choiceIndices[choiceIndices.length - 1];
+
+    const beforeParts = parts.slice(0, firstChoice).filter(Boolean);
+    const choiceParts = parts.filter(s => /^[A-D][):.]\s/.test(s));
+    const afterParts = parts.slice(lastChoice + 1).filter(Boolean);
+
+    // Build replacement
+    let replacement = '';
+    if (beforeParts.length) {
+      replacement += '<p>' + beforeParts.join('<br>') + '</p>';
+    }
+
+    replacement += '<div class="answer-choices">';
+    choiceParts.forEach(ch => {
+      const letter = ch.slice(0, 2);
+      const value = ch.slice(2).trim();
+      replacement += '<div class="answer-row"><span class="answer-letter">' +
+        letter + '</span><span class="answer-value">' + value + '</span></div>';
+    });
+    replacement += '</div>';
+
+    if (afterParts.length) {
+      replacement += '<p>' + afterParts.join('<br>') + '</p>';
+    }
+
+    // Replace the <p> with the split content
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = replacement;
+    while (wrapper.firstChild) {
+      p.parentNode.insertBefore(wrapper.firstChild, p);
+    }
+    p.remove();
+  }
+
+  // Also handle Case 2: consecutive <p> elements each with one choice
+  const freshP = Array.from(el.querySelectorAll('p'));
+  for (let i = 0; i < freshP.length; i++) {
+    const p = freshP[i];
+    if (!/^[A-D][):.]\s/.test(p.textContent.trim())) continue;
+    const group = [p];
+    let next = p.nextElementSibling;
+    while (next && next.tagName === 'P' && /^[A-D][):.]\s/.test(next.textContent.trim())) {
+      group.push(next);
+      next = next.nextElementSibling;
+    }
+    if (group.length < 2) continue;
+    const container = document.createElement('div');
+    container.className = 'answer-choices';
+    group.forEach(gp => {
+      const row = document.createElement('div');
+      row.className = 'answer-row';
+      const gpHtml = gp.innerHTML.trim();
+      row.innerHTML = '<span class="answer-letter">' + gpHtml.slice(0, 2) +
+        '</span><span class="answer-value">' + gpHtml.slice(2).trim() + '</span>';
+      container.appendChild(row);
+    });
+    group[0].replaceWith(container);
+    group.slice(1).forEach(gp => gp.remove());
+    i += group.length - 1;
+  }
+
+  // Convert $$ to \( \) inside .answer-value spans so KaTeX renders INLINE, not display.
+  el.querySelectorAll('.answer-value').forEach(v => {
+    v.innerHTML = v.innerHTML.replace(/\$\$([\s\S]*?)\$\$/g, '\\($1\\)');
   });
 }
 
@@ -1029,7 +1156,8 @@ function renderMarkdown(text) {
   text = text.replace(/(^[ \t]*\|.+\|[ \t]*$(?:\n(?:[ \t]*\|.+\|[ \t]*$|[ \t]*$))*)/gm, (block) => {
     const rows = block.trim().split('\n').map(r => r.trim()).filter(r => r && r.includes('|'));
     // Need at least a header + one data row
-    const dataRows = rows.filter(r => !/^\|[\s\-:]+\|$/.test(r) && !/^\|(\s*[-:]+\s*\|)+$/.test(r));
+    // Filter separator rows: lines containing only |, -, :, and whitespace
+    const dataRows = rows.filter(r => !/^[|\s:\-]+$/.test(r));
     if (dataRows.length < 2) return block;
     let html = '<table>';
     dataRows.forEach((row, i) => {
@@ -1076,8 +1204,12 @@ function renderMarkdown(text) {
   text = text.replace(/(\S) +(1\. )/g, '$1\n\n$2');
   text = text.replace(/^(\d+)\. (.+)$/gm, '<strong>$1.</strong> $2');
 
-  // Collapse any double newlines between consecutive answer choices
-  text = text.replace(/([A-D]\) .+)\n\n([A-D]\) )/g, '$1\n$2');
+  // Collapse ALL double newlines between consecutive answer choices (repeat until stable)
+  let prev;
+  do {
+    prev = text;
+    text = text.replace(/([A-D][):.]\s[^\n]*)\n\n([A-D][):.]\s)/g, '$1\n$2');
+  } while (text !== prev);
 
   // Unordered lists
   text = text.replace(/^[\*\-] (.+)$/gm, '<li>$1</li>');
@@ -1112,7 +1244,7 @@ function renderMarkdown(text) {
       if (isPipeTable) {
         // Pipe-separated: split on | and build table
         // Filter out separator rows (---|---)
-        const dataLines = lines.filter(l => !/^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$/.test(l));
+        const dataLines = lines.filter(l => !/^[|\s:\-]+$/.test(l));
         if (dataLines.length < 2) return block;
         let html = '<table>';
         dataLines.forEach((line, i) => {
@@ -1124,9 +1256,11 @@ function renderMarkdown(text) {
         html += '</table>';
         return html;
       } else if (isSpaceAligned) {
-        // Space-aligned: split on 2+ spaces
+        // Space-aligned: split on 2+ spaces, filter separator rows
+        const dataLines = lines.filter(l => !/^[\s\-_=]+$/.test(l));
+        if (dataLines.length < 2) return block;
         let html = '<table>';
-        lines.forEach((line, i) => {
+        dataLines.forEach((line, i) => {
           const cells = line.split(/  {1,}/).filter(c => c.trim());
           const tag = i === 0 ? 'th' : 'td';
           html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
@@ -1141,11 +1275,7 @@ function renderMarkdown(text) {
   text = text.replace(/\x00MATH(\d+)\x00/g, (_, i) => mathBlocks[parseInt(i)]);
   text = text.replace(/\x00SVG(\d+)\x00/g, (_, i) => svgBlocks[parseInt(i)]);
 
-  // Answer choices: ensure each A) B) C) D) starts on its own line (post-HTML)
-  text = text.replace(/([^<br>\n>])(\s*)(A\) )/g, '$1<br>$3');
-  text = text.replace(/([^<br>\n>])(\s*)(B\) )/g, '$1<br>$3');
-  text = text.replace(/([^<br>\n>])(\s*)(C\) )/g, '$1<br>$3');
-  text = text.replace(/([^<br>\n>])(\s*)(D\) )/g, '$1<br>$3');
+  // Answer choice formatting is handled post-render in fixAnswerChoices()
 
   return text;
 }
@@ -1174,6 +1304,7 @@ function addMessage(role, text, streaming = false) {
     bubble.textContent = text;
   } else {
     bubble.innerHTML = renderMarkdown(text);
+    fixAnswerChoices(bubble);
     renderMath(bubble);
   }
 
@@ -1413,7 +1544,10 @@ function _renderMemoryRows(rows) {
       addMessage('user', text);
     } else if (row.source === 'session' || row.source === 'assistant') {
       var bubble = addMessage('assistant', '');
-      bubble.innerHTML = renderMarkdown(_processAssistantContent(text));
+      // In claude mode, skip grok math preprocessing — Claude uses clean $$ delimiters
+      var processed = claudeMode ? text : _processAssistantContent(text);
+      bubble.innerHTML = renderMarkdown(processed);
+      fixAnswerChoices(bubble);
       renderMath(bubble);
       renderMermaid(bubble);
     }
