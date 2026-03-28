@@ -1994,9 +1994,8 @@ function enterChatGedMode() {
 // llmem-gw's LLM pipeline is bypassed — Claude Opus handles everything.
 
 async function enterClaudeMode() {
-  if (claudeMode) { flashCmd('Already in Claude mode'); return; }
-
-  // Check if relay is enabled — auto-start if not
+  // Always check relay and auto-start if needed — even if already in claude mode
+  // (handles re-entry after idle timeout)
   try {
     const r = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
     const d = await r.json();
@@ -2052,10 +2051,60 @@ function exitClaudeMode() {
 async function claudeSubmit(text) {
   // Submit to Claude Code via voice relay, poll for response, speak it
   isStreaming = true;
-  setStatus('CLAUDE THINKING', true);
+  resetTtsPipeline();   // clear stale _ttsBusy state from prior cycle
+  nextPlayAt = 0;       // reset audio scheduling baseline
+  isSpeaking = false;   // clear stale speaking flag
+  wordQueue = [];
+  fullResponse = '';
   showLoader(true);
   responsePanel.textContent = '';
   responsePanel.classList.remove('active');
+  showTerminal(false);
+
+  // Auto-start relay if it died (idle timeout)
+  try {
+    const statusResp = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
+    const statusData = await statusResp.json();
+    if (!statusData.enabled) {
+      setStatus('RESTARTING CLAUDE...', true);
+      const startResp = await fetch('/api/ged/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ channel: 'default' }),
+      });
+      const startData = await startResp.json();
+      if (startData.status !== 'started' && startData.status !== 'already_running') {
+        flashError('Could not restart Claude');
+        isStreaming = false;
+        showLoader(false);
+        return;
+      }
+    }
+  } catch (e) {
+    // Status check failed — try auto-start anyway
+    setStatus('RESTARTING CLAUDE...', true);
+    try {
+      const startResp = await fetch('/api/ged/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ channel: 'default' }),
+      });
+      const startData = await startResp.json();
+      if (startData.status !== 'started' && startData.status !== 'already_running') {
+        flashError('Claude offline — try #mode claude again');
+        isStreaming = false;
+        showLoader(false);
+        return;
+      }
+    } catch (e2) {
+      flashError('Cannot reach Claude');
+      isStreaming = false;
+      showLoader(false);
+      return;
+    }
+  }
+
+  setStatus('CLAUDE THINKING', true);
 
   try {
     // 1. Submit to relay
@@ -4054,6 +4103,10 @@ resetIdleTimer();   // start idle countdown immediately on page load
         if (saved.fullVoiceMode && !fullVoiceMode) {
           fullVoiceBtn.click();  // toggles fullVoiceMode + updates button
         }
+        // Restore claude mode (before mic, so STT routes correctly)
+        if (saved.claudeMode) {
+          enterClaudeMode();
+        }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
@@ -4079,6 +4132,7 @@ resetIdleTimer();   // start idle countdown immediately on page load
       micMode,
       ttsProvider: TTS_PROVIDER,
       fullVoiceMode,
+      claudeMode,
     }));
     location.reload();
   });
