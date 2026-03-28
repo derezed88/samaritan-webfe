@@ -711,6 +711,17 @@ async def claude_relay_status(request: Request):
         return JSONResponse({"enabled": False, "error": "MCP Direct unreachable"})
 
 
+@app.post("/api/ged/start")
+async def ged_start(request: Request):
+    """Launch a GED Claude Code workspace on demand."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=75) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/ged/start", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
 if __name__ == "__main__":
     import threading
 

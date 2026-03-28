@@ -732,6 +732,41 @@ async function claudeSubmit(text) {
   }
   isStreaming = true;
   sendBtn.disabled = true;
+
+  // Auto-start workspace if relay isn't running
+  try {
+    const statusResp = await fetch(
+      CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
+      { headers: authHeaders() }
+    );
+    const statusData = await statusResp.json();
+    if (!statusData.enabled) {
+      setStatus('Starting tutor…');
+      const startResp = await fetch('/api/ged/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ channel: claudeChannel }),
+      });
+      const startData = await startResp.json();
+      if (startData.status === 'timeout') {
+        setStatus('Tutor is starting — try again in a moment');
+        isStreaming = false;
+        sendBtn.disabled = false;
+        return;
+      }
+      if (startData.status === 'started' || startData.status === 'already_running') {
+        setStatus('Tutor ready!');
+      } else {
+        setStatus('Could not start tutor: ' + (startData.error || startData.status));
+        isStreaming = false;
+        sendBtn.disabled = false;
+        return;
+      }
+    }
+  } catch (e) {
+    // Status check failed — proceed anyway, submit will fail with 503 if relay is down
+  }
+
   setStatus('Claude thinking…');
   addMessage('user', text);
   const asst = addMessage('assistant', '', true);
