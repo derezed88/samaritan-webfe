@@ -1996,13 +1996,30 @@ function enterChatGedMode() {
 async function enterClaudeMode() {
   if (claudeMode) { flashCmd('Already in Claude mode'); return; }
 
-  // Check if relay is enabled on the server
+  // Check if relay is enabled — auto-start if not
   try {
     const r = await fetch(CLAUDE_RELAY_URL + '/status', { headers: authHeaders() });
     const d = await r.json();
     if (!d.enabled) {
-      flashError('Claude relay not enabled. Run "enter voice relay mode" in Claude Code first.');
-      return;
+      setStatus('STARTING CLAUDE...', true);
+      voicePreview.textContent = 'STARTING CLAUDE CODE...';
+      try {
+        const startResp = await fetch('/api/ged/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ channel: 'default' }),
+        });
+        const startData = await startResp.json();
+        if (startData.status !== 'started' && startData.status !== 'already_running') {
+          flashError('Could not start Claude: ' + (startData.message || startData.status));
+          setStatus('IDLE', false);
+          voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
+          return;
+        }
+      } catch (e2) {
+        flashError('Auto-start failed: ' + e2.message);
+        return;
+      }
     }
   } catch (e) {
     flashError('Cannot reach Claude relay: ' + e.message);
