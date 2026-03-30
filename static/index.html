@@ -814,8 +814,10 @@
     }
 
     #mic-icon { font-size: 15px; }
+    /* Mode-specific border + dot color — visible both idle and listening */
     #mic-btn.barge       { border-color: var(--red); color: var(--red); }
     #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
+    #mic-btn.xai         { border-color: #10b981;    color: #10b981; }
     #mic-btn.deepgram-di { border-color: #3b82f6;    color: #3b82f6;
                            animation: dg-di-pulse 1s ease-in-out infinite alternate; }
     @keyframes dg-di-pulse {
@@ -842,6 +844,39 @@
     #stt-provider-btn:hover {
       border-color: rgba(255,255,255,0.5);
       color: var(--bar-text);
+    }
+
+    /* ─── Claude mode toggle button ─── */
+    #claude-mode-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 0 4px;
+      min-width: 28px;
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: bold;
+      flex-shrink: 0;
+      transition: all 200ms;
+      height: 28px;
+    }
+    @media (hover: hover) {
+      #claude-mode-btn:hover {
+        border-color: rgba(255,255,255,0.5);
+        color: var(--bar-text);
+      }
+    }
+    #claude-mode-btn.active {
+      border-color: #a855f7;
+      color: #a855f7;
+      box-shadow: 0 0 6px rgba(168,85,247,0.4);
+    }
+    #claude-mode-btn.starting {
+      border-color: #a855f7;
+      color: #a855f7;
+      opacity: 0.5;
+      pointer-events: none;
     }
 
     #voice-provider-btn {
@@ -1478,7 +1513,6 @@
 
     /* ─── Narrow phone screens (≤ 480px) ─── */
     @media (max-width: 480px) {
-      /* Hide text-only provider toggle buttons — icons still visible */
       #stt-provider-btn { display: none; }
       /* Tighten bar so all icon buttons fit */
       #control-bar { gap: 6px; padding: 0 8px; }
@@ -1580,6 +1614,7 @@
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
       <button id="stt-provider-btn" title="Switch STT provider">WEBSPEECH</button>
+      <button id="claude-mode-btn" title="Toggle Claude Code mode">C</button>
       <button id="voice-provider-btn" title="TTS: inworld — tap to switch">I</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
         <svg id="fv-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1605,7 +1640,7 @@
           <line x1="8" y1="17" x2="16" y2="17"/>
         </svg>
       </button>
-      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker  DI=diarize">
+      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker  DI=diarize  X=xAI">
         <span id="mic-icon">&#127908;</span>
       </button>
     </div>
@@ -1707,6 +1742,7 @@ const micBtn         = document.getElementById('mic-btn');
 const micIcon        = document.getElementById('mic-icon');
 const kbdBtn         = document.getElementById('kbd-btn');
 const fullVoiceBtn       = document.getElementById('full-voice-btn');
+const claudeModeBtn      = document.getElementById('claude-mode-btn');
 const voiceProviderBtn   = document.getElementById('voice-provider-btn');
 const voicePreview   = document.getElementById('voice-preview');
 const statusText     = document.getElementById('status-text');
@@ -1727,13 +1763,14 @@ let fullVoiceMode = false; // true when xAI TTS is active
 // speaker     — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
 // deepgram-di — Deepgram nova-3 + speaker diarization; labels each speaker turn
 let micMode = 'off';
-const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di'];
-const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI' };
+let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
+const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di', 'xai'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI', xai: 'X' };
 
 function setMicMode(mode) {
   micMode = mode;
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker', 'deepgram-di');
+  micBtn.classList.remove('barge', 'speaker', 'deepgram-di', 'xai');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -1838,7 +1875,8 @@ const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
 const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Ambient noise guards
 const STT_NOISE_GATE             = 0;                // RMS threshold: 0=disabled. (0.01–0.05 to gate ambient noise, but can break Flux EndOfTurn)
-const STT_BARGE_MIN_WORDS        = 3;               // barge mode: ignore finals with fewer words (filters crowd noise)
+const STT_MIN_WORDS              = 3;               // global: ignore finals with fewer words in ALL modes (filters ambient noise)
+const STT_BARGE_MIN_WORDS        = 1;               // barge mode: minimum words to trigger barge-in
 const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
@@ -1862,7 +1900,8 @@ const KEYWORD_CARDS = {
 // voice relay to Claude Code instead of llmem-gw's LLM pipeline.
 let claudeMode       = false;
 let _claudePollTimer = null;
-const CLAUDE_RELAY_URL = '/api/claude-relay';  // proxied through samaritan.py
+const CLAUDE_RELAY_URL = '/api/claude-relay';  // legacy relay (kept for backward compat)
+const CLAUDE_DISPATCH_URL = '/api/claude';    // rc-style tmux dispatch
 
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
@@ -1993,18 +2032,14 @@ function enterChatGedMode() {
 // Routes all voice/text input to Claude Code via MCP Direct voice relay.
 // llmem-gw's LLM pipeline is bypassed — Claude Opus handles everything.
 
-async function _ensureRelayUp(channel = 'default') {
-  // Check relay status; if down, auto-start with count-up timer + fallback polling.
-  // Returns true if relay is up, false if startup failed.
-  let needsStart = false;
+async function _ensureClaudeUp(channel = 'default') {
+  // Check if Claude is alive in tmux; if not, auto-start with count-up timer.
+  // Returns true if Claude is up, false if startup failed.
   try {
-    const r = await fetch(CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(channel), { headers: authHeaders() });
+    const r = await fetch(CLAUDE_DISPATCH_URL + '/status?channel=' + encodeURIComponent(channel), { headers: authHeaders() });
     const d = await r.json();
-    needsStart = !d.enabled;
-  } catch (e) {
-    needsStart = true;  // can't reach status — try starting anyway
-  }
-  if (!needsStart) return true;
+    if (d.enabled) return true;
+  } catch (e) { /* fall through to start */ }
 
   // Count-up timer so the user sees progress
   let secs = 0;
@@ -2025,19 +2060,17 @@ async function _ensureRelayUp(channel = 'default') {
       clearInterval(timer);
       return true;
     }
-    if (startData.status === 'timeout') {
-      // Server-side polling ran out — continue polling from frontend
-      for (let i = 0; i < 15; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          const recheck = await fetch(
-            CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(channel),
-            { headers: authHeaders() }
-          );
-          const recheckData = await recheck.json();
-          if (recheckData.enabled) { clearInterval(timer); return true; }
-        } catch (_) {}
-      }
+    // Poll status directly (no relay dependency)
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const recheck = await fetch(
+          CLAUDE_DISPATCH_URL + '/status?channel=' + encodeURIComponent(channel),
+          { headers: authHeaders() }
+        );
+        const d = await recheck.json();
+        if (d.enabled) { clearInterval(timer); return true; }
+      } catch (_) {}
     }
     clearInterval(timer);
     return false;
@@ -2052,8 +2085,9 @@ async function enterClaudeMode() {
   // (handles re-entry after idle timeout or server restart)
   setStatus('STARTING CLAUDE...', true);
   voicePreview.textContent = 'STARTING CLAUDE CODE...';
-  const ok = await _ensureRelayUp('default');
+  const ok = await _ensureClaudeUp('default');
   if (!ok) {
+    claudeModeBtn.classList.remove('starting');
     flashError('Could not start Claude — try again');
     setStatus('IDLE', false);
     voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
@@ -2061,6 +2095,9 @@ async function enterClaudeMode() {
   }
 
   claudeMode = true;
+  claudeModeBtn.classList.add('active');
+  claudeModeBtn.classList.remove('starting');
+  _startBgPoller();  // pick up follow-up messages from voice_relay_send()
 
   // Visual indicator — change status bar
   const statusEl = document.getElementById('status-dot');
@@ -2075,6 +2112,8 @@ async function enterClaudeMode() {
 function exitClaudeMode() {
   if (!claudeMode) return;
   claudeMode = false;
+  claudeModeBtn.classList.remove('active');
+  _stopBgPoller();
 
   const statusEl = document.getElementById('status-dot');
   if (statusEl) statusEl.style.background = '';
@@ -2083,13 +2122,91 @@ function exitClaudeMode() {
   flashCmd('Claude mode exited — back to Samaritan');
 }
 
+// ── Claude mode toggle button ──────────────────────────────
+claudeModeBtn.addEventListener('click', async () => {
+  if (claudeMode) {
+    exitClaudeMode();
+  } else {
+    claudeModeBtn.classList.add('starting');
+    await enterClaudeMode();
+    claudeModeBtn.classList.remove('starting');
+  }
+});
+
 let _claudeAbort = null;  // AbortController for in-flight claude poll
+
+// ── Background poller for follow-up messages ─────────────────
+// Picks up outbox messages that arrive OUTSIDE of claudeSubmit()
+// (e.g., voice_relay_send() follow-ups after a tool call).
+let _bgPolling = false;   // true while background poller is active
+let _submitActive = false; // true while claudeSubmit() is running
+
+async function _startBgPoller() {
+  if (_bgPolling) return;
+  _bgPolling = true;
+  while (claudeMode && _bgPolling) {
+    // Pause when page is hidden (iOS app switcher) or during active claudeSubmit()
+    if (document.hidden || _submitActive) {
+      await new Promise(r => setTimeout(r, 1000));
+      continue;
+    }
+    try {
+      const resp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=5', {
+        headers: authHeaders(),
+      });
+      if (resp.status === 503) {
+        // Relay not enabled — back off and retry (server restart, idle timeout, etc.)
+        await new Promise(r => setTimeout(r, 10000));
+        continue;
+      }
+      if (!resp.ok) {
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+      const data = await resp.json();
+      if (data.status === 'ok' && data.text) {
+        // Follow-up arrived — display and speak it
+        const replyText = data.text;
+        fullResponse = replyText;
+
+        const wordCount = replyText.trim().split(/\s+/).filter(w => w).length;
+        if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+          runTerminal(replyText.trim(), () => {});
+        } else {
+          appendToPanel(replyText);
+          enqueueTokens(replyText);
+        }
+
+        if (fullVoiceMode) {
+          const cleaned = ttsClean(replyText);
+          if (cleaned) {
+            const sentences = cleaned.match(/[^.!?]+[.!?]+[\s)]*/g) || [cleaned];
+            for (let i = 0; i < sentences.length; i++) {
+              const s = sentences[i].trim();
+              if (s) speakWithSamaritan(s, false, i === sentences.length - 1);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Network error — back off then retry
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+  _bgPolling = false;
+}
+
+function _stopBgPoller() {
+  _bgPolling = false;
+}
+
 async function claudeSubmit(text) {
   // Cancel any in-flight claude poll from a prior turn
   if (_claudeAbort) { _claudeAbort.abort(); _claudeAbort = null; }
   _claudeAbort = new AbortController();
   const signal = _claudeAbort.signal;
   // Submit to Claude Code via voice relay, poll for response, speak it
+  _submitActive = true;
   isStreaming = true;
   resetTtsPipeline();   // clear stale _ttsBusy state from prior cycle
   nextPlayAt = 0;       // reset audio scheduling baseline
@@ -2101,8 +2218,8 @@ async function claudeSubmit(text) {
   responsePanel.classList.remove('active');
   showTerminal(false);
 
-  // Auto-start relay if it died (idle timeout or server restart)
-  const relayOk = await _ensureRelayUp('default');
+  // Auto-start Claude if not running (no relay dependency — just check tmux)
+  const relayOk = await _ensureClaudeUp('default');
   if (!relayOk) {
     flashError('Claude offline — try #mode claude again');
     isStreaming = false;
@@ -2113,15 +2230,31 @@ async function claudeSubmit(text) {
   setStatus('CLAUDE THINKING', true);
 
   try {
-    // 1. Submit to relay
-    const submitResp = await fetch(CLAUDE_RELAY_URL + '/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ text, source: 'voice' }),
-    });
-    if (!submitResp.ok) throw new Error('Relay submit failed: ' + submitResp.status);
-    const submitData = await submitResp.json();
-    const msgId = submitData.message_id;
+    // 1. Submit to Claude via tmux dispatch (include emotion metadata)
+    const submitBody = { text, source: 'voice' };
+    if (window._xaiSttEmotion) {
+      submitBody.emotion = window._xaiSttEmotion;
+      window._xaiSttEmotion = null;  // consume once
+      console.log('[claudeSubmit] emotion attached:', submitBody.emotion);
+    } else {
+      console.log('[claudeSubmit] no emotion metadata available');
+    }
+    console.log('[claudeSubmit] body:', JSON.stringify(submitBody).slice(0, 300));
+    let submitResp;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        submitResp = await fetch(CLAUDE_DISPATCH_URL + '/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(submitBody),
+        });
+        break;
+      } catch (e) {
+        if (attempt === 0) { console.warn('[claudeSubmit] submit network error, retrying:', e.message); await new Promise(r => setTimeout(r, 1000)); }
+        else throw e;
+      }
+    }
+    if (!submitResp.ok) throw new Error('Dispatch submit failed: ' + submitResp.status);
 
     // 2. Long-poll for response (up to 60s with retries)
     setStatus('CLAUDE RESPONDING', true);
@@ -2129,16 +2262,20 @@ async function claudeSubmit(text) {
     let response = null;
     const deadline = Date.now() + 60000;
     while (!response && Date.now() < deadline && !signal.aborted) {
-      const pollResp = await fetch(CLAUDE_RELAY_URL + '/poll?wait=10', {
-        headers: authHeaders(),
-        signal,
-      });
-      const pollData = await pollResp.json();
-      if (pollData.status === 'ok') {
-        response = pollData;
-        break;
+      try {
+        const pollResp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=10', {
+          headers: authHeaders(),
+          signal,
+        });
+        const pollData = await pollResp.json();
+        if (pollData.status === 'ok') {
+          response = pollData;
+          break;
+        }
+      } catch (pollErr) {
+        // Network error (Pinggy drop) — retry unless deadline or aborted
+        console.warn('[claudeSubmit] poll network error, retrying:', pollErr.message);
       }
-      // Empty — keep polling
     }
 
     if (!response) {
@@ -2161,6 +2298,12 @@ async function claudeSubmit(text) {
     }
 
     if (fullVoiceMode) {
+      // Resume AudioContext before TTS — it may have been suspended during
+      // the long-poll wait (iOS Safari suspends after ~seconds of inactivity)
+      initAudioCtx();
+      if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume().catch(() => {});
+      }
       // Split into sentences and clean markdown before sending to TTS
       // (Inworld truncates long single-call text; raw markdown breaks TTS)
       const cleaned = ttsClean(replyText);
@@ -2179,10 +2322,20 @@ async function claudeSubmit(text) {
     flashError('Claude relay error: ' + e.message);
     console.error('[claude-relay]', e);
   } finally {
+    _submitActive = false;
     isStreaming = false;
+    isSpeaking = false;  // clear in case TTS path didn't complete cleanly
     showLoader(false);
     setStatus(claudeMode ? 'CLAUDE MODE' : 'IDLE', claudeMode);
     sendBtn.disabled = false;
+    // Restart mic if voice mode is active and TTS isn't going to handle it
+    if (!fullVoiceMode && voiceMode && micMode !== 'off' && !isListening) {
+      setTimeout(() => {
+        if (!isStreaming && !isListening) {
+          getActiveProvider()?.start();
+        }
+      }, 500);
+    }
   }
 }
 
@@ -2531,8 +2684,31 @@ function pcm16Base64ToFloat32(b64, sampleRate) {
 
 // Schedule an AudioBuffer for gapless sequential playback (shared across providers).
 // Returns the wall-clock ms until playback of this buffer completes (for onDone timing).
+// Queue of AudioBuffers that arrived while AudioContext was resuming
+let _pendingChunks = [];
+let _resumingCtx = false;
+
 function scheduleAudioChunk(audioBuf) {
   if (!audioCtx) return 0;
+  // iOS Safari can suspend AudioContext mid-session; queue chunks until resumed
+  if (audioCtx.state === 'suspended') {
+    _pendingChunks.push(audioBuf);
+    if (!_resumingCtx) {
+      _resumingCtx = true;
+      audioCtx.resume().then(() => {
+        _resumingCtx = false;
+        // Drain queued chunks now that context is running
+        while (_pendingChunks.length > 0) {
+          _scheduleChunk(_pendingChunks.shift());
+        }
+      }).catch(() => { _resumingCtx = false; _pendingChunks = []; });
+    }
+    return 0;
+  }
+  return _scheduleChunk(audioBuf);
+}
+
+function _scheduleChunk(audioBuf) {
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(audioCtx.destination);
@@ -2754,16 +2930,25 @@ const ttsProviders = {
 
       (async () => {
         let resp;
-        try {
-          resp = await fetch('/api/tts/inworld', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ text, voice_id: INWORLD_VOICE, model_id: INWORLD_MODEL, speaking_rate: INWORLD_SPEAKING_RATE, temperature: INWORLD_TEMPERATURE }),
-            signal,
-          });
-        } catch (e) {
-          if (e.name !== 'AbortError') onError('inworld: ' + e.message.slice(0, 30));
-          return;
+        for (let _attempt = 0; _attempt < 2; _attempt++) {
+          try {
+            resp = await fetch('/api/tts/inworld', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              body: JSON.stringify({ text, voice_id: INWORLD_VOICE, model_id: INWORLD_MODEL, speaking_rate: INWORLD_SPEAKING_RATE, temperature: INWORLD_TEMPERATURE }),
+              signal,
+            });
+            break;
+          } catch (e) {
+            if (e.name === 'AbortError') return;
+            if (_attempt === 0) {
+              console.warn('[TTS] inworld fetch failed, retrying:', e.message);
+              await new Promise(r => setTimeout(r, 500));
+            } else {
+              onError('inworld: ' + e.message.slice(0, 30));
+              return;
+            }
+          }
         }
         if (!resp.ok) { onError('inworld http ' + resp.status); return; }
 
@@ -3143,7 +3328,7 @@ function _ttsFlush() {
             setTimeout(waitForAudio, 100);
           } else {
             isSpeaking = false;
-            if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
+            if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
             waitForDrainThenListen(_ttsWasKbd);
           }
         })();
@@ -3153,10 +3338,17 @@ function _ttsFlush() {
     (err) => {                       // onError for this sentence
       if (gen !== _ttsGeneration) return;  // stale callback from prior turn — discard
       _ttsBusy = false;
-      isSpeaking = false;
-      if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
-      flashError(err);
-      if (_ttsDone) waitForDrainThenListen(_ttsWasKbd);
+      console.warn('[TTS] sentence error:', err, 'remaining queue:', _ttsSentenceQueue.length);
+      // Skip failed sentence and continue with remaining queue
+      if (_ttsSentenceQueue.length > 0) {
+        _ttsFlush();
+      } else if (_ttsDone) {
+        isSpeaking = false;
+        if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
+        waitForDrainThenListen(_ttsWasKbd);
+      } else {
+        isSpeaking = false;
+      }
     },
   );
 }
@@ -3166,15 +3358,15 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
-    if (micMode === 'speaker' || micMode === 'deepgram-di') startSpeakerCooldown();
+    if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
 
   // AudioContext must be pre-unlocked by a user gesture.
-  if (!audioCtx || audioCtx.state === 'closed') {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
+  // On iOS Safari, contexts created outside a gesture start suspended.
+  // initAudioCtx() handles creation + resume + statechange listener.
+  initAudioCtx();
 
   _ttsWasKbd = wasKbd;
   if (isLast) _ttsDone = true;
@@ -3477,7 +3669,7 @@ function waitForDrainThenListen(wasKbd) {
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
     // In speaker/diarize mode, also wait for the STT cooldown to expire (prevents echo pickup).
-    const cooldownMs = (micMode === 'speaker' || micMode === 'deepgram-di')
+    const cooldownMs = (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai')
       ? Math.max(0, _sttCooldownUntil - Date.now())
       : 0;
     const delayMs = Math.max(audioEndMs + 400, cooldownMs);
@@ -3503,7 +3695,7 @@ function waitForDrainThenListen(wasKbd) {
     // Voice mode: restart mic
     setTimeout(() => {
       if (!isStreaming && !isListening) {
-        sttProviders[STT_PROVIDER]?.start();
+        getActiveProvider()?.start();
       }
     }, 400);
   }
@@ -3516,11 +3708,13 @@ let isListening = false;
 
 function onSttStart() {
   isListening = true;
+  _sttRestartAttempted = false;  // successful start — reset restart guard
   micBtn.classList.add('listening');
   micIcon.textContent = '●';   // listening indicator; mode label restored on stop
   voicePreview.textContent = '…';
   setStatus('LISTENING', true);
 }
+
 
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
@@ -3588,8 +3782,14 @@ function startSpeakerCooldown() {
 function onSttFinal(text) {
   const query = text.trim();
   if (!query) return;
+  const wordCount = query.split(/\s+/).length;
+  // Global minimum word filter — catches ambient noise across all mic modes
+  if (wordCount < STT_MIN_WORDS) {
+    console.log('[STT] noise skip (< ' + STT_MIN_WORDS + ' words):', query);
+    return;
+  }
   // Barge mode: require minimum word count to filter crowd/ambient noise
-  if (micMode === 'barge' && query.split(/\s+/).length < STT_BARGE_MIN_WORDS) {
+  if (micMode === 'barge' && wordCount < STT_BARGE_MIN_WORDS) {
     console.log('[STT] barge skip (too few words):', query);
     return;
   }
@@ -3600,7 +3800,7 @@ function onSttFinal(text) {
   // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
   if (isStreaming && !claudeMode && !(micMode === 'barge' && isSpeaking)) return;
   // In speaker/diarize mode: suppress while TTS is playing or during post-TTS cooldown.
-  if (micMode === 'speaker' || micMode === 'deepgram-di') {
+  if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') {
     if (isSpeaking) return;
     // Also suppress during cooldown unconditionally — catches Deepgram finals that
     // arrive after isSpeaking clears but were captured while audio was still playing.
@@ -3615,6 +3815,9 @@ function onSttFinal(text) {
 }
 
 function onSttStop() {
+  // If voiceMode is still true, micMode is active, AND we're currently listening
+  // (meaning a new provider already started), this is a stale stop — skip entirely.
+  if (voiceMode && micMode !== 'off' && isListening) return;
   isListening = false;
   micBtn.classList.remove('listening');
   micIcon.textContent = MIC_MODE_LABELS[micMode];  // restore current mode label
@@ -3950,7 +4153,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
       }
 
       function flushDiWords() {
-        if (!_speakerWords.length) return;
+        if (!active || !_speakerWords.length) return;
         const transcript = _buildTranscript(_speakerWords);
         _speakerWords = [];
         onSttPartial(transcript.split('\n').pop() || '');
@@ -3972,6 +4175,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
       }
 
       dgWs.onmessage = (e) => {
+        if (!active) return;  // discard in-flight data after stop
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
         const alt = (msg.channel && msg.channel.alternatives && msg.channel.alternatives[0]) || null;
@@ -4026,8 +4230,410 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
   return { start: startDgDi, stop: stopDgDi };
 })();
 
+// ── Provider: xAI Realtime (STT + prosody/emotion tagging) ──
+// Uses the xAI Grok Voice Agent API (OpenAI Realtime API compatible)
+// as an STT provider. Streams mic audio via WebSocket, receives transcript
+// plus emotion metadata inferred from voice prosody.
+const _xaiStt = (() => {
+  let ws         = null;
+  let audioCtxX  = null;
+  let workletNode = null;
+  let mediaStream = null;
+  let active      = false;
+  let _responseText = '';
+  let _tokenCache = null;
+  let _submittedThisTurn = false;
+  let _directTranscript = '';  // stashed transcription for fallback
+  let _fallbackTimer = null;   // submit after timeout if response.done is slow
+
+  // Store last emotion metadata for claudeSubmit to pick up
+  window._xaiSttEmotion = null;
+
+  const WORKLET_CODE_XAI = `
+class PcmCaptureXai extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
+
+  async function getToken() {
+    // Always fetch a fresh token — ephemeral tokens expire quickly
+    _tokenCache = null;
+    try {
+      console.log('[xAI STT] fetching fresh voice token...');
+      const r = await fetch('/api/voice-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ expires_in: 120 }),
+      });
+      console.log('[xAI STT] token response status:', r.status);
+      if (r.ok) {
+        const j = await r.json();
+        console.log('[xAI STT] token response keys:', Object.keys(j));
+        _tokenCache = j.client_secret?.value || j.value || j.token;
+      } else {
+        const errText = await r.text();
+        console.error('[xAI STT] token fetch failed:', r.status, errText);
+      }
+    } catch (e) { console.error('[xAI STT] token fetch error:', e); }
+    return _tokenCache || null;
+  }
+
+  const XAI_TARGET_RATE = 24000;
+
+  // Downsample Float32 from srcRate to dstRate (simple linear interpolation)
+  function downsample(f32, srcRate, dstRate) {
+    if (srcRate === dstRate) return f32;
+    const ratio = srcRate / dstRate;
+    const outLen = Math.round(f32.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const srcIdx = i * ratio;
+      const lo = Math.floor(srcIdx);
+      const hi = Math.min(lo + 1, f32.length - 1);
+      const frac = srcIdx - lo;
+      out[i] = f32[lo] * (1 - frac) + f32[hi] * frac;
+    }
+    return out;
+  }
+
+  // Convert Float32 PCM to base64 PCM16-LE for xAI (with downsampling)
+  function f32ToBase64Pcm16(f32, srcRate) {
+    const resampled = downsample(f32, srcRate, XAI_TARGET_RATE);
+    const i16 = new Int16Array(resampled.length);
+    for (let i = 0; i < resampled.length; i++)
+      i16[i] = Math.max(-32768, Math.min(32767, resampled[i] * 32768));
+    const bytes = new Uint8Array(i16.buffer);
+    let b64 = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK)
+      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    return btoa(b64);
+  }
+
+  let _sessionReady = false;  // gate audio sending until session.updated received
+  let _startedAt = 0;         // timestamp for auto-retry on quick WS close
+  let _retryCount = 0;
+
+  let _isRetry = false;
+
+  async function startXai() {
+    console.log('[xAI STT] startXai() called, retry:', _isRetry);
+    active = true;
+    _sessionReady = false;
+    if (!_isRetry) onSttStart();  // only set visual on first attempt
+    _isRetry = false;
+    window._xaiSttEmotion = null;
+
+    try {
+      // Create AudioContext + get mic FIRST (synchronously from user gesture)
+      // before any async work that would exhaust the gesture on iOS Safari.
+      // On retry, reuse existing if still valid.
+      if (!audioCtxX || audioCtxX.state === 'closed') {
+        audioCtxX = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtxX.state === 'suspended') {
+        audioCtxX.resume().catch(() => {});
+      }
+      if (!mediaStream || !mediaStream.active) {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
+            video: false,
+          });
+        } catch (e) {
+          flashError('mic denied: ' + e.message.slice(0, 30));
+          active = false; onSttStop(); return;
+        }
+      }
+
+      const token = await getToken();
+      console.log('[xAI STT] got token:', token ? 'yes (' + token.slice(0, 10) + '...)' : 'NO');
+      if (!token) { flashError('xAI voice token failed'); active = false; onSttStop(); return; }
+
+      // Open WebSocket to xAI realtime API
+      _startedAt = Date.now();
+      console.log('[xAI STT] opening WebSocket to wss://api.x.ai/v1/realtime');
+      ws = new WebSocket('wss://api.x.ai/v1/realtime',
+                         [`xai-client-secret.${token}`]);
+
+      // Connection timeout — if WS doesn't open in 10s, fail visibly
+      const wsTimeout = setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.CONNECTING) {
+          console.error('[xAI STT] WebSocket connection timeout');
+          flashError('xAI STT: connection timeout');
+          stopXai();
+        }
+      }, 10000);
+
+      ws.onopen = async () => {
+        clearTimeout(wsTimeout);
+        console.log('[xAI STT] WebSocket connected, mic rate:', audioCtxX.sampleRate, '→ target:', XAI_TARGET_RATE, ', sending session.update');
+        // Configure session: text-only response, server VAD, transcription + emotion
+        ws.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            modalities: ['text'],
+            instructions: 'You are a speech transcription and emotion analysis system. ' +
+              'Listen to the user\'s speech and output ONLY a valid JSON object with these fields: ' +
+              '{"transcript": "exact words the user spoke", "emotion": "primary emotion detected from voice tone/prosody", ' +
+              '"confidence": 0.0-1.0, "prosody": "brief description of vocal qualities like pace, pitch, energy"}. ' +
+              'If you cannot detect any clear emotion, use "neutral" with confidence 0.5. ' +
+              'Do not add any text outside the JSON object. Do not paraphrase the transcript.',
+            input_audio_format: 'pcm16',
+            input_audio_sample_rate: XAI_TARGET_RATE,
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              silence_duration_ms: 800,
+            },
+          },
+        }));
+        // NOTE: mic capture setup happens AFTER session.updated is received (see onmessage handler)
+        // to avoid the race condition where audio is sent before the server is configured
+      };
+
+      // ScriptProcessor fallback for browsers without AudioWorklet (e.g. older iOS Safari)
+      function _setupScriptProcessor(source) {
+        const spn = audioCtxX.createScriptProcessor(4096, 1, 1);
+        spn.onaudioprocess = (ev) => sendAudio(ev.inputBuffer.getChannelData(0));
+        source.connect(spn);
+        spn.connect(audioCtxX.destination);
+        workletNode = spn;
+        console.log('[xAI STT] mic capture via ScriptProcessor fallback');
+      }
+
+      // Buffer and send audio chunks (~80ms like Deepgram)
+      let _pcmBuf = [];
+      let _pcmBufLen = 0;
+      function sendAudio(f32) {
+        if (!_sessionReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+        // Speaker/xai mode: suppress mic while TTS plays
+        if ((micMode === 'speaker' || micMode === 'xai') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+          _pcmBuf = []; _pcmBufLen = 0;
+          return;
+        }
+        _pcmBuf.push(f32);
+        _pcmBufLen += f32.length;
+        const targetSamples = Math.round((audioCtxX.sampleRate || 48000) * 0.08);
+        if (_pcmBufLen < targetSamples) return;
+        const merged = new Float32Array(_pcmBufLen);
+        let offset = 0;
+        for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
+        _pcmBuf = []; _pcmBufLen = 0;
+        // Noise gate
+        if (STT_NOISE_GATE > 0) {
+          let sumSq = 0;
+          for (let i = 0; i < merged.length; i++) sumSq += merged[i] * merged[i];
+          if (Math.sqrt(sumSq / merged.length) < STT_NOISE_GATE) return;
+        }
+        ws.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: f32ToBase64Pcm16(merged, audioCtxX.sampleRate),
+        }));
+      }
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch (_) { return; }
+        console.log('[xAI STT] msg:', msg.type, msg.type === 'error' ? msg.error : '');
+        switch (msg.type) {
+          case 'session.updated':
+            if (!_sessionReady) {
+              _sessionReady = true;
+              _retryCount = 0;  // successful session — reset retry counter
+              console.log('[xAI STT] session configured, starting mic capture');
+              // NOW set up mic capture — server is ready to receive audio
+              const source = audioCtxX.createMediaStreamSource(mediaStream);
+              let usedWorklet = false;
+              try {
+                const blob    = new Blob([WORKLET_CODE_XAI], { type: 'application/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+                audioCtxX.audioWorklet.addModule(blobUrl).then(() => {
+                  URL.revokeObjectURL(blobUrl);
+                  workletNode = new AudioWorkletNode(audioCtxX, 'pcm-capture-xai');
+                  workletNode.port.onmessage = (e) => sendAudio(new Float32Array(e.data));
+                  source.connect(workletNode);
+                  console.log('[xAI STT] mic capture via AudioWorklet');
+                }).catch(() => {
+                  _setupScriptProcessor(source);
+                });
+                usedWorklet = true;  // attempted worklet path
+              } catch (_) {}
+              if (!usedWorklet) {
+                _setupScriptProcessor(source);
+              }
+              if (audioCtxX && audioCtxX.state === 'suspended') {
+                audioCtxX.resume().catch(() => {});
+              }
+            }
+            break;
+          case 'input_audio_buffer.speech_started':
+            onSttPartial('');
+            _responseText = '';
+            _submittedThisTurn = false;
+            _directTranscript = '';
+            if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
+            break;
+          case 'input_audio_buffer.speech_stopped':
+            // VAD detected end of speech — server will auto-commit and respond
+            break;
+          case 'conversation.item.input_audio_transcription.completed': {
+            // Direct transcription — use for preview only; wait for response.done
+            // which carries both transcript and emotion metadata
+            const directTranscript = (msg.transcript || '').trim();
+            console.log('[xAI STT] direct transcription (preview):', directTranscript);
+            if (directTranscript) {
+              _directTranscript = directTranscript;  // stash for model response handler
+              onSttPartial(directTranscript);
+              // No fallback timer — wait for response.done which carries emotion.
+              // If response.done never arrives (15s timeout), fallback submits.
+              if (_fallbackTimer) clearTimeout(_fallbackTimer);
+              _fallbackTimer = setTimeout(() => {
+                if (!_submittedThisTurn && _directTranscript) {
+                  console.log('[xAI STT] fallback submit (response.done timeout)');
+                  _submittedThisTurn = true;
+                  onSttFinal(_directTranscript);
+                  _directTranscript = '';
+                }
+              }, 15000);
+            }
+            break;
+          }
+          case 'response.text.delta':
+          case 'response.output_audio_transcript.delta':
+            if (msg.delta) {
+              _responseText += msg.delta;
+              // Show partial text as it streams
+              const partial = _responseText.trim();
+              try {
+                const m = partial.match(/"transcript"\s*:\s*"([^"]+)"/);
+                if (m && m[1]) onSttPartial(m[1]);
+              } catch (_) {}
+            }
+            break;
+          case 'response.text.done':
+          case 'response.output_audio_transcript.done':
+          case 'response.done': {
+            // Model response — may contain emotion JSON (even if transcript already submitted)
+            const raw = _responseText.trim();
+            _responseText = '';
+            if (!raw) break;
+            console.log('[xAI STT] model response:', raw.slice(0, 300));
+            try {
+              // Try strict JSON first, then regex fallback for unquoted values
+              let parsed = null;
+              const jsonMatch = raw.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                try { parsed = JSON.parse(jsonMatch[0]); } catch (_) {}
+                if (!parsed) {
+                  // Regex fallback: extract fields from loose/unquoted JSON
+                  parsed = {};
+                  const em = raw.match(/emotion\s*:\s*([^,}]+)/);
+                  const co = raw.match(/confidence\s*:\s*([\d.]+)/);
+                  const pr = raw.match(/prosody\s*:\s*(.+?)(?:\s*}\s*$)/);
+                  const tr = raw.match(/transcript\s*:\s*([^,}]+?)(?:\s*,\s*emotion|\s*})/);
+                  if (em) parsed.emotion = em[1].trim().replace(/^["']|["']$/g, '');
+                  if (co) parsed.confidence = parseFloat(co[1]);
+                  if (pr) parsed.prosody = pr[1].trim().replace(/^["']|["']$/g, '');
+                  if (tr) parsed.transcript = tr[1].trim().replace(/^["']|["']$/g, '');
+                  console.log('[xAI STT] parsed via regex fallback:', parsed);
+                }
+              }
+              if (parsed) {
+                // Cancel fallback timer — we have the full response now
+                if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
+                // Always extract emotion metadata from model response
+                if (parsed.emotion) {
+                  window._xaiSttEmotion = {
+                    emotion: parsed.emotion,
+                    confidence: parsed.confidence || 0.5,
+                    prosody: parsed.prosody || '',
+                  };
+                  console.log('[xAI STT] emotion:', window._xaiSttEmotion);
+                }
+                // Use model transcript, or fall back to direct transcription
+                const transcript = (parsed.transcript || _directTranscript || '').trim();
+                _directTranscript = '';
+                if (transcript && !_submittedThisTurn) {
+                  _submittedThisTurn = true;
+                  onSttPartial(transcript);
+                  onSttFinal(transcript);
+                }
+              } else if (!_submittedThisTurn) {
+                // No JSON — use raw text as transcript
+                _submittedThisTurn = true;
+                onSttPartial(raw);
+                onSttFinal(raw);
+              }
+            } catch (_) {
+              if (!_submittedThisTurn) {
+                _submittedThisTurn = true;
+                onSttPartial(raw);
+                onSttFinal(raw);
+              }
+            }
+            break;
+          }
+          case 'error':
+            console.error('[xAI STT] error:', msg.error);
+            flashError('xAI STT: ' + (msg.error?.message || 'error').slice(0, 40));
+            break;
+        }
+      };
+
+      ws.onerror = (e) => { console.error('[xAI STT] WS error:', e); };
+      ws.onclose = (evt) => {
+        console.log('[xAI STT] WS closed, code:', evt.code, 'reason:', evt.reason,
+          'uptime:', Date.now() - _startedAt, 'ms, retries:', _retryCount);
+        if (!active) return;
+        // Auto-retry up to 3 times if WS closed within 5s (iOS Safari first-load issue)
+        if (Date.now() - _startedAt < 5000 && _retryCount < 3) {
+          _retryCount++;
+          console.log('[xAI STT] quick close — auto-retrying (' + _retryCount + '/3)');
+          // Clean up WS + worklet only — preserve AudioContext + mediaStream for retry
+          if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+          ws = null;
+          _sessionReady = false;
+          _tokenCache = null;  // force fresh token on retry
+          _isRetry = true;
+          // Brief delay so old WS fully tears down before new one opens
+          setTimeout(() => { if (active) startXai(); }, 500 * _retryCount);  // 500ms, 1s, 1.5s
+          return;
+        }
+        active = false;
+        _retryCount = 0;
+        stopXai();
+      };
+    } catch (err) {
+      console.error('[xAI STT] catch:', err);
+      flashError('xAI STT: ' + String(err).slice(0, 40));
+      active = false;
+      onSttStop();
+    }
+  }
+
+  function stopXai() {
+    active = false;
+    if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxX)   { try { audioCtxX.close(); } catch (_) {} audioCtxX = null; }
+    if (ws) {
+      try { ws.close(); } catch (_) {}
+      ws = null;
+    }
+    _tokenCache = null;
+    onSttStop();
+  }
+
+  return { start: startXai, stop: stopXai };
+})();
+
 // ── STT provider map & mic button wiring ─────────────────────
-const sttProviders = { webspeech: _ws, deepgram: _dg, 'deepgram-di': _dgDi };
+const sttProviders = { webspeech: _ws, deepgram: _dg, 'deepgram-di': _dgDi, xai: _xaiStt };
 
 // STT provider toggle button (reuse same pattern as TTS)
 const sttProviderBtn = document.getElementById('stt-provider-btn');
@@ -4045,9 +4651,10 @@ const sttProviderBtn = document.getElementById('stt-provider-btn');
   });
 })();
 
-// Returns the active STT provider: deepgram-di mode always uses _dgDi
+// Returns the active STT provider: deepgram-di and xai modes force their provider
 function getActiveProvider() {
   if (micMode === 'deepgram-di') return _dgDi;
+  if (micMode === 'xai') return _xaiStt;
   return sttProviders[STT_PROVIDER];
 }
 
@@ -4062,15 +4669,17 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     resetIdleTimer();
     initAudioCtx();  // re-unlock AudioContext after iOS audio interruption
 
-    // If already in an active mode but STT dropped (e.g. iOS notification interruption,
-    // or tapped while audio was playing), restart STT without cycling mode.
-    if (micMode !== 'off' && !isListening && !isStreaming) {
+    // If already in an active mode and currently listening, tap means cycle.
+    // If STT dropped (iOS notification, WS close), try ONE restart before cycling.
+    if (micMode !== 'off' && !isListening && !isStreaming && !_sttRestartAttempted) {
+      _sttRestartAttempted = true;  // prevent repeated restart attempts
       const provider = getActiveProvider();
       if (!provider) { flashError('STT provider unavailable'); return; }
       voiceMode = true;
       provider.start();
       return;
     }
+    _sttRestartAttempted = false;  // reset on cycle
 
     // Otherwise cycle: off → barge → speaker → deepgram-di → off
     // Don't cycle while actively streaming LLM response (isStreaming).
@@ -4087,8 +4696,8 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
       if (!provider) { flashError('STT provider unavailable'); return; }
       // If the provider changed (e.g. speaker→deepgram-di), stop old and start new.
       if (prevProvider && prevProvider !== provider && isListening) {
-        prevProvider.stop();   // onSttStop() will set isListening=false
-        provider.start();
+        prevProvider.stop();   // onSttStop() sets isListening=false
+        provider.start();      // onSttStart() will restore listening visual
       } else if (!isListening) {
         provider.start();
       }

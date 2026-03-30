@@ -23,6 +23,7 @@ import httpx
 import websockets as ws_lib
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import asyncio
@@ -40,6 +41,15 @@ SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 
 app = FastAPI(title="Samaritan Interface")
+
+# CORS — needed for Pinggy tunnel (Safari sends preflight OPTIONS for POST+JSON)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r".*",  # echo any origin (allow_origins=["*"] + credentials is invalid per spec)
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 
 # Per-client SSE stream cancellation: when a new stream opens for a client_id,
 # the old one is signalled to exit so they don't compete on the same llmem-gw queue.
@@ -706,6 +716,44 @@ async def claude_relay_status(request: Request):
         params = dict(request.query_params)
         async with httpx.AsyncClient(timeout=5) as http:
             resp = await http.get(f"{MCP_DIRECT_URL}/voice_relay/status", params=params)
+            return JSONResponse(resp.json())
+    except Exception:
+        return JSONResponse({"enabled": False, "error": "MCP Direct unreachable"})
+
+
+# ── RC-style tmux dispatch (replaces voice relay for Claude mode) ─────────
+
+@app.post("/api/claude/submit")
+async def claude_dispatch_submit(request: Request):
+    """Submit message to Claude Code via tmux dispatch."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=10) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/claude/submit", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.get("/api/claude/poll")
+async def claude_dispatch_poll(request: Request):
+    """Poll for Claude Code response from tmux dispatch."""
+    if not _check_auth(request):
+        return _auth_error()
+    params = dict(request.query_params)
+    async with httpx.AsyncClient(timeout=35) as http:
+        resp = await http.get(f"{MCP_DIRECT_URL}/claude/poll", params=params)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.get("/api/claude/status")
+async def claude_dispatch_status(request: Request):
+    """Check Claude Code tmux session health."""
+    if not _check_auth(request):
+        return _auth_error()
+    try:
+        params = dict(request.query_params)
+        async with httpx.AsyncClient(timeout=5) as http:
+            resp = await http.get(f"{MCP_DIRECT_URL}/claude/status", params=params)
             return JSONResponse(resp.json())
     except Exception:
         return JSONResponse({"enabled": False, "error": "MCP Direct unreachable"})

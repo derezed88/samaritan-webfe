@@ -707,14 +707,14 @@ const ttsBtn        = document.getElementById('tts-btn');
 const modelSelect   = document.getElementById('model-select');
 const statusText    = document.getElementById('status-text');
 
-// ── Claude relay mode ─────────────────────────────────────────
-// Activated via ?claude URL param. Routes all input through MCP Direct
-// voice relay to Claude Code instead of the llmem-gw LLM pipeline.
-const CLAUDE_RELAY_URL = '/api/claude-relay';
+// ── Claude dispatch mode ──────────────────────────────────────
+// All input routes through rc-style tmux dispatch to Claude Code.
+// No voice relay polling loop — messages sent via tmux send-keys.
+const CLAUDE_DISPATCH_URL = '/api/claude';
 let claudeMode = true;  // chat-ged always routes through Claude Code
 let claudeChannel = 'default';  // set when subject is selected
 
-// Map GED model keys to relay channel names
+// Map GED model keys to dispatch channel names
 const _CLAUDE_CHANNEL_MAP = {
   'ged-math':        'ged-math',
   'ged-rla-reading': 'ged-reading',
@@ -733,10 +733,10 @@ async function claudeSubmit(text) {
   isStreaming = true;
   sendBtn.disabled = true;
 
-  // Auto-start workspace if relay isn't running
+  // Auto-start workspace if Claude isn't running
   try {
     const statusResp = await fetch(
-      CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
+      CLAUDE_DISPATCH_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
       { headers: authHeaders() }
     );
     const statusData = await statusResp.json();
@@ -775,7 +775,7 @@ async function claudeSubmit(text) {
           await new Promise(r => setTimeout(r, 2000));
           try {
             const recheck = await fetch(
-              CLAUDE_RELAY_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
+              CLAUDE_DISPATCH_URL + '/status?channel=' + encodeURIComponent(claudeChannel),
               { headers: authHeaders() }
             );
             const recheckData = await recheck.json();
@@ -798,7 +798,7 @@ async function claudeSubmit(text) {
       }
     }
   } catch (e) {
-    // Status check failed — proceed anyway, submit will fail with 503 if relay is down
+    // Status check failed — proceed anyway, submit will fail with 503 if dispatch is down
   }
 
   setStatus('Claude thinking…');
@@ -811,38 +811,35 @@ async function claudeSubmit(text) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         if (attempt > 0) await new Promise(r => setTimeout(r, 1000));
-        submitResp = await fetch(CLAUDE_RELAY_URL + '/submit', {
+        submitResp = await fetch(CLAUDE_DISPATCH_URL + '/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ text, source: 'chat-ged', channel: claudeChannel }),
         });
         if (submitResp.ok) break;
       } catch (e) {
-        if (attempt === 2) throw new Error('Relay submit failed after 3 retries');
+        if (attempt === 2) throw new Error('Dispatch submit failed after 3 retries');
       }
     }
-    if (!submitResp?.ok) throw new Error('Relay submit failed: ' + submitResp?.status);
-    const submitData = await submitResp.json();
-    const myMsgId = submitData.message_id;
+    if (!submitResp?.ok) throw new Error('Dispatch submit failed: ' + submitResp?.status);
 
     setStatus('Claude responding…');
     let response = null;
     const deadline = Date.now() + 90000;
     while (!response && Date.now() < deadline) {
-      const pollResp = await fetch(
-        CLAUDE_RELAY_URL + '/poll?wait=10&channel=' + encodeURIComponent(claudeChannel),
-        { headers: authHeaders() }
-      );
-      const pollData = await pollResp.json();
-      if (pollData.status === 'ok') {
-        // Only accept the response matching our message ID — discard stale ones
-        if (pollData.message_id === myMsgId) {
+      try {
+        const pollResp = await fetch(
+          CLAUDE_DISPATCH_URL + '/poll?wait=10&channel=' + encodeURIComponent(claudeChannel),
+          { headers: authHeaders() }
+        );
+        const pollData = await pollResp.json();
+        if (pollData.status === 'ok') {
           response = pollData;
           break;
         }
-        // Stale response from a prior question — discard and keep polling
-        console.log('[claude-relay] discarded stale response for msg', pollData.message_id);
-        continue;
+      } catch (pollErr) {
+        // Network error (Pinggy drop) — retry
+        console.warn('[dispatch] poll error, retrying:', pollErr.message);
       }
     }
 
@@ -860,7 +857,7 @@ async function claudeSubmit(text) {
       asst.innerHTML = '<em>Claude did not respond in time.</em>';
     }
   } catch (e) {
-    asst.innerHTML = '<em>Claude relay error: ' + e.message + '</em>';
+    asst.innerHTML = '<em>Claude error: ' + e.message + '</em>';
   } finally {
     isStreaming = false;
     sendBtn.disabled = false;
