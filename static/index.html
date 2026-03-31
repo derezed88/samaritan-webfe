@@ -1903,6 +1903,11 @@ let _claudePollTimer = null;
 const CLAUDE_RELAY_URL = '/api/claude-relay';  // legacy relay (kept for backward compat)
 const CLAUDE_DISPATCH_URL = '/api/claude';    // rc-style tmux dispatch
 
+// ── Location state ───────────────────────────────────────────
+let locationEnabled = false;
+let _geoWatchId     = null;
+let _lastPosition   = null;
+
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
 let isSpeaking     = false;
@@ -1930,6 +1935,51 @@ function flashCmd(msg) {
   errorFlash.textContent = '[ ' + msg.toUpperCase() + ' ]';
   errorFlash.classList.add('show');
   setTimeout(() => errorFlash.classList.remove('show'), 3000);
+}
+
+// ── Location helpers ─────────────────────────────────────────
+function _locationData() {
+  if (!locationEnabled || !_lastPosition) return null;
+  const { latitude, longitude, accuracy } = _lastPosition.coords;
+  return {
+    latitude:   parseFloat(latitude.toFixed(4)),
+    longitude:  parseFloat(longitude.toFixed(4)),
+    accuracy_m: Math.round(accuracy),
+  };
+}
+
+function cmdLocation(arg) {
+  if (!arg) {
+    const state = locationEnabled ? 'ON' : 'OFF';
+    const coords = _lastPosition
+      ? `${_lastPosition.coords.latitude.toFixed(4)},${_lastPosition.coords.longitude.toFixed(4)}`
+      : 'no fix';
+    flashCmd(`location: ${state} — ${coords}`);
+    return;
+  }
+  if (arg === 'on') {
+    if (!navigator.geolocation) { flashError('geolocation not supported'); return; }
+    locationEnabled = true;
+    _geoWatchId = navigator.geolocation.watchPosition(
+      pos => { _lastPosition = pos; },
+      err => {
+        console.warn('[location] error:', err.message);
+        locationEnabled = false;
+        _lastPosition = null;
+        if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
+        flashError('location error: ' + err.message);
+      },
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+    );
+    flashCmd('location ON — awaiting GPS fix');
+  } else if (arg === 'off') {
+    locationEnabled = false;
+    if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
+    _lastPosition = null;
+    flashCmd('location OFF');
+  } else {
+    flashError('usage: #location <on|off>');
+  }
 }
 
 // ── SMS notification poller (only when macOS proxy is connected) ──
@@ -2015,6 +2065,7 @@ function handleCommand(raw) {
       INWORLD_VOICE = args[0];
       flashCmd('Inworld voice set to: ' + INWORLD_VOICE);
       break;
+    case '#location': cmdLocation(args[0]); break;
     default: flashError('unknown command: ' + cmd);
   }
 }
@@ -2230,14 +2281,19 @@ async function claudeSubmit(text) {
   setStatus('CLAUDE THINKING', true);
 
   try {
-    // 1. Submit to Claude via tmux dispatch (include emotion metadata)
-    const submitBody = { text, source: 'voice' };
+    // 1. Submit to Claude via tmux dispatch (include emotion + location metadata)
+    const submitBody = { text: text, source: 'voice' };
     if (window._xaiSttEmotion) {
       submitBody.emotion = window._xaiSttEmotion;
       window._xaiSttEmotion = null;  // consume once
       console.log('[claudeSubmit] emotion attached:', submitBody.emotion);
     } else {
       console.log('[claudeSubmit] no emotion metadata available');
+    }
+    const _loc = _locationData();
+    if (_loc) {
+      submitBody.location = _loc;
+      console.log('[claudeSubmit] location attached:', submitBody.location);
     }
     console.log('[claudeSubmit] body:', JSON.stringify(submitBody).slice(0, 300));
     let submitResp;
@@ -3470,7 +3526,7 @@ async function submit(textOverride) {
         submitResp = await fetch('/api/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ text, client_id: SESSION_ID }),
+          body: JSON.stringify({ text: text, client_id: SESSION_ID, location: _locationData() }),
         });
         if (submitResp.ok) break;
       } catch (_) { if (attempt === 2) throw new Error('Submit failed after retries'); }
@@ -4718,6 +4774,11 @@ showLoader(false);
 setStatus('STANDBY', false);
 resetIdleTimer();   // start idle countdown immediately on page load
 // Do NOT focus the text input on load — prevents iOS keyboard from popping up
+
+// Auto-enable GPS on iPhone Safari — battery-cheap, always-useful context
+if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
+  cmdLocation('on');
+}
 </script>
 
 <script>
@@ -4751,6 +4812,10 @@ resetIdleTimer();   // start idle countdown immediately on page load
         if (saved.claudeMode) {
           enterClaudeMode();
         }
+        // Restore location watch
+        if (saved.locationEnabled) {
+          cmdLocation('on');
+        }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
@@ -4777,6 +4842,7 @@ resetIdleTimer();   // start idle countdown immediately on page load
       ttsProvider: TTS_PROVIDER,
       fullVoiceMode,
       claudeMode,
+      locationEnabled,
     }));
     location.reload();
   });
@@ -5245,7 +5311,7 @@ async function cognChatSubmit(text) {
         submitResp = await fetch('/api/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ text, client_id: SESSION_ID }),
+          body: JSON.stringify({ text: text, client_id: SESSION_ID, location: _locationData() }),
         });
         if (submitResp.ok) break;
       } catch (_) { if (attempt === 2) throw new Error('Submit failed after retries'); }

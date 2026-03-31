@@ -247,6 +247,8 @@ async def submit(request: Request):
 
     wait = body.get("wait", False)
     payload = {"client_id": client_id, "text": text}
+    if body.get("location"):
+        payload["location"] = body["location"]
     if wait:
         payload["wait"] = True
 
