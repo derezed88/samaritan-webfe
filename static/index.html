@@ -818,6 +818,12 @@
     #mic-btn.barge       { border-color: var(--red); color: var(--red); }
     #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
     #mic-btn.xai         { border-color: #10b981;    color: #10b981; }
+    #mic-btn.xai-b       { border-color: #f97316;  color: #f97316;
+                           animation: xai-b-pulse 1.2s ease-in-out infinite alternate; }
+    @keyframes xai-b-pulse {
+      from { border-color: #f97316; color: #f97316; box-shadow: 0 0 4px #f97316; }
+      to   { border-color: #10b981; color: #10b981; box-shadow: 0 0 14px rgba(16,185,129,0.4); }
+    }
     #mic-btn.deepgram-di { border-color: #3b82f6;    color: #3b82f6;
                            animation: dg-di-pulse 1s ease-in-out infinite alternate; }
     @keyframes dg-di-pulse {
@@ -1511,6 +1517,94 @@
       #cogn-card-stack, #cogn-data-stack, #cogn-mem-panel, #cogn-tools-col { display: none; }
     }
 
+    /* ─── Camera controls ─── */
+    #cam-controls {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      position: absolute;
+      right: 100px;   /* between title and clock */
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .cam-btn {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.4);
+      cursor: pointer;
+      padding: 2px 6px;
+      font-family: var(--font);
+      font-size: 9px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      height: 22px;
+      transition: all 200ms;
+    }
+    .cam-btn:hover { border-color: rgba(255,255,255,0.5); color: var(--bar-text); }
+
+    #cam-toggle-btn.rear  { border-color: #10b981; color: #10b981; }
+    #cam-toggle-btn.front { border-color: #3b82f6; color: #3b82f6; }
+
+    #cam-capture-btn.has-photo { border-color: #10b981; color: #10b981; }
+
+    #auto-cap-btn.active {
+      border-color: #f0a500; color: #f0a500;
+      animation: auto-cap-pulse 2s ease-in-out infinite alternate;
+    }
+    @keyframes auto-cap-pulse {
+      from { box-shadow: 0 0 2px #f0a500; }
+      to   { box-shadow: 0 0 10px rgba(240,165,0,0.5); }
+    }
+
+    /* Photo analysis mode button */
+    #photo-mode-btn.mode-scene    { border-color: #10b981; color: #10b981; }
+    #photo-mode-btn.mode-ocr      { border-color: #3b82f6; color: #3b82f6; }
+    #photo-mode-btn.mode-reason   { border-color: #a855f7; color: #a855f7; }
+
+    /* Camera viewfinder overlay */
+    #camera-viewfinder {
+      display: none;
+      position: absolute;
+      top: 30px;
+      bottom: 100px;
+      left: 0; right: 0;
+      z-index: 8;
+      background: #000;
+    }
+    #camera-viewfinder.active { display: block; }
+    #camera-viewfinder video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Capture flash */
+    #capture-flash {
+      position: absolute;
+      inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 9;
+      transition: opacity 80ms;
+    }
+    #capture-flash.flash { opacity: 0.6; }
+
+    /* Photo attached indicator */
+    #capture-indicator {
+      position: absolute;
+      top: 34px;
+      right: 10px;
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: #10b981;
+      text-transform: uppercase;
+      z-index: 11;
+      display: none;
+    }
+    #capture-indicator.active { display: block; }
+
     /* ─── Narrow phone screens (≤ 480px) ─── */
     @media (max-width: 480px) {
       #stt-provider-btn { display: none; }
@@ -1520,6 +1614,8 @@
       .sidebar { display: none; }
       /* Shrink voice preview text */
       #voice-preview { font-size: 9px; letter-spacing: 1px; }
+      /* Camera controls adapt */
+      #cam-controls { right: 70px; }
     }
   </style>
 </head>
@@ -1556,6 +1652,12 @@
         <span id="status-text">STANDBY</span>
       </div>
       <span>SAMARITAN // INTERFACE v2.0</span>
+      <div id="cam-controls">
+        <button id="photo-mode-btn" class="cam-btn mode-scene" title="Photo mode: Scene → OCR → Reason">S</button>
+        <button id="cam-toggle-btn" class="cam-btn" title="Camera: off → rear → front → off">CAM</button>
+        <button id="cam-capture-btn" class="cam-btn" title="Capture frame">SNAP</button>
+        <button id="auto-cap-btn" class="cam-btn" title="Auto-capture every 8s">AUTO</button>
+      </div>
       <span id="clock"></span>
     </div>
 
@@ -1570,6 +1672,14 @@
 
     <!-- Long response terminal (covers full center area) -->
     <div id="terminal-panel"><span id="terminal-text"></span><span id="terminal-cursor"></span></div>
+
+    <!-- Camera viewfinder overlay -->
+    <div id="camera-viewfinder">
+      <video id="cam-video" autoplay playsinline muted></video>
+      <div id="capture-flash"></div>
+    </div>
+    <div id="capture-indicator">PHOTO ATTACHED</div>
+    <canvas id="cam-canvas" style="display:none"></canvas>
 
     <!-- Short/streaming response text — top-left, scrollable -->
     <div id="response-panel"></div>
@@ -1757,20 +1867,22 @@ let voiceMode    = false;  // true only when user explicitly enabled mic
 let _micStateBeforeKbd = null;  // saved mic state when keyboard opens
 let fullVoiceMode = false; // true when xAI TTS is active
 
-// ── Mic mode: 'off' | 'barge' | 'speaker' | 'deepgram-di' ───────────────────
+// ── Mic mode: 'off' | 'barge' | 'speaker' | 'deepgram-di' | 'xai' | 'xai-b' ─
 // off         — mic disabled in full-voice mode
 // barge       — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
 // speaker     — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
 // deepgram-di — Deepgram nova-3 + speaker diarization; labels each speaker turn
+// xai         — xAI realtime STT with emotion/prosody; no barge-in
+// xai-b       — xAI realtime STT with emotion/prosody + barge-in
 let micMode = 'off';
 let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
-const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di', 'xai'];
-const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI', xai: 'X' };
+const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di', 'xai', 'xai-b'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI', xai: 'X', 'xai-b': 'XB' };
 
 function setMicMode(mode) {
   micMode = mode;
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker', 'deepgram-di', 'xai');
+  micBtn.classList.remove('barge', 'speaker', 'deepgram-di', 'xai', 'xai-b');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -1908,6 +2020,93 @@ let locationEnabled = false;
 let _geoWatchId     = null;
 let _lastPosition   = null;
 
+// ── Camera state ────────────────────────────────────────────
+let cameraState       = 'off';    // 'off' | 'rear' | 'front'
+let autoCaptureActive = false;
+let _autoCaptureTimer = null;
+let pendingPhoto      = null;     // { b64: string, source: 'manual'|'auto' } or null
+let pendingAnalysis   = null;     // Promise<string> — eager analysis fired on manual snap
+let lastAnalyzedPhoto = null;     // { b64: string } — last auto-capture that was analyzed, for deferred save
+let lastUploadedPhoto = null;     // { b64: string } — last manual snap uploaded to Drive, for re-analysis
+let _cameraStream     = null;
+
+// Trigger phrases for auto-capture photo analysis (scene description)
+const PHOTO_ANALYZE_TRIGGERS = [
+  'what do you see', 'what do you think of this', 'what is this',
+  'look at this', 'check this out', 'take a look',
+  'describe what', 'what am i looking at',
+  'can you see', 'do you see',
+];
+// OCR triggers — full text extraction from screens, documents, labels
+const PHOTO_OCR_TRIGGERS = [
+  'read this screen', 'read this document', 'read this',
+  'read that screen', 'read that document', 'read that',
+  'what does this say', 'what does that say',
+  'read the text', 'read the label', 'read the ingredients',
+];
+// Reasoning triggers — deeper analytical interpretation of the photo
+const PHOTO_REASON_TRIGGERS = [
+  'reason about this photo', 'reason about what you see',
+  'reason about this', 'analyze this photo',
+  'analyze this', 'think about this photo',
+  'think about what you see',
+];
+const PHOTO_REANALYZE_TRIGGERS = [
+  'reanalyze that photo', 're-analyze that photo', 'reanalyze that',
+  'read that photo', 'read the text on that', 'read that last photo',
+  'read the text on the', 'reason about that photo', 'reason about the last',
+  'analyze that photo again', 'look at that photo again',
+  'ocr that photo', 'read that again',
+  'on that last photo', 'on the last photo',
+  'that last photo', 'the last photo',
+];
+const PHOTO_SAVE_TRIGGERS = [
+  'save that photo', 'save the photo', 'keep that photo',
+  'save that picture', 'save the picture', 'keep that picture',
+  'save that image', 'save the image',
+];
+
+function matchesTrigger(text, triggers) {
+  const lower = text.toLowerCase();
+  return triggers.some(t => lower.includes(t));
+}
+
+// Photo analysis mode: 'scene' | 'ocr' | 'reason'
+const PHOTO_MODES = ['scene', 'ocr', 'reason'];
+const PHOTO_MODE_LABELS = { scene: 'S', ocr: 'O', reason: 'R' };
+const PHOTO_MODE_PROMPTS = {
+  scene_voice: 'Describe this photo in 2-3 concise sentences. Focus on what is most notable or relevant. Mention text from street signs, store signs, or product names if visible, but do not transcribe screens or documents.',
+  scene_text: null,  // falls through to default detailed prompt
+  ocr: 'Extract and transcribe ALL visible text in this image. Preserve layout and formatting where possible. Include every word you can read.',
+  reason: 'Analyze this image in depth. Describe what you see, infer context and meaning, identify anything notable or unusual, and provide your reasoning about what is happening and why.',
+};
+const PHOTO_MODE_STATUS = { scene: 'ANALYZING PHOTO', ocr: 'READING TEXT', reason: 'REASONING ABOUT PHOTO' };
+const PHOTO_MODE_TAG = { scene: 'Photo analysis', ocr: 'Photo OCR', reason: 'Photo reasoning' };
+let photoMode = 'scene';
+
+const photoModeBtn = document.getElementById('photo-mode-btn');
+photoModeBtn.addEventListener('click', () => {
+  const idx = (PHOTO_MODES.indexOf(photoMode) + 1) % PHOTO_MODES.length;
+  photoMode = PHOTO_MODES[idx];
+  photoModeBtn.textContent = PHOTO_MODE_LABELS[photoMode];
+  photoModeBtn.className = 'cam-btn mode-' + photoMode;
+  console.log('[camera] photo mode:', photoMode);
+});
+
+function getPhotoPrompt(isVoice) {
+  if (photoMode === 'scene') return isVoice ? PHOTO_MODE_PROMPTS.scene_voice : PHOTO_MODE_PROMPTS.scene_text;
+  return PHOTO_MODE_PROMPTS[photoMode];
+}
+
+const camToggleBtn     = document.getElementById('cam-toggle-btn');
+const camCaptureBtn    = document.getElementById('cam-capture-btn');
+const autoCapBtn       = document.getElementById('auto-cap-btn');
+const camVideo         = document.getElementById('cam-video');
+const camViewfinder    = document.getElementById('camera-viewfinder');
+const camCanvas        = document.getElementById('cam-canvas');
+const captureFlash     = document.getElementById('capture-flash');
+const captureIndicator = document.getElementById('capture-indicator');
+
 // ── State ────────────────────────────────────────────────────
 let isStreaming    = false;
 let isSpeaking     = false;
@@ -1981,6 +2180,194 @@ function cmdLocation(arg) {
     flashError('usage: #location <on|off>');
   }
 }
+
+// ── Camera functions ────────────────────────────────────────
+const CAM_MAX_DIM = 1280;  // max pixel dimension for captured frames
+const CAM_JPEG_QUALITY = 0.85;
+const AUTO_CAP_INTERVAL = 8000;
+const DRIVE_PHOTOS_FOLDER = '1JUe7bjxPAuKKxCC9kV2H9eLVMUFkJStl';
+
+async function startCamera(facingMode) {
+  try {
+    // Stop existing camera stream if any
+    if (_cameraStream) {
+      _cameraStream.getTracks().forEach(t => t.stop());
+      _cameraStream = null;
+    }
+    const constraints = {
+      video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    };
+    _cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+    camVideo.srcObject = _cameraStream;
+    camViewfinder.classList.add('active');
+    console.log('[camera] started:', facingMode);
+  } catch (e) {
+    console.error('[camera] getUserMedia failed:', e);
+    flashError('camera error: ' + e.message);
+    cameraState = 'off';
+    camToggleBtn.classList.remove('rear', 'front');
+    camViewfinder.classList.remove('active');
+  }
+}
+
+function stopCamera() {
+  if (_cameraStream) {
+    _cameraStream.getTracks().forEach(t => t.stop());
+    _cameraStream = null;
+  }
+  camVideo.srcObject = null;
+  camViewfinder.classList.remove('active');
+  stopAutoCapture();
+  console.log('[camera] stopped');
+}
+
+function cycleCamera() {
+  if (cameraState === 'off') {
+    cameraState = 'rear';
+    camToggleBtn.classList.remove('front');
+    camToggleBtn.classList.add('rear');
+    camToggleBtn.textContent = 'REAR';
+    startCamera('environment');
+  } else if (cameraState === 'rear') {
+    cameraState = 'front';
+    camToggleBtn.classList.remove('rear');
+    camToggleBtn.classList.add('front');
+    camToggleBtn.textContent = 'FRONT';
+    startCamera('user');
+  } else {
+    cameraState = 'off';
+    camToggleBtn.classList.remove('rear', 'front');
+    camToggleBtn.textContent = 'CAM';
+    stopCamera();
+    clearPendingPhoto();
+  }
+}
+
+function captureFrame(source) {
+  if (cameraState === 'off' || !camVideo.videoWidth) {
+    flashError('camera not ready');
+    return;
+  }
+  // Scale down if needed
+  let w = camVideo.videoWidth, h = camVideo.videoHeight;
+  if (Math.max(w, h) > CAM_MAX_DIM) {
+    const scale = CAM_MAX_DIM / Math.max(w, h);
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
+  }
+  camCanvas.width = w;
+  camCanvas.height = h;
+  const ctx = camCanvas.getContext('2d');
+  ctx.drawImage(camVideo, 0, 0, w, h);
+  const b64 = camCanvas.toDataURL('image/jpeg', CAM_JPEG_QUALITY);
+  pendingPhoto = { b64: b64, source: source || 'manual' };
+
+  // Visual feedback
+  if (source !== 'auto') {
+    captureFlash.classList.add('flash');
+    setTimeout(() => captureFlash.classList.remove('flash'), 150);
+  }
+  captureIndicator.classList.add('active');
+  camCaptureBtn.classList.add('has-photo');
+  console.log(`[camera] frame captured (${source}): ${w}x${h}`);
+
+  // Eager analysis: fire immediately on manual snap using current photo mode
+  if (source !== 'auto') {
+    const isVoiceActive = voiceMode || fullVoiceMode;
+    const modePrompt = getPhotoPrompt(isVoiceActive);
+    setStatus(PHOTO_MODE_STATUS[photoMode], true);
+    pendingAnalysis = analyzePhoto(b64, modePrompt).then(result => {
+      setStatus('PHOTO READY', false);
+      return result;
+    }).catch(e => {
+      console.error('[camera] eager analysis failed:', e);
+      setStatus('PHOTO ANALYSIS FAILED', false);
+      return '[Photo analysis failed: ' + e.message + ']';
+    });
+  } else {
+    pendingAnalysis = null;
+  }
+}
+
+function clearPendingPhoto() {
+  pendingPhoto = null;
+  pendingAnalysis = null;
+  captureIndicator.classList.remove('active');
+  camCaptureBtn.classList.remove('has-photo');
+}
+
+function startAutoCapture() {
+  if (cameraState === 'off') { flashError('start camera first'); return; }
+  autoCaptureActive = true;
+  autoCapBtn.classList.add('active');
+  autoCapBtn.textContent = 'AUTO';
+  captureFrame('auto');  // immediate first capture
+  _autoCaptureTimer = setInterval(() => captureFrame('auto'), AUTO_CAP_INTERVAL);
+  flashCmd('auto-capture ON (8s)');
+}
+
+function stopAutoCapture() {
+  autoCaptureActive = false;
+  autoCapBtn.classList.remove('active');
+  if (_autoCaptureTimer) { clearInterval(_autoCaptureTimer); _autoCaptureTimer = null; }
+}
+
+// Async photo analysis — called after submit, returns analysis text
+async function analyzePhoto(imageB64, promptText) {
+  try {
+    const resp = await fetch('/api/analyze-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        image_b64: imageB64,
+        prompt: promptText || 'Describe what you see in this photo in detail. Mention text from street signs, store signs, or product names if visible, but do not transcribe screens or documents.',
+        task_type: 'general',
+      }),
+    });
+    if (!resp.ok) throw new Error('analyze-photo: ' + resp.status);
+    const data = await resp.json();
+    return data.result || '';
+  } catch (e) {
+    console.error('[camera] analyze failed:', e);
+    return '[Photo analysis failed: ' + e.message + ']';
+  }
+}
+
+// Async Drive upload for snapped captures (not auto-capture)
+async function uploadPhotoToDrive(imageB64, source = 'snap') {
+  const prefix = source === 'auto' ? 'samaritan_autocap' : 'samaritan_snap';
+  const fileName = `${prefix}_${Date.now()}.jpg`;
+  const raw = imageB64.includes(',') ? imageB64.split(',')[1] : imageB64;
+  try {
+    const r = await fetch('/api/drive-upload-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        image_b64: raw,
+        file_name: fileName,
+        folder_id: DRIVE_PHOTOS_FOLDER,
+      }),
+    });
+    if (r.ok) console.log('[camera] uploaded to Drive:', fileName);
+    else console.warn('[camera] Drive upload failed:', r.status, await r.text());
+  } catch (e) {
+    console.warn('[camera] Drive upload error:', e);
+  }
+}
+
+// Button listeners
+camToggleBtn.addEventListener('click', () => { resetIdleTimer(); cycleCamera(); });
+camCaptureBtn.addEventListener('click', () => {
+  resetIdleTimer();
+  if (cameraState === 'off') { flashError('camera is off'); return; }
+  captureFrame('manual');
+});
+autoCapBtn.addEventListener('click', () => {
+  resetIdleTimer();
+  if (autoCaptureActive) { stopAutoCapture(); flashCmd('auto-capture OFF'); }
+  else startAutoCapture();
+});
 
 // ── SMS notification poller (only when macOS proxy is connected) ──
 const SMS_POLL_INTERVAL = 4000;
@@ -2066,6 +2453,13 @@ function handleCommand(raw) {
       flashCmd('Inworld voice set to: ' + INWORLD_VOICE);
       break;
     case '#location': cmdLocation(args[0]); break;
+    case '#camera':
+      if (!args[0]) { flashCmd('camera: ' + cameraState); break; }
+      if (args[0] === 'rear') { cameraState = 'off'; cycleCamera(); }
+      else if (args[0] === 'front') { cameraState = 'off'; cycleCamera(); cycleCamera(); }
+      else if (args[0] === 'off') { cameraState = 'off'; stopCamera(); camToggleBtn.classList.remove('rear','front'); camToggleBtn.textContent = 'CAM'; clearPendingPhoto(); }
+      else { flashError('usage: #camera <rear|front|off>'); }
+      break;
     default: flashError('unknown command: ' + cmd);
   }
 }
@@ -2281,8 +2675,66 @@ async function claudeSubmit(text) {
   setStatus('CLAUDE THINKING', true);
 
   try {
+    // 0. Photo handling: manual snap, auto-capture trigger, or deferred save
+    let claudeText = text;
+    const capturedPhoto = pendingPhoto;
+    const eagerAnalysis = pendingAnalysis;
+
+    // Check for deferred save command ("save that photo")
+    if (matchesTrigger(text, PHOTO_SAVE_TRIGGERS) && lastAnalyzedPhoto) {
+      console.log('[camera] claude: deferred save triggered');
+      uploadPhotoToDrive(lastAnalyzedPhoto.b64, 'auto').catch(e => console.error('[camera] claude deferred Drive upload error:', e));
+      lastAnalyzedPhoto = null;
+    } else if (matchesTrigger(text, PHOTO_REANALYZE_TRIGGERS) && (lastUploadedPhoto || lastAnalyzedPhoto)) {
+      // Re-analyze last photo with a different mode inferred from trigger phrase
+      const rePhoto = lastUploadedPhoto || lastAnalyzedPhoto;
+      let reMode = photoMode;
+      const lowerText = text.toLowerCase();
+      if (matchesTrigger(text, PHOTO_OCR_TRIGGERS) || /\bread\b/.test(lowerText) || /\bocr\b/.test(lowerText) || /\btext\b/.test(lowerText)) reMode = 'ocr';
+      else if (matchesTrigger(text, PHOTO_REASON_TRIGGERS) || /\breason\b/.test(lowerText) || /\banalyze\b/.test(lowerText)) reMode = 'reason';
+      const isVoice = voiceMode || fullVoiceMode;
+      const prompt = reMode === 'scene' ? getPhotoPrompt(isVoice) : PHOTO_MODE_PROMPTS[reMode];
+      setStatus(PHOTO_MODE_STATUS[reMode], true);
+      const analysis = await analyzePhoto(rePhoto.b64, prompt);
+      claudeText = `[${PHOTO_MODE_TAG[reMode]} (re-analysis): ${analysis}]\n\n${text}`;
+      console.log(`[camera] claude: re-analysis in ${reMode} mode`);
+    } else if (capturedPhoto && capturedPhoto.source !== 'auto') {
+      // Manual snap: use eager analysis (already ran with current photoMode prompt)
+      clearPendingPhoto();
+      let analysis;
+      if (eagerAnalysis) {
+        setStatus('WAITING FOR PHOTO ANALYSIS', true);
+        analysis = await eagerAnalysis;
+      } else {
+        const isVoice = voiceMode || fullVoiceMode;
+        setStatus(PHOTO_MODE_STATUS[photoMode], true);
+        analysis = await analyzePhoto(capturedPhoto.b64, getPhotoPrompt(isVoice));
+      }
+      claudeText = `[${PHOTO_MODE_TAG[photoMode]}: ${analysis}]\n\n${text}`;
+      lastUploadedPhoto = { b64: capturedPhoto.b64 };
+      console.log('[camera] claude manual upload: b64 length=' + (capturedPhoto.b64 || '').length);
+      uploadPhotoToDrive(capturedPhoto.b64).catch(e => console.error('[camera] claude Drive upload error:', e));
+    } else if (capturedPhoto && capturedPhoto.source === 'auto' && (
+        matchesTrigger(text, PHOTO_ANALYZE_TRIGGERS) || matchesTrigger(text, PHOTO_OCR_TRIGGERS) || matchesTrigger(text, PHOTO_REASON_TRIGGERS)
+    )) {
+      // Auto-capture with trigger phrase — voice triggers override button mode upward
+      clearPendingPhoto();
+      let effectiveMode = photoMode;
+      if (matchesTrigger(text, PHOTO_OCR_TRIGGERS)) effectiveMode = 'ocr';
+      else if (matchesTrigger(text, PHOTO_REASON_TRIGGERS)) effectiveMode = 'reason';
+      const isVoice = voiceMode || fullVoiceMode;
+      const prompt = effectiveMode === 'scene' ? getPhotoPrompt(isVoice) : PHOTO_MODE_PROMPTS[effectiveMode];
+      setStatus(PHOTO_MODE_STATUS[effectiveMode], true);
+      const analysis = await analyzePhoto(capturedPhoto.b64, prompt);
+      claudeText = `[${PHOTO_MODE_TAG[effectiveMode]}: ${analysis}]\n\n${text}`;
+      lastAnalyzedPhoto = { b64: capturedPhoto.b64 };
+      console.log(`[camera] claude: auto-capture ${effectiveMode} (button=${photoMode}), stashed for deferred save`);
+    } else if (capturedPhoto && capturedPhoto.source === 'auto') {
+      console.log('[camera] claude: auto-capture ignored (no trigger phrase)');
+    }
+
     // 1. Submit to Claude via tmux dispatch (include emotion + location metadata)
-    const submitBody = { text: text, source: 'voice' };
+    const submitBody = { text: claudeText, source: 'voice' };
     if (window._xaiSttEmotion) {
       submitBody.emotion = window._xaiSttEmotion;
       window._xaiSttEmotion = null;  // consume once
@@ -3518,6 +3970,66 @@ async function submit(textOverride) {
   }
 
   try {
+    // 0. Photo handling: manual snap, auto-capture trigger, or deferred save
+    let submitText = text;
+    const capturedPhoto = pendingPhoto;
+    const eagerAnalysis = pendingAnalysis;
+
+    // Check for deferred save command ("save that photo")
+    if (matchesTrigger(text, PHOTO_SAVE_TRIGGERS) && lastAnalyzedPhoto) {
+      console.log('[camera] deferred save triggered, uploading last analyzed photo');
+      uploadPhotoToDrive(lastAnalyzedPhoto.b64, 'auto').catch(e => console.error('[camera] deferred Drive upload error:', e));
+      lastAnalyzedPhoto = null;
+      // Don't attach photo analysis — just pass the save command through as text
+    } else if (matchesTrigger(text, PHOTO_REANALYZE_TRIGGERS) && (lastUploadedPhoto || lastAnalyzedPhoto)) {
+      // Re-analyze last photo with a different mode inferred from trigger phrase
+      const rePhoto = lastUploadedPhoto || lastAnalyzedPhoto;
+      let reMode = photoMode;
+      const lowerText = text.toLowerCase();
+      if (matchesTrigger(text, PHOTO_OCR_TRIGGERS) || /\bread\b/.test(lowerText) || /\bocr\b/.test(lowerText) || /\btext\b/.test(lowerText)) reMode = 'ocr';
+      else if (matchesTrigger(text, PHOTO_REASON_TRIGGERS) || /\breason\b/.test(lowerText) || /\banalyze\b/.test(lowerText)) reMode = 'reason';
+      const isVoice = voiceMode || fullVoiceMode;
+      const prompt = reMode === 'scene' ? getPhotoPrompt(isVoice) : PHOTO_MODE_PROMPTS[reMode];
+      setStatus(PHOTO_MODE_STATUS[reMode], true);
+      const analysis = await analyzePhoto(rePhoto.b64, prompt);
+      submitText = `[${PHOTO_MODE_TAG[reMode]} (re-analysis): ${analysis}]\n\n${text}`;
+      console.log(`[camera] re-analysis in ${reMode} mode`);
+    } else if (capturedPhoto && capturedPhoto.source !== 'auto') {
+      // Manual snap: always analyze and attach, always upload to Drive
+      clearPendingPhoto();
+      let analysis;
+      if (eagerAnalysis) {
+        setStatus('WAITING FOR PHOTO ANALYSIS', true);
+        analysis = await eagerAnalysis;
+      } else {
+        const isVoice = voiceMode || fullVoiceMode;
+        setStatus(PHOTO_MODE_STATUS[photoMode], true);
+        analysis = await analyzePhoto(capturedPhoto.b64, getPhotoPrompt(isVoice));
+      }
+      submitText = `[${PHOTO_MODE_TAG[photoMode]}: ${analysis}]\n\n${text}`;
+      lastUploadedPhoto = { b64: capturedPhoto.b64 };
+      console.log('[camera] manual upload: b64 length=' + (capturedPhoto.b64 || '').length);
+      uploadPhotoToDrive(capturedPhoto.b64).catch(e => console.error('[camera] Drive upload error:', e));
+    } else if (capturedPhoto && capturedPhoto.source === 'auto' && (
+        matchesTrigger(text, PHOTO_ANALYZE_TRIGGERS) || matchesTrigger(text, PHOTO_OCR_TRIGGERS) || matchesTrigger(text, PHOTO_REASON_TRIGGERS)
+    )) {
+      // Auto-capture with trigger phrase — voice triggers override button mode upward
+      clearPendingPhoto();
+      let effectiveMode = photoMode;
+      if (matchesTrigger(text, PHOTO_OCR_TRIGGERS)) effectiveMode = 'ocr';
+      else if (matchesTrigger(text, PHOTO_REASON_TRIGGERS)) effectiveMode = 'reason';
+      const isVoice = voiceMode || fullVoiceMode;
+      const prompt = effectiveMode === 'scene' ? getPhotoPrompt(isVoice) : PHOTO_MODE_PROMPTS[effectiveMode];
+      setStatus(PHOTO_MODE_STATUS[effectiveMode], true);
+      const analysis = await analyzePhoto(capturedPhoto.b64, prompt);
+      submitText = `[${PHOTO_MODE_TAG[effectiveMode]}: ${analysis}]\n\n${text}`;
+      lastAnalyzedPhoto = { b64: capturedPhoto.b64 };
+      console.log(`[camera] auto-capture ${effectiveMode} (button=${photoMode}), stashed for deferred save`);
+    } else if (capturedPhoto && capturedPhoto.source === 'auto') {
+      // Auto-capture but no trigger phrase: silently discard, keep frame for next prompt
+      console.log('[camera] auto-capture ignored (no trigger phrase)');
+    }
+
     // 1. Submit to llmem-gw via our proxy (retry once — Safari drops first post-load request)
     let submitResp;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -3526,7 +4038,7 @@ async function submit(textOverride) {
         submitResp = await fetch('/api/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ text: text, client_id: SESSION_ID, location: _locationData() }),
+          body: JSON.stringify({ text: submitText, client_id: SESSION_ID, location: _locationData() }),
         });
         if (submitResp.ok) break;
       } catch (_) { if (attempt === 2) throw new Error('Submit failed after retries'); }
@@ -3774,16 +4286,24 @@ function onSttStart() {
 
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
-  // Barge-in: only in 'barge' mode — stop TTS immediately when speech is heard.
+  // Barge-in: in 'barge' or 'xai-b' mode — stop TTS immediately when speech is heard.
   // Require actual transcript text to avoid false barge-in from ambient noise
   // triggering StartOfTurn with empty/short partials.
-  if (isSpeaking && micMode === 'barge' && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
+  if (isSpeaking && (micMode === 'barge' || micMode === 'xai-b') && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
     console.log('[TTS] barge-in triggered:', text.trim().slice(0, 40));
     stopAllAudio();
     resetTtsPipeline();
     // Kill the active SSE stream so onSttFinal's isStreaming guard doesn't block the new submit
     if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
     isStreaming = false;
+    // xAI-b: submit immediately on barge-in — don't wait for response.done
+    // which may arrive too late or not at all. Mark submitted so the delayed
+    // response.done handler is a no-op.
+    if (micMode === 'xai-b') {
+      _submittedThisTurn = true;
+      if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
+      setTimeout(() => onSttFinal(text), 0);
+    }
   }
 }
 
@@ -3840,13 +4360,14 @@ function onSttFinal(text) {
   if (!query) return;
   const wordCount = query.split(/\s+/).length;
   // Global minimum word filter — catches ambient noise across all mic modes
-  if (wordCount < STT_MIN_WORDS) {
+  // Barge-in modes use their own lighter filter (STT_BARGE_MIN_WORDS = 1)
+  if (micMode === 'barge' || micMode === 'xai-b') {
+    if (wordCount < STT_BARGE_MIN_WORDS) {
+      console.log('[STT] barge skip (too few words):', query);
+      return;
+    }
+  } else if (wordCount < STT_MIN_WORDS) {
     console.log('[STT] noise skip (< ' + STT_MIN_WORDS + ' words):', query);
-    return;
-  }
-  // Barge mode: require minimum word count to filter crowd/ambient noise
-  if (micMode === 'barge' && wordCount < STT_BARGE_MIN_WORDS) {
-    console.log('[STT] barge skip (too few words):', query);
     return;
   }
   // Drop transcript if agent is still processing a prior turn — prevents
@@ -3854,7 +4375,7 @@ function onSttFinal(text) {
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
   // waiting for LLM response (isStreaming, !isSpeaking) there's nothing to barge into.
   // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
-  if (isStreaming && !claudeMode && !(micMode === 'barge' && isSpeaking)) return;
+  if (isStreaming && !claudeMode && !((micMode === 'barge' || micMode === 'xai-b') && isSpeaking)) return;
   // In speaker/diarize mode: suppress while TTS is playing or during post-TTS cooldown.
   if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') {
     if (isSpeaking) return;
@@ -4444,7 +4965,7 @@ registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
             turn_detection: {
               type: 'server_vad',
               threshold: 0.5,
-              silence_duration_ms: 800,
+              silence_duration_ms: 700,
             },
           },
         }));
@@ -4533,6 +5054,15 @@ registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
             _submittedThisTurn = false;
             _directTranscript = '';
             if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
+            // xAI-b barge-in: VAD says user is speaking while TTS plays — stop TTS now.
+            // Don't wait for transcript text; xAI has no incremental partials.
+            if (isSpeaking && micMode === 'xai-b') {
+              console.log('[TTS] xai-b barge-in on speech_started');
+              stopAllAudio();
+              resetTtsPipeline();
+              if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
+              isStreaming = false;
+            }
             break;
           case 'input_audio_buffer.speech_stopped':
             // VAD detected end of speech — server will auto-commit and respond
@@ -4591,7 +5121,7 @@ registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
                   const em = raw.match(/emotion\s*:\s*([^,}]+)/);
                   const co = raw.match(/confidence\s*:\s*([\d.]+)/);
                   const pr = raw.match(/prosody\s*:\s*(.+?)(?:\s*}\s*$)/);
-                  const tr = raw.match(/transcript\s*:\s*([^,}]+?)(?:\s*,\s*emotion|\s*})/);
+                  const tr = raw.match(/transcript\s*:\s*["']?(.+?)["']?\s*(?:,\s*(?:emotion|confidence|prosody)|}\s*$)/);
                   if (em) parsed.emotion = em[1].trim().replace(/^["']|["']$/g, '');
                   if (co) parsed.confidence = parseFloat(co[1]);
                   if (pr) parsed.prosody = pr[1].trim().replace(/^["']|["']$/g, '');
@@ -4620,16 +5150,26 @@ registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
                   onSttFinal(transcript);
                 }
               } else if (!_submittedThisTurn) {
-                // No JSON — use raw text as transcript
-                _submittedThisTurn = true;
-                onSttPartial(raw);
-                onSttFinal(raw);
+                // No JSON — strip any wrapper and use as transcript
+                let fallback = _directTranscript || raw;
+                fallback = fallback.replace(/^\s*\{?\s*transcript\s*:\s*["']?/i, '').replace(/["']?\s*\}?\s*$/, '').trim();
+                if (fallback) {
+                  _submittedThisTurn = true;
+                  _directTranscript = '';
+                  onSttPartial(fallback);
+                  onSttFinal(fallback);
+                }
               }
             } catch (_) {
               if (!_submittedThisTurn) {
-                _submittedThisTurn = true;
-                onSttPartial(raw);
-                onSttFinal(raw);
+                let fallback = _directTranscript || raw;
+                fallback = fallback.replace(/^\s*\{?\s*transcript\s*:\s*["']?/i, '').replace(/["']?\s*\}?\s*$/, '').trim();
+                if (fallback) {
+                  _submittedThisTurn = true;
+                  _directTranscript = '';
+                  onSttPartial(fallback);
+                  onSttFinal(fallback);
+                }
               }
             }
             break;
@@ -4710,7 +5250,7 @@ const sttProviderBtn = document.getElementById('stt-provider-btn');
 // Returns the active STT provider: deepgram-di and xai modes force their provider
 function getActiveProvider() {
   if (micMode === 'deepgram-di') return _dgDi;
-  if (micMode === 'xai') return _xaiStt;
+  if (micMode === 'xai' || micMode === 'xai-b') return _xaiStt;
   return sttProviders[STT_PROVIDER];
 }
 
@@ -4816,6 +5356,13 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
         if (saved.locationEnabled) {
           cmdLocation('on');
         }
+        // Restore camera state
+        if (saved.cameraState && saved.cameraState !== 'off') {
+          // Cycle to saved state
+          cycleCamera();  // off → rear
+          if (saved.cameraState === 'front') cycleCamera();  // rear → front
+          if (saved.autoCaptureActive) startAutoCapture();
+        }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
@@ -4843,6 +5390,8 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
       fullVoiceMode,
       claudeMode,
       locationEnabled,
+      cameraState,
+      autoCaptureActive,
     }));
     location.reload();
   });

@@ -263,6 +263,28 @@ async def submit(request: Request):
     return {"status": "submitted", "client_id": client_id}
 
 
+@app.post("/api/analyze-photo")
+async def analyze_photo_proxy(request: Request):
+    """Proxy photo analysis to llmem-gw's analyze_photo endpoint."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/analyze_photo", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.post("/api/drive-upload-photo")
+async def drive_upload_photo_proxy(request: Request):
+    """Proxy photo upload to Google Drive via llmem-gw."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=30, pool=10)) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/drive_upload_photo", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
 @app.get("/api/stream/{client_id}")
 async def stream_proxy(client_id: str, request: Request):
     """Proxy the SSE stream from llmem-gw to the browser."""
