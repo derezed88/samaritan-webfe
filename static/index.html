@@ -2187,6 +2187,8 @@ const CAM_JPEG_QUALITY = 0.85;
 const AUTO_CAP_INTERVAL = 8000;
 const DRIVE_PHOTOS_FOLDER = '1JUe7bjxPAuKKxCC9kV2H9eLVMUFkJStl';
 
+let _camZoom = 1, _camZoomMin = 1, _camZoomMax = 1;
+
 async function startCamera(facingMode) {
   try {
     // Stop existing camera stream if any
@@ -2201,6 +2203,18 @@ async function startCamera(facingMode) {
     _cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
     camVideo.srcObject = _cameraStream;
     camViewfinder.classList.add('active');
+    // Detect zoom capability
+    const track = _cameraStream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.zoom) {
+      _camZoomMin = caps.zoom.min;
+      _camZoomMax = caps.zoom.max;
+      _camZoom = track.getSettings().zoom || 1;
+      console.log('[camera] zoom supported:', _camZoomMin, '-', _camZoomMax, 'current:', _camZoom);
+    } else {
+      _camZoomMin = 1; _camZoomMax = 1; _camZoom = 1;
+      console.log('[camera] zoom not supported by this camera');
+    }
     console.log('[camera] started:', facingMode);
   } catch (e) {
     console.error('[camera] getUserMedia failed:', e);
@@ -2211,6 +2225,35 @@ async function startCamera(facingMode) {
   }
 }
 
+// ── Pinch-to-zoom on camera viewfinder ──────────────────────
+(function() {
+  let startDist = 0, startZoom = 1;
+  function pinchDist(e) {
+    const [a, b] = [e.touches[0], e.touches[1]];
+    return Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+  }
+  camViewfinder.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 2 && _camZoomMax > _camZoomMin) {
+      startDist = pinchDist(e);
+      startZoom = _camZoom;
+      e.preventDefault();
+    }
+  }, { passive: false });
+  camViewfinder.addEventListener('touchmove', function(e) {
+    if (e.touches.length === 2 && _camZoomMax > _camZoomMin && _cameraStream) {
+      const scale = pinchDist(e) / startDist;
+      const newZoom = Math.min(_camZoomMax, Math.max(_camZoomMin, startZoom * scale));
+      const track = _cameraStream.getVideoTracks()[0];
+      if (track) {
+        track.applyConstraints({ advanced: [{ zoom: newZoom }] })
+          .then(() => { _camZoom = newZoom; })
+          .catch(() => {});
+      }
+      e.preventDefault();
+    }
+  }, { passive: false });
+})();
+
 function stopCamera() {
   if (_cameraStream) {
     _cameraStream.getTracks().forEach(t => t.stop());
@@ -2218,6 +2261,7 @@ function stopCamera() {
   }
   camVideo.srcObject = null;
   camViewfinder.classList.remove('active');
+  _camZoom = 1; _camZoomMin = 1; _camZoomMax = 1;
   stopAutoCapture();
   console.log('[camera] stopped');
 }
@@ -2274,9 +2318,10 @@ function captureFrame(source) {
 
   // Eager analysis: fire immediately on manual snap using current photo mode
   if (source !== 'auto') {
+    const captureMode = photoMode;  // snapshot current mode
     const isVoiceActive = voiceMode || fullVoiceMode;
     const modePrompt = getPhotoPrompt(isVoiceActive);
-    setStatus(PHOTO_MODE_STATUS[photoMode], true);
+    setStatus(PHOTO_MODE_STATUS[captureMode], true);
     pendingAnalysis = analyzePhoto(b64, modePrompt).then(result => {
       setStatus('PHOTO READY', false);
       return result;
@@ -2285,6 +2330,10 @@ function captureFrame(source) {
       setStatus('PHOTO ANALYSIS FAILED', false);
       return '[Photo analysis failed: ' + e.message + ']';
     });
+    // Upload to Drive immediately — don't wait for submit
+    // Eidetic memory save is handled server-side: llmem-gw correlates the
+    // analysis and upload by image hash and fires eidetic_save automatically.
+    uploadPhotoToDrive(b64);
   } else {
     pendingAnalysis = null;
   }
@@ -2314,11 +2363,15 @@ function stopAutoCapture() {
 }
 
 // Async photo analysis — called after submit, returns analysis text
+const PHOTO_ANALYZE_TIMEOUT = 30000;  // 30s timeout for cellular-friendly analysis
 async function analyzePhoto(imageB64, promptText) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PHOTO_ANALYZE_TIMEOUT);
   try {
     const resp = await fetch('/api/analyze-photo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      signal: controller.signal,
       body: JSON.stringify({
         image_b64: imageB64,
         prompt: promptText || 'Describe what you see in this photo in detail. Mention text from street signs, store signs, or product names if visible, but do not transcribe screens or documents.',
@@ -2329,12 +2382,19 @@ async function analyzePhoto(imageB64, promptText) {
     const data = await resp.json();
     return data.result || '';
   } catch (e) {
+    if (e.name === 'AbortError') {
+      console.warn('[camera] analyze timed out after ' + PHOTO_ANALYZE_TIMEOUT + 'ms');
+      return '[Photo analysis timed out — slow connection]';
+    }
     console.error('[camera] analyze failed:', e);
     return '[Photo analysis failed: ' + e.message + ']';
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 // Async Drive upload for snapped captures (not auto-capture)
+// Returns { file_id, file_name } on success, null on failure
 async function uploadPhotoToDrive(imageB64, source = 'snap') {
   const prefix = source === 'auto' ? 'samaritan_autocap' : 'samaritan_snap';
   const fileName = `${prefix}_${Date.now()}.jpg`;
@@ -2349,12 +2409,23 @@ async function uploadPhotoToDrive(imageB64, source = 'snap') {
         folder_id: DRIVE_PHOTOS_FOLDER,
       }),
     });
-    if (r.ok) console.log('[camera] uploaded to Drive:', fileName);
-    else console.warn('[camera] Drive upload failed:', r.status, await r.text());
+    if (r.ok) {
+      const data = await r.json();
+      const fileId = data.file_id || '';
+      console.log('[camera] uploaded to Drive:', fileName, fileId);
+      return { file_id: fileId, file_name: fileName };
+    }
+    console.warn('[camera] Drive upload failed:', r.status, await r.text());
+    return null;
   } catch (e) {
     console.warn('[camera] Drive upload error:', e);
+    return null;
   }
 }
+
+// Eidetic memory save is now handled server-side by llmem-gw.
+// The server correlates /analyze_photo and /drive_upload_photo by image hash
+// and automatically fires eidetic_save when both complete.
 
 // Button listeners
 camToggleBtn.addEventListener('click', () => { resetIdleTimer(); cycleCamera(); });
@@ -2712,8 +2783,7 @@ async function claudeSubmit(text) {
       }
       claudeText = `[${PHOTO_MODE_TAG[photoMode]}: ${analysis}]\n\n${text}`;
       lastUploadedPhoto = { b64: capturedPhoto.b64 };
-      console.log('[camera] claude manual upload: b64 length=' + (capturedPhoto.b64 || '').length);
-      uploadPhotoToDrive(capturedPhoto.b64).catch(e => console.error('[camera] claude Drive upload error:', e));
+      console.log('[camera] claude manual snap attached (Drive upload already fired on capture)');
     } else if (capturedPhoto && capturedPhoto.source === 'auto' && (
         matchesTrigger(text, PHOTO_ANALYZE_TRIGGERS) || matchesTrigger(text, PHOTO_OCR_TRIGGERS) || matchesTrigger(text, PHOTO_REASON_TRIGGERS)
     )) {
@@ -4008,8 +4078,7 @@ async function submit(textOverride) {
       }
       submitText = `[${PHOTO_MODE_TAG[photoMode]}: ${analysis}]\n\n${text}`;
       lastUploadedPhoto = { b64: capturedPhoto.b64 };
-      console.log('[camera] manual upload: b64 length=' + (capturedPhoto.b64 || '').length);
-      uploadPhotoToDrive(capturedPhoto.b64).catch(e => console.error('[camera] Drive upload error:', e));
+      console.log('[camera] manual snap attached (Drive upload already fired on capture)');
     } else if (capturedPhoto && capturedPhoto.source === 'auto' && (
         matchesTrigger(text, PHOTO_ANALYZE_TRIGGERS) || matchesTrigger(text, PHOTO_OCR_TRIGGERS) || matchesTrigger(text, PHOTO_REASON_TRIGGERS)
     )) {
@@ -4679,7 +4748,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         encoding:         'linear16',
         sample_rate:      actualRate,
         diarize:          'true',
-        utterance_end_ms: '1000',
+        utterance_end_ms: '3000',
         interim_results:  'true',
         smart_format:     'true',
         token:            _apiKey,
@@ -4729,26 +4798,40 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         dgWs.send(i16.buffer);
       }
 
+      let _diFlushTimer = null;
+      let _diAccumulated = '';  // accumulate across speech_final events
+
       function flushDiWords() {
         if (!active || !_speakerWords.length) return;
         const transcript = _buildTranscript(_speakerWords);
         _speakerWords = [];
         onSttPartial(transcript.split('\n').pop() || '');
-        const cooldownRemaining = _sttCooldownUntil - Date.now();
-        if (cooldownRemaining > 0) {
-          // Hold transcript until cooldown clears, then submit
-          _pendingDiTranscript = transcript;
-          setTimeout(() => {
-            if (_pendingDiTranscript) {
-              const t = _pendingDiTranscript;
-              _pendingDiTranscript = null;
-              onSttFinal(t);
-            }
-          }, cooldownRemaining);
-        } else {
-          _pendingDiTranscript = null;
-          onSttFinal(transcript);
-        }
+
+        // Accumulate transcript segments — don't submit immediately
+        _diAccumulated = _diAccumulated ? _diAccumulated + ' ' + transcript : transcript;
+
+        // Debounce: wait 2.5s of silence after last speech_final before submitting
+        if (_diFlushTimer) clearTimeout(_diFlushTimer);
+        _diFlushTimer = setTimeout(() => {
+          _diFlushTimer = null;
+          if (!_diAccumulated) return;
+          const full = _diAccumulated;
+          _diAccumulated = '';
+          const cooldownRemaining = _sttCooldownUntil - Date.now();
+          if (cooldownRemaining > 0) {
+            _pendingDiTranscript = full;
+            setTimeout(() => {
+              if (_pendingDiTranscript) {
+                const t = _pendingDiTranscript;
+                _pendingDiTranscript = null;
+                onSttFinal(t);
+              }
+            }, cooldownRemaining);
+          } else {
+            _pendingDiTranscript = null;
+            onSttFinal(full);
+          }
+        }, 2500);
       }
 
       dgWs.onmessage = (e) => {

@@ -285,6 +285,17 @@ async def drive_upload_photo_proxy(request: Request):
         return JSONResponse(resp.json(), status_code=resp.status_code)
 
 
+@app.post("/api/eidetic-save")
+async def eidetic_save_proxy(request: Request):
+    """Proxy eidetic memory save to llmem-gw."""
+    if not _check_auth(request):
+        return _auth_error()
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)) as http:
+        resp = await http.post(f"{MCP_DIRECT_URL}/eidetic_save", json=body)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
 @app.get("/api/stream/{client_id}")
 async def stream_proxy(client_id: str, request: Request):
     """Proxy the SSE stream from llmem-gw to the browser."""
