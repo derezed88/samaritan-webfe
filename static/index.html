@@ -144,6 +144,7 @@
     /* ─── Center stage ─── */
     #center {
       flex: 1;
+      height: 100%;  /* explicit height so iOS resolves %-height on abs children */
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -817,40 +818,13 @@
     /* Mode-specific border + dot color — visible both idle and listening */
     #mic-btn.barge       { border-color: var(--red); color: var(--red); }
     #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
-    #mic-btn.xai         { border-color: #10b981;    color: #10b981; }
-    #mic-btn.xai-b       { border-color: #f97316;  color: #f97316;
-                           animation: xai-b-pulse 1.2s ease-in-out infinite alternate; }
-    @keyframes xai-b-pulse {
-      from { border-color: #f97316; color: #f97316; box-shadow: 0 0 4px #f97316; }
-      to   { border-color: #10b981; color: #10b981; box-shadow: 0 0 14px rgba(16,185,129,0.4); }
-    }
-    #mic-btn.deepgram-di { border-color: #3b82f6;    color: #3b82f6;
-                           animation: dg-di-pulse 1s ease-in-out infinite alternate; }
+    #mic-btn.inworld     { border-color: #00d4ff;    color: #00d4ff; }
     @keyframes dg-di-pulse {
       from { border-color: #3b82f6; color: #3b82f6; box-shadow: 0 0 4px #3b82f6; }
       to   { border-color: var(--red); color: var(--red); box-shadow: 0 0 18px rgba(254,45,45,0.5); }
     }
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
 
-    /* ─── Voice provider selector ─── */
-    #stt-provider-btn {
-      background: transparent;
-      border: 1px solid rgba(255,255,255,0.2);
-      color: rgba(255,255,255,0.4);
-      cursor: pointer;
-      padding: 4px 10px;
-      font-family: var(--font);
-      font-size: 10px;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      flex-shrink: 0;
-      transition: all 200ms;
-      height: 28px;
-    }
-    #stt-provider-btn:hover {
-      border-color: rgba(255,255,255,0.5);
-      color: var(--bar-text);
-    }
 
     /* ─── Claude mode toggle button ─── */
     #claude-mode-btn {
@@ -1528,6 +1502,22 @@
       transform: translateY(-50%);
     }
 
+    /* ─── DI controls (upper-left, opposite cam-controls) ─── */
+    #di-controls {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      position: absolute;
+      left: 100px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    #di-btn.active {
+      border-color: #3b82f6;
+      color: #3b82f6;
+      box-shadow: 0 0 6px rgba(59,130,246,0.5);
+    }
+
     .cam-btn {
       background: transparent;
       border: 1px solid rgba(255,255,255,0.2);
@@ -1607,7 +1597,6 @@
 
     /* ─── Narrow phone screens (≤ 480px) ─── */
     @media (max-width: 480px) {
-      #stt-provider-btn { display: none; }
       /* Tighten bar so all icon buttons fit */
       #control-bar { gap: 6px; padding: 0 8px; }
       /* Hide sidebars */
@@ -1617,8 +1606,73 @@
       /* Camera controls adapt */
       #cam-controls { right: 70px; }
     }
+    /* ─── Simli avatar mode ─── */
+    #av-controls {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      position: absolute;
+      left: 150px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    #av-btn.active {
+      border-color: #a855f7;
+      color: #a855f7;
+      box-shadow: 0 0 6px rgba(168,85,247,0.5);
+    }
+    #simli-container {
+      display: none;
+      position: absolute;
+      top: 30px;
+      bottom: calc(44px + 36%);  /* leave room for response text below */
+      left: 0;
+      right: 0;
+      z-index: 8;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      background: var(--bg);
+    }
+    body.simli-active #simli-container { display: flex; }
+    body.simli-active #display         { display: none; }
+    body.simli-active #response-panel  { display: none; }
+    body.simli-active #terminal-panel  { display: none; }
+    #simli-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #simli-audio { display: none; }
+    #simli-response {
+      display: none;
+      position: absolute;
+      bottom: 44px;
+      left: 0;
+      right: 0;
+      height: 36%;
+      padding: 12px 24px;
+      overflow-y: auto;
+      font-size: 0.82em;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      line-height: 1.8;
+      color: var(--text);
+      opacity: 0.9;
+      text-align: left;
+      scrollbar-width: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--bg);
+      z-index: 10;
+    }
+    body.simli-active #simli-response { display: block; }
   </style>
 </head>
+<script type="module">
+  import { SimliClient } from 'https://esm.sh/simli-client@latest';
+  window.SimliClientClass = SimliClient;
+</script>
 <body>
 
 <!-- Three-column layout -->
@@ -1652,6 +1706,12 @@
         <span id="status-text">STANDBY</span>
       </div>
       <span>SAMARITAN // INTERFACE v2.0</span>
+      <div id="di-controls">
+        <button id="di-btn" class="cam-btn" title="Speaker diarization (Nova-3) — for multi-person conversations">DI</button>
+      </div>
+      <div id="av-controls">
+        <button id="av-btn" class="cam-btn" title="Avatar mode: off — tap to activate">AV</button>
+      </div>
       <div id="cam-controls">
         <button id="photo-mode-btn" class="cam-btn mode-scene" title="Photo mode: Scene → OCR → Reason">S</button>
         <button id="cam-toggle-btn" class="cam-btn" title="Camera: off → rear → front → off">CAM</button>
@@ -1702,6 +1762,14 @@
       </div>
     </div>
 
+    <!-- Simli avatar video (shown in AV mode) -->
+    <div id="simli-container">
+      <video id="simli-video" autoplay playsinline></video>
+      <audio id="simli-audio" autoplay muted></audio>
+    </div>
+    <!-- position:fixed — separate rendering tree from video compositing -->
+    <div id="simli-response"></div>
+
     <!-- Session ID -->
     <div id="session-id">SES: <span id="session-id-value">—</span></div>
 
@@ -1723,7 +1791,6 @@
     <div id="control-bar">
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
-      <button id="stt-provider-btn" title="Switch STT provider">WEBSPEECH</button>
       <button id="claude-mode-btn" title="Toggle Claude Code mode">C</button>
       <button id="voice-provider-btn" title="TTS: inworld — tap to switch">I</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
@@ -1750,7 +1817,7 @@
           <line x1="8" y1="17" x2="16" y2="17"/>
         </svg>
       </button>
-      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker  DI=diarize  X=xAI">
+      <button id="mic-btn" title="Mic mode: 🎤=off  B=barge-in  S=speaker">
         <span id="mic-icon">&#127908;</span>
       </button>
     </div>
@@ -1852,12 +1919,14 @@ const micBtn         = document.getElementById('mic-btn');
 const micIcon        = document.getElementById('mic-icon');
 const kbdBtn         = document.getElementById('kbd-btn');
 const fullVoiceBtn       = document.getElementById('full-voice-btn');
+const avBtn              = document.getElementById('av-btn');
 const claudeModeBtn      = document.getElementById('claude-mode-btn');
 const voiceProviderBtn   = document.getElementById('voice-provider-btn');
 const voicePreview   = document.getElementById('voice-preview');
 const statusText     = document.getElementById('status-text');
 const statusDot      = document.getElementById('status-dot');
 const responsePanel  = document.getElementById('response-panel');
+const simliResponseEl = document.getElementById('simli-response');
 const errorFlash     = document.getElementById('error-flash');
 const clockEl        = document.getElementById('clock');
 
@@ -1865,24 +1934,23 @@ const clockEl        = document.getElementById('clock');
 let kbdOpen      = false;
 let voiceMode    = false;  // true only when user explicitly enabled mic
 let _micStateBeforeKbd = null;  // saved mic state when keyboard opens
-let fullVoiceMode = false; // true when xAI TTS is active
+let fullVoiceMode = false; // true when Samaritan TTS is active
 
-// ── Mic mode: 'off' | 'barge' | 'speaker' | 'deepgram-di' | 'xai' | 'xai-b' ─
-// off         — mic disabled in full-voice mode
-// barge       — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
-// speaker     — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
-// deepgram-di — Deepgram nova-3 + speaker diarization; labels each speaker turn
-// xai         — xAI realtime STT with emotion/prosody; no barge-in
-// xai-b       — xAI realtime STT with emotion/prosody + barge-in
+// ── Mic mode: 'off' | 'barge' | 'speaker' ────────────────────────────────────
+// off     — mic disabled in full-voice mode
+// barge   — mic always on; STT transcript during TTS triggers barge-in (AirPods/headphones)
+// speaker — mic always on; STT transcripts suppressed during TTS (phone speaker safe)
+// DI mode is a separate overlay button (upper-left) that switches STT to nova-3+diarize
 let micMode = 'off';
+let diMode  = false;  // true = nova-3 diarization overlay active
 let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
-const MIC_MODES = ['off', 'barge', 'speaker', 'deepgram-di', 'xai', 'xai-b'];
-const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', 'deepgram-di': 'DI', xai: 'X', 'xai-b': 'XB' };
+const MIC_MODES = ['off', 'barge', 'speaker', 'inworld'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW' };
 
 function setMicMode(mode) {
   micMode = mode;
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker', 'deepgram-di', 'xai', 'xai-b');
+  micBtn.classList.remove('barge', 'speaker', 'inworld');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -1977,7 +2045,7 @@ const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
 const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
 // ── STT config ───────────────────────────────────────────────
-let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
+let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram' | 'inworld'
 const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
 const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
@@ -2113,6 +2181,16 @@ let isSpeaking     = false;
 let _sttCooldownUntil = 0;  // timestamp (ms) — STT finals suppressed until this time in speaker mode
 let wordQueue      = [];
 let wordAnimating  = false;
+// ── Simli avatar state ────────────────────────────────────────
+let simliMode       = false;  // avatar mode active (user intent)
+let simliClient     = null;   // SimliClient instance
+let simliReady      = false;  // WebRTC connected and ready
+let simliSuspended  = false;  // feed cut due to idle (mode still on, client stopped)
+let simliIdleTimer  = null;
+let simliGeneration = 0;      // incremented each session; stale event handlers bail out
+let _fullVoiceModeBeforeSimli = false;  // saved so we can restore when Simli is disabled
+const SIMLI_AUDIO_OFFSET_S = 0.30;  // seconds to delay WebAudio so face catches up (~Simli render latency)
+const SIMLI_IDLE_SEC = 30;
 let fullResponse   = '';
 let idleTimer      = null;
 let activeEvtSource = null;  // current SSE stream — closed on each new submit
@@ -2440,48 +2518,6 @@ autoCapBtn.addEventListener('click', () => {
   else startAutoCapture();
 });
 
-// ── SMS notification poller (only when macOS proxy is connected) ──
-const SMS_POLL_INTERVAL = 4000;
-const SMS_HEALTH_INTERVAL = 30000;
-let _smsPolling = false;
-let _smsProxyConnected = false;
-let _smsNotifTimer = null;
-
-async function checkSmsHealth() {
-  try {
-    const resp = await fetch(authedUrl('/api/sms-health'));
-    if (!resp.ok) { _smsProxyConnected = false; return; }
-    const data = await resp.json();
-    _smsProxyConnected = !!(data.proxy_connected && data.enabled);
-    if (_smsProxyConnected && !_smsNotifTimer) {
-      _smsNotifTimer = setInterval(pollSmsNotifications, SMS_POLL_INTERVAL);
-    } else if (!_smsProxyConnected && _smsNotifTimer) {
-      clearInterval(_smsNotifTimer);
-      _smsNotifTimer = null;
-    }
-  } catch (_) { _smsProxyConnected = false; }
-}
-setInterval(checkSmsHealth, SMS_HEALTH_INTERVAL);
-checkSmsHealth();
-
-async function pollSmsNotifications() {
-  if (_smsPolling || !_smsProxyConnected) return;
-  _smsPolling = true;
-  try {
-    const resp = await fetch(authedUrl(`/api/sms-notifications?client_id=${encodeURIComponent(SESSION_ID)}`));
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const notifs = data.notifications || [];
-    for (const n of notifs) {
-      const text = n.text || '';
-      if (!text) continue;
-      appendToPanel('\n' + text + '\n');
-      if ((voiceMode || fullVoiceMode) && typeof speakWithSamaritan === 'function') {
-        speakWithSamaritan(text, false, true);
-      }
-    }
-  } catch (_) {} finally { _smsPolling = false; }
-}
 
 // ── #command handler ─────────────────────────────────────────
 // Commands starting with # are intercepted client-side and never sent to llmem-gw.
@@ -2683,10 +2719,13 @@ async function _startBgPoller() {
       if (data.status === 'ok' && data.text) {
         // Follow-up arrived — display and speak it
         const replyText = data.text;
-        fullResponse = replyText;
+        fullResponse = '';  // reset before appendToPanel so += gives correct result
 
         const wordCount = replyText.trim().split(/\s+/).filter(w => w).length;
-        if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+        if (simliMode) {
+          appendToPanel(replyText);
+        } else if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+          fullResponse = replyText;
           runTerminal(replyText.trim(), () => {});
         } else {
           appendToPanel(replyText);
@@ -2732,6 +2771,7 @@ async function claudeSubmit(text) {
   showLoader(true);
   responsePanel.textContent = '';
   responsePanel.classList.remove('active');
+  simliResponseEl.textContent = '';
   showTerminal(false);
 
   // Auto-start Claude if not running (no relay dependency — just check tmux)
@@ -2803,14 +2843,36 @@ async function claudeSubmit(text) {
       console.log('[camera] claude: auto-capture ignored (no trigger phrase)');
     }
 
-    // 1. Submit to Claude via tmux dispatch (include emotion + location metadata)
+    // 1. Submit to Claude via tmux dispatch (include location + voice profile metadata)
+    // Attach Inworld voice profile as emotion prefix and metadata
+    if (_iwVoiceProfile) {
+      const vp = _iwVoiceProfile;
+      _iwVoiceProfile = null;
+      const emo = (Array.isArray(vp.emotion) ? vp.emotion[0] : vp.emotion) || {};
+      const vs  = (Array.isArray(vp.vocalStyle) ? vp.vocalStyle[0] : vp.vocalStyle) || {};
+      const pit = (Array.isArray(vp.pitch) ? vp.pitch[0] : vp.pitch) || {};
+      // Build [voice|emotion:label(conf)|vocal:style|pitch:level] prefix
+      const parts = ['voice'];
+      if (emo.label) parts.push(`emotion:${emo.label}(${(emo.confidence || 0).toFixed(2)})`);
+      if (vs.label)  parts.push(`vocal:${vs.label}`);
+      if (pit.label) parts.push(`pitch:${pit.label}`);
+      claudeText = `[${parts.join('|')}] ${claudeText}`;
+      console.log('[claudeSubmit] Inworld voice profile prefix attached');
+    }
     const submitBody = { text: claudeText, source: 'voice' };
-    if (window._xaiSttEmotion) {
-      submitBody.emotion = window._xaiSttEmotion;
-      window._xaiSttEmotion = null;  // consume once
-      console.log('[claudeSubmit] emotion attached:', submitBody.emotion);
-    } else {
-      console.log('[claudeSubmit] no emotion metadata available');
+    // Attach voice profile emotion for samaritan_emotions storage
+    if (claudeText.startsWith('[voice|emotion:')) {
+      const emoMatch = claudeText.match(/emotion:(\w+)\(([\d.]+)\)/);
+      const vocalMatch = claudeText.match(/vocal:(\w+)/);
+      const pitchMatch = claudeText.match(/pitch:(\w+)/);
+      if (emoMatch) {
+        submitBody.emotion = {
+          emotion: emoMatch[1],
+          confidence: parseFloat(emoMatch[2]),
+          prosody: [vocalMatch && `vocal_style:${vocalMatch[1]}`, pitchMatch && `pitch:${pitchMatch[1]}`].filter(Boolean).join(', '),
+          source: 'voice-inworld',
+        };
+      }
     }
     const _loc = _locationData();
     if (_loc) {
@@ -2863,11 +2925,15 @@ async function claudeSubmit(text) {
 
     // 3. Display + speak response
     const replyText = response.text;
-    fullResponse = replyText;
+    fullResponse = '';  // reset before appendToPanel so += gives correct result
 
     const wordCount = replyText.trim().split(/\s+/).filter(w => w).length;
-    if (wordCount >= LONG_RESPONSE_THRESHOLD) {
-      // Long response — use terminal typewriter (same as normal mode)
+    if (simliMode) {
+      // Simli mode — always use appendToPanel (terminal-panel is hidden)
+      appendToPanel(replyText);
+    } else if (wordCount >= LONG_RESPONSE_THRESHOLD) {
+      // Long response — use terminal typewriter
+      fullResponse = replyText;
       runTerminal(replyText.trim(), () => {});
     } else {
       // Short response — word-flash animation
@@ -3144,6 +3210,7 @@ function showIdleScreen() {
   wordRule.style.width = '0';
   responsePanel.textContent = '';
   responsePanel.classList.remove('active');
+  simliResponseEl.textContent = '';
   fullResponse = '';
   showTerminal(false);   // clear terminal when idle screen takes over
   clearKeywordCards();
@@ -3212,6 +3279,7 @@ async function drainWordQueue() {
 }
 
 function enqueueTokens(text) {
+  if (simliMode) return;  // suppress word animation in avatar mode
   // Split incoming text into words (preserving non-space chunks)
   const words = text.split(/(\s+)/).filter(w => w.trim().length > 0);
   wordQueue.push(...words);
@@ -3223,7 +3291,12 @@ function enqueueTokens(text) {
 // ── Response panel (accumulated text history) ────────────────
 function appendToPanel(text) {
   fullResponse += text;
-  // Don't show panel yet — revealed after animation drains or terminal takes over
+  // Always stream into the simli text area — harmless when container is hidden
+  if (simliResponseEl) {
+    simliResponseEl.textContent = fullResponse;
+    simliResponseEl.scrollTop = simliResponseEl.scrollHeight;
+  }
+  // Normal response panel revealed after animation drains or terminal takes over
 }
 
 // ── xAI Realtime Voice (TTS) ─────────────────────────────────
@@ -3290,9 +3363,12 @@ function _scheduleChunk(audioBuf) {
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
   src.connect(audioCtx.destination);
+  // When Simli is active, delay the first chunk of each utterance so the face
+  // animation (rendered ~200ms after audio is received) stays in sync with audio.
+  const simliOffset = (simliMode && simliReady) ? SIMLI_AUDIO_OFFSET_S : 0;
   const startAt = nextPlayAt > audioCtx.currentTime
     ? nextPlayAt
-    : audioCtx.currentTime + 0.005;
+    : audioCtx.currentTime + 0.005 + simliOffset;
   src.start(startAt);
   nextPlayAt = startAt + audioBuf.duration;
   activeSrcs.add(src);
@@ -3308,6 +3384,158 @@ function stopAllAudio() {
     try { src.stop(); } catch (_) {}
   }
   activeSrcs.clear();
+  if (simliClient && simliReady) { try { simliClient.ClearBuffer(); } catch(_) {} }
+}
+
+// ── Simli avatar feed ─────────────────────────────────────────
+// Downsample PCM16-LE from 24kHz to 16kHz (3:2 ratio, linear interp)
+function simliSendPcm(bytes) {
+  if (!simliMode || !simliClient || !simliReady) return;
+  const src = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >>> 1);
+  const outLen = Math.floor(src.length * 2 / 3);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * 1.5;
+    const lo = Math.floor(pos);
+    const hi = Math.min(lo + 1, src.length - 1);
+    const frac = pos - lo;
+    out[i] = (src[lo] * (1 - frac) + src[hi] * frac) | 0;
+  }
+  simliClient.sendAudioData(new Uint8Array(out.buffer));
+}
+
+function simliSendPcmBase64(b64) {
+  if (!simliMode || !simliClient || !simliReady) return;
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  simliSendPcm(bytes);
+}
+
+async function enableSimliMode() {
+  console.info('[Simli] enabling (gen=%d)', simliGeneration + 1);
+  initAudioCtx();
+  simliMode = true;
+  document.body.classList.add('simli-active');
+  avBtn.classList.add('active');
+  avBtn.title = 'Avatar mode: ON — tap to disable';
+  // Simli requires TTS audio — ensure fullVoiceMode is on (save state to restore on disable)
+  _fullVoiceModeBeforeSimli = fullVoiceMode;
+  if (!fullVoiceMode) {
+    fullVoiceMode = true;
+    fullVoiceBtn.classList.add('active');
+  }
+  // Clear any pending word animation
+  wordQueue = [];
+  wordDisplay.classList.remove('visible');
+  wordDisplay.textContent = '';
+  wordRule.style.width = '0';
+  // Generation token — stale event handlers from prior sessions ignore callbacks
+  const gen = ++simliGeneration;
+  // Start Simli session
+  try {
+    const r = await fetch('/api/simli/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({}),
+    });
+    if (!r.ok) throw new Error('session http ' + r.status);
+    const { session_token, iceServers } = await r.json();
+    if (!session_token || session_token === 'FAIL TOKEN') throw new Error('bad token');
+    if (!window.SimliClientClass) throw new Error('Simli SDK not loaded yet — retry in a moment');
+    if (simliGeneration !== gen) return;  // superseded by a newer session attempt
+    simliClient = new window.SimliClientClass(
+      session_token,
+      document.getElementById('simli-video'),
+      document.getElementById('simli-audio'),
+      iceServers || null,
+      undefined,   // logLevel
+      'p2p',       // transport_mode
+      undefined,   // signaling
+      undefined,   // SimliWSURL
+      500          // audioBufferSize — low for responsive conversation
+    );
+    simliClient.on('start',         () => { if (simliGeneration === gen) { simliReady = true; console.info('[Simli] connected (gen=%d)', gen); resetSimliIdleTimer(); } });
+    simliClient.on('stop',          () => { if (simliGeneration !== gen) return; simliReady = false; console.info('[Simli] stopped externally (gen=%d) — idle timer will handle suspend', gen); });
+    simliClient.on('error',         () => { if (simliGeneration === gen) { simliReady = false; console.info('[Simli] error (gen=%d)', gen); } });
+    simliClient.on('startup_error', (msg) => {
+      if (simliGeneration !== gen) return;
+      console.error('[Simli] startup_error:', msg);
+      simliReady = false;
+      disableSimliMode();
+    });
+    await simliClient.start();
+    simliSuspended = false;
+    // idle timer started in 'start' event handler once simliReady=true
+  } catch(e) {
+    if (simliGeneration !== gen) return;
+    console.error('[Simli] failed to start:', e);
+    disableSimliMode();
+  }
+}
+
+function disableSimliMode() {
+  console.info('[Simli] disabling (gen=%d)', simliGeneration);
+  simliGeneration++;  // invalidate any in-flight session callbacks
+  simliMode = false;
+  simliReady = false;
+  simliSuspended = false;
+  clearTimeout(simliIdleTimer);
+  document.body.classList.remove('simli-active');
+  avBtn.classList.remove('active');
+  avBtn.title = 'Avatar mode: off — tap to activate';
+  if (simliClient) {
+    try { simliClient.stop(); } catch(_) {}
+    simliClient = null;
+  }
+  // Restore fullVoiceMode to what it was before Simli turned it on
+  if (!_fullVoiceModeBeforeSimli && fullVoiceMode) {
+    fullVoiceMode = false;
+    fullVoiceBtn.classList.remove('active');
+  }
+}
+
+function suspendSimliFeed() {
+  if (!simliMode) return;
+  // Don't cut while a response is actively streaming or audio is playing
+  const audioActive = audioCtx && nextPlayAt > audioCtx.currentTime + 0.1;
+  if (isStreaming || wordAnimating || wordQueue.length > 0 || audioActive) {
+    simliIdleTimer = setTimeout(suspendSimliFeed, 5000);  // recheck in 5s
+    return;
+  }
+  console.info('[Simli] suspending idle (gen=%d)', simliGeneration);
+  simliGeneration++;  // invalidate any in-flight session callbacks
+  simliSuspended = true;
+  simliReady = false;
+  if (simliClient) {
+    try { simliClient.stop(); } catch(_) {}
+    simliClient = null;
+  }
+  // Clear video stream so old frame doesn't block new session
+  const simliVideoEl = document.getElementById('simli-video');
+  if (simliVideoEl) simliVideoEl.srcObject = null;
+  // Keep simli-active class — container stays visible for response text
+  simliResponseEl.textContent = '[ avatar idle — speak to reconnect ]';
+}
+
+function resetSimliIdleTimer() {
+  if (!simliMode || simliSuspended || !simliReady) return;  // only tick when fully connected
+  clearTimeout(simliIdleTimer);
+  simliIdleTimer = setTimeout(suspendSimliFeed, SIMLI_IDLE_SEC * 1000);
+}
+
+// Resolves when simliReady becomes true, or after timeoutMs (fallback: proceed without avatar)
+function waitForSimliReady(timeoutMs = 25000) {
+  if (simliReady) return Promise.resolve();
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = setInterval(() => {
+      if (simliReady || !simliMode || Date.now() >= deadline) {
+        clearInterval(poll);
+        resolve();
+      }
+    }, 250);
+  });
 }
 
 // ── Provider registry ─────────────────────────────────────────
@@ -3369,6 +3597,7 @@ const ttsProviders = {
             }
             if (bytes.length >= 2) {
               lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(bytes, 24000));
+              simliSendPcm(bytes);
               gotAny = true;
             }
           }
@@ -3468,6 +3697,7 @@ const ttsProviders = {
             if (msg.delta) {
               try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
               catch (e) { onError('pcm: ' + e.message.slice(0, 25)); }
+              simliSendPcmBase64(msg.delta);
             }
             break;
           case 'response.done':
@@ -3548,6 +3778,7 @@ const ttsProviders = {
           // Slice off the 44-byte WAV header — remaining bytes are raw PCM16-LE at 24kHz
           const pcm = bytes.subarray(WAV_HEADER_BYTES);
           lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(pcm, 24000));
+          simliSendPcm(pcm);
           gotAny = true;
         };
 
@@ -3671,6 +3902,7 @@ const ttsProviders = {
             if (msg.delta) {
               try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
               catch (e) { if (this._currentError) this._currentError('pcm: ' + e.message.slice(0, 25)); }
+              simliSendPcmBase64(msg.delta);
             }
             break;
           case 'response.done': {
@@ -3839,6 +4071,15 @@ const ttsProviders = {
   });
 })();
 
+// ── Simli AV button ────────────────────────────────────────────
+avBtn.addEventListener('click', () => {
+  if (simliMode) {
+    disableSimliMode();
+  } else {
+    enableSimliMode();
+  }
+});
+
 // ── ttsClean — strip markdown/markers before sending text to TTS ──
 function ttsClean(t) {
   return t
@@ -3906,7 +4147,7 @@ function _ttsFlush() {
             setTimeout(waitForAudio, 100);
           } else {
             isSpeaking = false;
-            if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
+            if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
             waitForDrainThenListen(_ttsWasKbd);
           }
         })();
@@ -3922,7 +4163,7 @@ function _ttsFlush() {
         _ttsFlush();
       } else if (_ttsDone) {
         isSpeaking = false;
-        if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
+        if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
         waitForDrainThenListen(_ttsWasKbd);
       } else {
         isSpeaking = false;
@@ -3936,7 +4177,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
-    if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') startSpeakerCooldown();
+    if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
@@ -3993,14 +4234,25 @@ async function submit(textOverride) {
     return;
   }
 
+  resetIdleTimer();   // user is active — reset idle countdown
+  // Resume Simli feed if it was suspended due to idle (full toggle: clean disable then fresh enable)
+  // Must happen before claudeMode check since claudeMode has an early return
+  if (simliMode && simliSuspended) {
+    disableSimliMode();
+    enableSimliMode();
+    setStatus('RECONNECTING AVATAR', true);
+    await waitForSimliReady();  // hold response until WebRTC is live so Simli gets the audio
+    setStatus('', false);
+  } else if (simliMode) {
+    clearTimeout(simliIdleTimer);  // hold off idle — restart after response drains
+  }
+
   // Claude mode — route to voice relay instead of llmem-gw
   if (claudeMode) {
     textInput.value = '';
     claudeSubmit(text);
     return;
   }
-
-  resetIdleTimer();   // user is active — reset idle countdown
   const wasKbd = kbdOpen;
   textInput.value = '';
   textInput.blur();          // dismiss iOS keyboard immediately
@@ -4016,6 +4268,7 @@ async function submit(textOverride) {
   resetTtsPipeline();
   responsePanel.textContent = '';
   responsePanel.classList.remove('active');
+  simliResponseEl.textContent = '';
   showTerminal(false);   // clear any previous long response
   clearKeywordCards();   // clear any previous keyword cards
 
@@ -4296,9 +4549,12 @@ function waitForDrainThenListen(wasKbd) {
     responsePanel.textContent = fullResponse;
     responsePanel.classList.add('active');
     responsePanel.scrollTop = responsePanel.scrollHeight;
+    simliResponseEl.textContent = fullResponse;
+    simliResponseEl.scrollTop = simliResponseEl.scrollHeight;
   }
   // Terminal panel intentionally left visible — persists until next submit
   resetIdleTimer();    // idle screen appears only after IDLE_TIMEOUT_SEC of inactivity
+  resetSimliIdleTimer();  // start 30s Simli idle countdown after response finishes
 
   if (fullVoiceMode && !wasKbd && micMode !== 'off' && !micBtn.classList.contains('unsupported')) {
     // Full-voice mode (voice input): wait for audio to finish then reopen mic.
@@ -4306,7 +4562,7 @@ function waitForDrainThenListen(wasKbd) {
       ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
       : 0;
     // In speaker/diarize mode, also wait for the STT cooldown to expire (prevents echo pickup).
-    const cooldownMs = (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai')
+    const cooldownMs = (micMode === 'speaker' || diMode)
       ? Math.max(0, _sttCooldownUntil - Date.now())
       : 0;
     const delayMs = Math.max(audioEndMs + 400, cooldownMs);
@@ -4355,24 +4611,16 @@ function onSttStart() {
 
 function onSttPartial(text) {
   voicePreview.textContent = text.toUpperCase().slice(0, 60) || '…';
-  // Barge-in: in 'barge' or 'xai-b' mode — stop TTS immediately when speech is heard.
+  // Barge-in: in 'barge' mode — stop TTS immediately when speech is heard.
   // Require actual transcript text to avoid false barge-in from ambient noise
   // triggering StartOfTurn with empty/short partials.
-  if (isSpeaking && (micMode === 'barge' || micMode === 'xai-b') && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
+  if (isSpeaking && micMode === 'barge' && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
     console.log('[TTS] barge-in triggered:', text.trim().slice(0, 40));
     stopAllAudio();
     resetTtsPipeline();
     // Kill the active SSE stream so onSttFinal's isStreaming guard doesn't block the new submit
     if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
     isStreaming = false;
-    // xAI-b: submit immediately on barge-in — don't wait for response.done
-    // which may arrive too late or not at all. Mark submitted so the delayed
-    // response.done handler is a no-op.
-    if (micMode === 'xai-b') {
-      _submittedThisTurn = true;
-      if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
-      setTimeout(() => onSttFinal(text), 0);
-    }
   }
 }
 
@@ -4424,13 +4672,17 @@ function startSpeakerCooldown() {
   setTimeout(beepReady, STT_SPEAKER_COOLDOWN_MS);
 }
 
+// Strip leading wake-name ("Samaritan" or common Flux mishear "American") from voice input.
+// These are address tokens, not content — removing them keeps memory context clean.
+const WAKE_NAME_RE = /^(samaritan|american|martin|so martin|some marathon|some are attentive|so naritan|senator|sonaritan|solaritan)[,.\s]+/i;
+
 function onSttFinal(text) {
-  const query = text.trim();
+  const query = text.trim().replace(WAKE_NAME_RE, '').trim();
   if (!query) return;
   const wordCount = query.split(/\s+/).length;
   // Global minimum word filter — catches ambient noise across all mic modes
   // Barge-in modes use their own lighter filter (STT_BARGE_MIN_WORDS = 1)
-  if (micMode === 'barge' || micMode === 'xai-b') {
+  if (micMode === 'barge') {
     if (wordCount < STT_BARGE_MIN_WORDS) {
       console.log('[STT] barge skip (too few words):', query);
       return;
@@ -4444,9 +4696,9 @@ function onSttFinal(text) {
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
   // waiting for LLM response (isStreaming, !isSpeaking) there's nothing to barge into.
   // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
-  if (isStreaming && !claudeMode && !((micMode === 'barge' || micMode === 'xai-b') && isSpeaking)) return;
-  // In speaker/diarize mode: suppress while TTS is playing or during post-TTS cooldown.
-  if (micMode === 'speaker' || micMode === 'deepgram-di' || micMode === 'xai') {
+  if (isStreaming && !claudeMode && !(micMode === 'barge' && isSpeaking)) return;
+  // In speaker/diarize/inworld mode: suppress while TTS is playing or during post-TTS cooldown.
+  if (micMode === 'speaker' || micMode === 'inworld' || diMode) {
     if (isSpeaking) return;
     // Also suppress during cooldown unconditionally — catches Deepgram finals that
     // arrive after isSpeaking clears but were captured while audio was still playing.
@@ -4547,7 +4799,14 @@ registerProcessor('pcm-capture', PcmCapture);`;
     onSttStart();
     try {
 
-      // Get mic + AudioContext first so we know the real sample rate before connecting
+      // Create AudioContext FIRST (synchronously in user-gesture context) so iOS
+      // doesn't suspend it. getUserMedia is async and may expire the gesture.
+      audioCtxDg = new AudioContext();
+      if (audioCtxDg.state === 'suspended') {
+        try { await audioCtxDg.resume(); } catch(_) {}
+      }
+      const actualRate = audioCtxDg.sampleRate;
+
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
@@ -4555,10 +4814,9 @@ registerProcessor('pcm-capture', PcmCapture);`;
         });
       } catch (e) {
         flashError('mic denied: ' + e.message.slice(0, 30));
+        audioCtxDg.close().catch(() => {}); audioCtxDg = null;
         active = false; onSttStop(); return;
       }
-      audioCtxDg = new AudioContext();
-      const actualRate = audioCtxDg.sampleRate;
 
       // Route through server proxy — Deepgram requires Authorization header
       // which browsers can't set on WebSocket; proxy injects it server-side.
@@ -4601,6 +4859,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (audioCtxDg && audioCtxDg.state === 'suspended') {
           audioCtxDg.resume().catch(() => {});
         }
+        // Silent primer: send ~200ms of silence to warm up the Deepgram decoder
+        // and the local audio pipeline before the user's first word arrives.
+        // Prevents first-utterance garbling (the "Samaritan → American" problem).
+        const primerSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.2);
+        const primerPcm16 = new Int16Array(primerSamples); // all zeros = silence
+        if (dgWs.readyState === WebSocket.OPEN) dgWs.send(primerPcm16.buffer);
       };
 
       // Flux requires ~80ms chunks for optimal performance.
@@ -4731,6 +4995,12 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
     _pendingDiTranscript = null;
     onSttStart();
     try {
+      audioCtxDg = new AudioContext();
+      if (audioCtxDg.state === 'suspended') {
+        try { await audioCtxDg.resume(); } catch(_) {}
+      }
+      const actualRate = audioCtxDg.sampleRate;
+
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
@@ -4738,10 +5008,9 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         });
       } catch (e) {
         flashError('mic denied: ' + e.message.slice(0, 30));
+        audioCtxDg.close().catch(() => {}); audioCtxDg = null;
         active = false; onSttStop(); return;
       }
-      audioCtxDg = new AudioContext();
-      const actualRate = audioCtxDg.sampleRate;
 
       const params = new URLSearchParams({
         model:            'nova-3',
@@ -4751,6 +5020,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         utterance_end_ms: '3000',
         interim_results:  'true',
         smart_format:     'true',
+        speech_threshold: '0.7',
         token:            _apiKey,
       });
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -4890,451 +5160,174 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
   return { start: startDgDi, stop: stopDgDi };
 })();
 
-// ── Provider: xAI Realtime (STT + prosody/emotion tagging) ──
-// Uses the xAI Grok Voice Agent API (OpenAI Realtime API compatible)
-// as an STT provider. Streams mic audio via WebSocket, receives transcript
-// plus emotion metadata inferred from voice prosody.
-const _xaiStt = (() => {
-  let ws         = null;
-  let audioCtxX  = null;
+// ── Provider: Inworld STT (voice profile: emotion, pitch, vocal style) ──
+let _iwVoiceProfile = null;  // latest Inworld voice profile for emotion metadata
+const _iw = (() => {
+  let iwWs       = null;
+  let audioCtxIw = null;
   let workletNode = null;
   let mediaStream = null;
   let active      = false;
-  let _responseText = '';
-  let _tokenCache = null;
-  let _submittedThisTurn = false;
-  let _directTranscript = '';  // stashed transcription for fallback
-  let _fallbackTimer = null;   // submit after timeout if response.done is slow
 
-  // Store last emotion metadata for claudeSubmit to pick up
-  window._xaiSttEmotion = null;
-
-  const WORKLET_CODE_XAI = `
-class PcmCaptureXai extends AudioWorkletProcessor {
+  const WORKLET_CODE_IW = `
+class PcmCaptureIw extends AudioWorkletProcessor {
   process(inputs) {
     const ch = inputs[0][0];
     if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
     return true;
   }
 }
-registerProcessor('pcm-capture-xai', PcmCaptureXai);`;
+registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
 
-  async function getToken() {
-    // Always fetch a fresh token — ephemeral tokens expire quickly
-    _tokenCache = null;
-    try {
-      console.log('[xAI STT] fetching fresh voice token...');
-      const r = await fetch('/api/voice-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ expires_in: 120 }),
-      });
-      console.log('[xAI STT] token response status:', r.status);
-      if (r.ok) {
-        const j = await r.json();
-        console.log('[xAI STT] token response keys:', Object.keys(j));
-        _tokenCache = j.client_secret?.value || j.value || j.token;
-      } else {
-        const errText = await r.text();
-        console.error('[xAI STT] token fetch failed:', r.status, errText);
-      }
-    } catch (e) { console.error('[xAI STT] token fetch error:', e); }
-    return _tokenCache || null;
-  }
-
-  const XAI_TARGET_RATE = 24000;
-
-  // Downsample Float32 from srcRate to dstRate (simple linear interpolation)
-  function downsample(f32, srcRate, dstRate) {
-    if (srcRate === dstRate) return f32;
-    const ratio = srcRate / dstRate;
-    const outLen = Math.round(f32.length / ratio);
-    const out = new Float32Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const srcIdx = i * ratio;
-      const lo = Math.floor(srcIdx);
-      const hi = Math.min(lo + 1, f32.length - 1);
-      const frac = srcIdx - lo;
-      out[i] = f32[lo] * (1 - frac) + f32[hi] * frac;
-    }
-    return out;
-  }
-
-  // Convert Float32 PCM to base64 PCM16-LE for xAI (with downsampling)
-  function f32ToBase64Pcm16(f32, srcRate) {
-    const resampled = downsample(f32, srcRate, XAI_TARGET_RATE);
-    const i16 = new Int16Array(resampled.length);
-    for (let i = 0; i < resampled.length; i++)
-      i16[i] = Math.max(-32768, Math.min(32767, resampled[i] * 32768));
-    const bytes = new Uint8Array(i16.buffer);
-    let b64 = '';
-    const CHUNK = 8192;
-    for (let i = 0; i < bytes.length; i += CHUNK)
-      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-    return btoa(b64);
-  }
-
-  let _sessionReady = false;  // gate audio sending until session.updated received
-  let _startedAt = 0;         // timestamp for auto-retry on quick WS close
-  let _retryCount = 0;
-
-  let _isRetry = false;
-
-  async function startXai() {
-    console.log('[xAI STT] startXai() called, retry:', _isRetry);
+  async function startIw() {
     active = true;
-    _sessionReady = false;
-    if (!_isRetry) onSttStart();  // only set visual on first attempt
-    _isRetry = false;
-    window._xaiSttEmotion = null;
-
+    _iwVoiceProfile = null;
+    onSttStart();
     try {
-      // Create AudioContext + get mic FIRST (synchronously from user gesture)
-      // before any async work that would exhaust the gesture on iOS Safari.
-      // On retry, reuse existing if still valid.
-      if (!audioCtxX || audioCtxX.state === 'closed') {
-        audioCtxX = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtxIw = new AudioContext();
+      if (audioCtxIw.state === 'suspended') {
+        try { await audioCtxIw.resume(); } catch(_) {}
       }
-      if (audioCtxX.state === 'suspended') {
-        audioCtxX.resume().catch(() => {});
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
+          video: false,
+        });
+      } catch (e) {
+        flashError('mic denied: ' + e.message.slice(0, 30));
+        audioCtxIw.close().catch(() => {}); audioCtxIw = null;
+        active = false; onSttStop(); return;
       }
-      if (!mediaStream || !mediaStream.active) {
+      const actualRate = audioCtxIw.sampleRate;
+
+      const params = new URLSearchParams({
+        sample_rate: actualRate,
+        vp_threshold: 0.3,
+        vad_threshold: 0.85,
+        eot_silence_ms: 2000,
+        token: _apiKey,
+      });
+      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      iwWs = new WebSocket(`${wsProto}//${location.host}/api/stt-inworld-proxy?${params}`);
+      iwWs.binaryType = 'arraybuffer';
+      iwWs.onopen = async () => {
+        const source = audioCtxIw.createMediaStreamSource(mediaStream);
+        let usedWorklet = false;
         try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
-            video: false,
-          });
-        } catch (e) {
-          flashError('mic denied: ' + e.message.slice(0, 30));
-          active = false; onSttStop(); return;
+          const blob    = new Blob([WORKLET_CODE_IW], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          await audioCtxIw.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
+          workletNode = new AudioWorkletNode(audioCtxIw, 'pcm-capture-iw');
+          workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
+          source.connect(workletNode);
+          usedWorklet = true;
+        } catch (_) {}
+        if (!usedWorklet) {
+          const spn = audioCtxIw.createScriptProcessor(4096, 1, 1);
+          spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
+          source.connect(spn);
+          spn.connect(audioCtxIw.destination);
+          workletNode = spn;
         }
-      }
-
-      const token = await getToken();
-      console.log('[xAI STT] got token:', token ? 'yes (' + token.slice(0, 10) + '...)' : 'NO');
-      if (!token) { flashError('xAI voice token failed'); active = false; onSttStop(); return; }
-
-      // Open WebSocket to xAI realtime API
-      _startedAt = Date.now();
-      console.log('[xAI STT] opening WebSocket to wss://api.x.ai/v1/realtime');
-      ws = new WebSocket('wss://api.x.ai/v1/realtime',
-                         [`xai-client-secret.${token}`]);
-
-      // Connection timeout — if WS doesn't open in 10s, fail visibly
-      const wsTimeout = setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.CONNECTING) {
-          console.error('[xAI STT] WebSocket connection timeout');
-          flashError('xAI STT: connection timeout');
-          stopXai();
+        if (audioCtxIw && audioCtxIw.state === 'suspended') {
+          audioCtxIw.resume().catch(() => {});
         }
-      }, 10000);
-
-      ws.onopen = async () => {
-        clearTimeout(wsTimeout);
-        console.log('[xAI STT] WebSocket connected, mic rate:', audioCtxX.sampleRate, '→ target:', XAI_TARGET_RATE, ', sending session.update');
-        // Configure session: text-only response, server VAD, transcription + emotion
-        ws.send(JSON.stringify({
-          type: 'session.update',
-          session: {
-            modalities: ['text'],
-            instructions: 'You are a speech transcription and emotion analysis system. ' +
-              'Listen to the user\'s speech and output ONLY a valid JSON object with these fields: ' +
-              '{"transcript": "exact words the user spoke", "emotion": "primary emotion detected from voice tone/prosody", ' +
-              '"confidence": 0.0-1.0, "prosody": "brief description of vocal qualities like pace, pitch, energy"}. ' +
-              'If you cannot detect any clear emotion, use "neutral" with confidence 0.5. ' +
-              'Do not add any text outside the JSON object. Do not paraphrase the transcript.',
-            input_audio_format: 'pcm16',
-            input_audio_sample_rate: XAI_TARGET_RATE,
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              silence_duration_ms: 700,
-            },
-          },
-        }));
-        // NOTE: mic capture setup happens AFTER session.updated is received (see onmessage handler)
-        // to avoid the race condition where audio is sent before the server is configured
       };
 
-      // ScriptProcessor fallback for browsers without AudioWorklet (e.g. older iOS Safari)
-      function _setupScriptProcessor(source) {
-        const spn = audioCtxX.createScriptProcessor(4096, 1, 1);
-        spn.onaudioprocess = (ev) => sendAudio(ev.inputBuffer.getChannelData(0));
-        source.connect(spn);
-        spn.connect(audioCtxX.destination);
-        workletNode = spn;
-        console.log('[xAI STT] mic capture via ScriptProcessor fallback');
-      }
-
-      // Buffer and send audio chunks (~80ms like Deepgram)
+      // Buffer PCM and flush ~80ms chunks (same pattern as Deepgram)
       let _pcmBuf = [];
       let _pcmBufLen = 0;
-      function sendAudio(f32) {
-        if (!_sessionReady || !ws || ws.readyState !== WebSocket.OPEN) return;
-        // Speaker/xai mode: suppress mic while TTS plays
-        if ((micMode === 'speaker' || micMode === 'xai') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+      function sendPcm(f32) {
+        if (!iwWs || iwWs.readyState !== WebSocket.OPEN) return;
+        if (micMode === 'speaker' && (isSpeaking || Date.now() < _sttCooldownUntil)) {
           _pcmBuf = []; _pcmBufLen = 0;
           return;
         }
         _pcmBuf.push(f32);
         _pcmBufLen += f32.length;
-        const targetSamples = Math.round((audioCtxX.sampleRate || 48000) * 0.08);
+        const targetSamples = Math.round((audioCtxIw.sampleRate || 48000) * 0.08);
         if (_pcmBufLen < targetSamples) return;
         const merged = new Float32Array(_pcmBufLen);
         let offset = 0;
         for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
-        _pcmBuf = []; _pcmBufLen = 0;
-        // Noise gate
+        _pcmBuf = [];
+        _pcmBufLen = 0;
         if (STT_NOISE_GATE > 0) {
           let sumSq = 0;
           for (let i = 0; i < merged.length; i++) sumSq += merged[i] * merged[i];
           if (Math.sqrt(sumSq / merged.length) < STT_NOISE_GATE) return;
         }
-        ws.send(JSON.stringify({
-          type: 'input_audio_buffer.append',
-          audio: f32ToBase64Pcm16(merged, audioCtxX.sampleRate),
-        }));
+        const i16 = new Int16Array(merged.length);
+        for (let i = 0; i < merged.length; i++)
+          i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
+        iwWs.send(i16.buffer);
       }
 
-      ws.onmessage = (evt) => {
+      iwWs.onmessage = (e) => {
         let msg;
-        try { msg = JSON.parse(evt.data); } catch (_) { return; }
-        console.log('[xAI STT] msg:', msg.type, msg.type === 'error' ? msg.error : '');
-        switch (msg.type) {
-          case 'session.updated':
-            if (!_sessionReady) {
-              _sessionReady = true;
-              _retryCount = 0;  // successful session — reset retry counter
-              console.log('[xAI STT] session configured, starting mic capture');
-              // NOW set up mic capture — server is ready to receive audio
-              const source = audioCtxX.createMediaStreamSource(mediaStream);
-              let usedWorklet = false;
-              try {
-                const blob    = new Blob([WORKLET_CODE_XAI], { type: 'application/javascript' });
-                const blobUrl = URL.createObjectURL(blob);
-                audioCtxX.audioWorklet.addModule(blobUrl).then(() => {
-                  URL.revokeObjectURL(blobUrl);
-                  workletNode = new AudioWorkletNode(audioCtxX, 'pcm-capture-xai');
-                  workletNode.port.onmessage = (e) => sendAudio(new Float32Array(e.data));
-                  source.connect(workletNode);
-                  console.log('[xAI STT] mic capture via AudioWorklet');
-                }).catch(() => {
-                  _setupScriptProcessor(source);
-                });
-                usedWorklet = true;  // attempted worklet path
-              } catch (_) {}
-              if (!usedWorklet) {
-                _setupScriptProcessor(source);
-              }
-              if (audioCtxX && audioCtxX.state === 'suspended') {
-                audioCtxX.resume().catch(() => {});
-              }
-            }
-            break;
-          case 'input_audio_buffer.speech_started':
-            onSttPartial('');
-            _responseText = '';
-            _submittedThisTurn = false;
-            _directTranscript = '';
-            if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
-            // xAI-b barge-in: VAD says user is speaking while TTS plays — stop TTS now.
-            // Don't wait for transcript text; xAI has no incremental partials.
-            if (isSpeaking && micMode === 'xai-b') {
-              console.log('[TTS] xai-b barge-in on speech_started');
-              stopAllAudio();
-              resetTtsPipeline();
-              if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
-              isStreaming = false;
-            }
-            break;
-          case 'input_audio_buffer.speech_stopped':
-            // VAD detected end of speech — server will auto-commit and respond
-            break;
-          case 'conversation.item.input_audio_transcription.completed': {
-            // Direct transcription — use for preview only; wait for response.done
-            // which carries both transcript and emotion metadata
-            const directTranscript = (msg.transcript || '').trim();
-            console.log('[xAI STT] direct transcription (preview):', directTranscript);
-            if (directTranscript) {
-              _directTranscript = directTranscript;  // stash for model response handler
-              onSttPartial(directTranscript);
-              // No fallback timer — wait for response.done which carries emotion.
-              // If response.done never arrives (15s timeout), fallback submits.
-              if (_fallbackTimer) clearTimeout(_fallbackTimer);
-              _fallbackTimer = setTimeout(() => {
-                if (!_submittedThisTurn && _directTranscript) {
-                  console.log('[xAI STT] fallback submit (response.done timeout)');
-                  _submittedThisTurn = true;
-                  onSttFinal(_directTranscript);
-                  _directTranscript = '';
-                }
-              }, 15000);
-            }
-            break;
-          }
-          case 'response.text.delta':
-          case 'response.output_audio_transcript.delta':
-            if (msg.delta) {
-              _responseText += msg.delta;
-              // Show partial text as it streams
-              const partial = _responseText.trim();
-              try {
-                const m = partial.match(/"transcript"\s*:\s*"([^"]+)"/);
-                if (m && m[1]) onSttPartial(m[1]);
-              } catch (_) {}
-            }
-            break;
-          case 'response.text.done':
-          case 'response.output_audio_transcript.done':
-          case 'response.done': {
-            // Model response — may contain emotion JSON (even if transcript already submitted)
-            const raw = _responseText.trim();
-            _responseText = '';
-            if (!raw) break;
-            console.log('[xAI STT] model response:', raw.slice(0, 300));
-            try {
-              // Try strict JSON first, then regex fallback for unquoted values
-              let parsed = null;
-              const jsonMatch = raw.match(/\{[\s\S]*\}/);
-              if (jsonMatch) {
-                try { parsed = JSON.parse(jsonMatch[0]); } catch (_) {}
-                if (!parsed) {
-                  // Regex fallback: extract fields from loose/unquoted JSON
-                  parsed = {};
-                  const em = raw.match(/emotion\s*:\s*([^,}]+)/);
-                  const co = raw.match(/confidence\s*:\s*([\d.]+)/);
-                  const pr = raw.match(/prosody\s*:\s*(.+?)(?:\s*}\s*$)/);
-                  const tr = raw.match(/transcript\s*:\s*["']?(.+?)["']?\s*(?:,\s*(?:emotion|confidence|prosody)|}\s*$)/);
-                  if (em) parsed.emotion = em[1].trim().replace(/^["']|["']$/g, '');
-                  if (co) parsed.confidence = parseFloat(co[1]);
-                  if (pr) parsed.prosody = pr[1].trim().replace(/^["']|["']$/g, '');
-                  if (tr) parsed.transcript = tr[1].trim().replace(/^["']|["']$/g, '');
-                  console.log('[xAI STT] parsed via regex fallback:', parsed);
-                }
-              }
-              if (parsed) {
-                // Cancel fallback timer — we have the full response now
-                if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
-                // Always extract emotion metadata from model response
-                if (parsed.emotion) {
-                  window._xaiSttEmotion = {
-                    emotion: parsed.emotion,
-                    confidence: parsed.confidence || 0.5,
-                    prosody: parsed.prosody || '',
-                  };
-                  console.log('[xAI STT] emotion:', window._xaiSttEmotion);
-                }
-                // Use model transcript, or fall back to direct transcription
-                const transcript = (parsed.transcript || _directTranscript || '').trim();
-                _directTranscript = '';
-                if (transcript && !_submittedThisTurn) {
-                  _submittedThisTurn = true;
-                  onSttPartial(transcript);
-                  onSttFinal(transcript);
-                }
-              } else if (!_submittedThisTurn) {
-                // No JSON — strip any wrapper and use as transcript
-                let fallback = _directTranscript || raw;
-                fallback = fallback.replace(/^\s*\{?\s*transcript\s*:\s*["']?/i, '').replace(/["']?\s*\}?\s*$/, '').trim();
-                if (fallback) {
-                  _submittedThisTurn = true;
-                  _directTranscript = '';
-                  onSttPartial(fallback);
-                  onSttFinal(fallback);
-                }
-              }
-            } catch (_) {
-              if (!_submittedThisTurn) {
-                let fallback = _directTranscript || raw;
-                fallback = fallback.replace(/^\s*\{?\s*transcript\s*:\s*["']?/i, '').replace(/["']?\s*\}?\s*$/, '').trim();
-                if (fallback) {
-                  _submittedThisTurn = true;
-                  _directTranscript = '';
-                  onSttPartial(fallback);
-                  onSttFinal(fallback);
-                }
-              }
-            }
-            break;
-          }
-          case 'error':
-            console.error('[xAI STT] error:', msg.error);
-            flashError('xAI STT: ' + (msg.error?.message || 'error').slice(0, 40));
-            break;
-        }
-      };
+        try { msg = JSON.parse(e.data); } catch (_) { return; }
+        const result = msg.result || msg;
 
-      ws.onerror = (e) => { console.error('[xAI STT] WS error:', e); };
-      ws.onclose = (evt) => {
-        console.log('[xAI STT] WS closed, code:', evt.code, 'reason:', evt.reason,
-          'uptime:', Date.now() - _startedAt, 'ms, retries:', _retryCount);
-        if (!active) return;
-        // Auto-retry up to 3 times if WS closed within 5s (iOS Safari first-load issue)
-        if (Date.now() - _startedAt < 5000 && _retryCount < 3) {
-          _retryCount++;
-          console.log('[xAI STT] quick close — auto-retrying (' + _retryCount + '/3)');
-          // Clean up WS + worklet only — preserve AudioContext + mediaStream for retry
-          if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
-          ws = null;
-          _sessionReady = false;
-          _tokenCache = null;  // force fresh token on retry
-          _isRetry = true;
-          // Brief delay so old WS fully tears down before new one opens
-          setTimeout(() => { if (active) startXai(); }, 500 * _retryCount);  // 500ms, 1s, 1.5s
+        // Voice profile — store latest for emotion metadata
+        // Inworld nests voiceProfile inside transcription; fall back to top-level for safety
+        const vp = (result.transcription && result.transcription.voiceProfile) || result.voiceProfile || result.voice_profile;
+        if (vp) _iwVoiceProfile = vp;
+
+        // Speech started
+        if (result.speechStarted) {
+          onSttPartial('');
           return;
         }
-        active = false;
-        _retryCount = 0;
-        stopXai();
+
+        // Transcription
+        const tx = result.transcription;
+        if (!tx) return;
+        const transcript = (tx.transcript || '').trim();
+        if (tx.isFinal) {
+          if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
+        } else {
+          if (transcript) onSttPartial(transcript);
+        }
+      };
+      iwWs.onerror = () => { flashError('Inworld WS error'); stopIw(); };
+      iwWs.onclose = (ev) => {
+        if (active) { flashError('Inworld closed ' + ev.code); active = false; stopIw(); }
       };
     } catch (err) {
-      console.error('[xAI STT] catch:', err);
-      flashError('xAI STT: ' + String(err).slice(0, 40));
+      flashError('Inworld catch: ' + String(err).slice(0, 40));
       active = false;
       onSttStop();
     }
   }
 
-  function stopXai() {
+  function stopIw() {
     active = false;
-    if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
-    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-    if (audioCtxX)   { try { audioCtxX.close(); } catch (_) {} audioCtxX = null; }
-    if (ws) {
-      try { ws.close(); } catch (_) {}
-      ws = null;
+    if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+    if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxIw) { try { audioCtxIw.close(); }  catch (_) {} audioCtxIw = null; }
+    if (iwWs) {
+      try {
+        if (iwWs.readyState === WebSocket.OPEN) iwWs.send(JSON.stringify({ closeStream: {} }));
+        iwWs.close();
+      } catch (_) {}
+      iwWs = null;
     }
-    _tokenCache = null;
     onSttStop();
   }
 
-  return { start: startXai, stop: stopXai };
+  return { start: startIw, stop: stopIw };
 })();
 
-// ── STT provider map & mic button wiring ─────────────────────
-const sttProviders = { webspeech: _ws, deepgram: _dg, 'deepgram-di': _dgDi, xai: _xaiStt };
+// ── Mic button wiring ─────────────────────
 
-// STT provider toggle button (reuse same pattern as TTS)
-const sttProviderBtn = document.getElementById('stt-provider-btn');
-(function() {
-  function updateSttBtn() {
-    sttProviderBtn.textContent = STT_PROVIDER.toUpperCase();
-  }
-  const order = Object.keys(sttProviders).filter(k => sttProviders[k]);
-  updateSttBtn();
-  sttProviderBtn.addEventListener('click', () => {
-    if (isListening) return;   // don't switch mid-listen
-    const idx = order.indexOf(STT_PROVIDER);
-    STT_PROVIDER = order[(idx + 1) % order.length];
-    updateSttBtn();
-  });
-})();
-
-// Returns the active STT provider: deepgram-di and xai modes force their provider
+// Returns the active STT provider: mic mode IS the provider
+// diMode overlay forces nova-3 diarization regardless of mic mode
 function getActiveProvider() {
-  if (micMode === 'deepgram-di') return _dgDi;
-  if (micMode === 'xai' || micMode === 'xai-b') return _xaiStt;
-  return sttProviders[STT_PROVIDER];
+  if (diMode && micMode !== 'off') return _dgDi;
+  if (micMode === 'inworld') return _iw;
+  return _dg;  // barge and speaker both use deepgram
 }
 
 // ── Mic button ───────────────────────────────────────────────
@@ -5360,7 +5353,7 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     }
     _sttRestartAttempted = false;  // reset on cycle
 
-    // Otherwise cycle: off → barge → speaker → deepgram-di → off
+    // Otherwise cycle: off → barge → speaker → inworld → off
     // Don't cycle while actively streaming LLM response (isStreaming).
     if (isStreaming) return;
     const prevProvider = getActiveProvider();
@@ -5388,6 +5381,25 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     micBtn.title = 'Voice input not supported in this browser — switch to Deepgram';
   }
 }
+
+// ── DI button (speaker diarization overlay) ──────────────────
+(function() {
+  const diBtn = document.getElementById('di-btn');
+  if (!diBtn) return;
+  diBtn.addEventListener('click', () => {
+    diMode = !diMode;
+    diBtn.classList.toggle('active', diMode);
+    if (isListening) {
+      // Restart STT with new provider
+      const oldProvider = diMode ? sttProviders[STT_PROVIDER] : _dgDi;
+      const newProvider = getActiveProvider();
+      if (oldProvider && oldProvider !== newProvider) {
+        oldProvider.stop();
+        newProvider.start();
+      }
+    }
+  });
+})();
 
 // (iOS background/foreground recovery handled by mic-reconnect-overlay below)
 
@@ -5446,6 +5458,12 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
           if (saved.cameraState === 'front') cycleCamera();  // rear → front
           if (saved.autoCaptureActive) startAutoCapture();
         }
+        // Restore DI mode state
+        if (saved.diMode) {
+          diMode = true;
+          const diBtn = document.getElementById('di-btn');
+          if (diBtn) diBtn.classList.add('active');
+        }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
@@ -5469,8 +5487,9 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
     // Save current state so it's restored after reload.
     sessionStorage.setItem(RELOAD_KEY, JSON.stringify({
       micMode,
+      diMode,
       ttsProvider: TTS_PROVIDER,
-      fullVoiceMode,
+      fullVoiceMode: simliMode ? _fullVoiceModeBeforeSimli : fullVoiceMode,  // don't persist Simli-forced state
       claudeMode,
       locationEnabled,
       cameraState,
