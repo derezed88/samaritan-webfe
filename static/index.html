@@ -2087,6 +2087,8 @@ const CLAUDE_DISPATCH_URL = '/api/claude';    // rc-style tmux dispatch
 let locationEnabled = false;
 let _geoWatchId     = null;
 let _lastPosition   = null;
+let _lastGeoTime    = 0;       // timestamp of last successful position update
+let _geoRetryTimer  = null;    // retry timer after watch error
 
 // ── Camera state ────────────────────────────────────────────
 let cameraState       = 'off';    // 'off' | 'rear' | 'front'
@@ -2225,11 +2227,35 @@ function _locationData() {
   };
 }
 
+function _startGeoWatch() {
+  if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
+  if (_geoRetryTimer) { clearTimeout(_geoRetryTimer); _geoRetryTimer = null; }
+  _geoWatchId = navigator.geolocation.watchPosition(
+    pos => { _lastPosition = pos; _lastGeoTime = Date.now(); },
+    err => {
+      console.warn('[location] watch error:', err.message, '— retrying in 5s');
+      if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
+      // Retry if location is still enabled (don't give up)
+      if (locationEnabled) _geoRetryTimer = setTimeout(_startGeoWatch, 5000);
+    },
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+  );
+}
+
+// Heartbeat: if no position update in 60s, restart the watch silently
+setInterval(() => {
+  if (locationEnabled && _lastGeoTime && Date.now() - _lastGeoTime > 60000) {
+    console.warn('[location] stale (>60s since last fix) — restarting watch');
+    _startGeoWatch();
+  }
+}, 30000);
+
 function cmdLocation(arg) {
   if (!arg) {
     const state = locationEnabled ? 'ON' : 'OFF';
+    const age = _lastGeoTime ? Math.round((Date.now() - _lastGeoTime) / 1000) + 's ago' : 'never';
     const coords = _lastPosition
-      ? `${_lastPosition.coords.latitude.toFixed(4)},${_lastPosition.coords.longitude.toFixed(4)}`
+      ? `${_lastPosition.coords.latitude.toFixed(4)},${_lastPosition.coords.longitude.toFixed(4)} (${age})`
       : 'no fix';
     flashCmd(`location: ${state} — ${coords}`);
     return;
@@ -2237,22 +2263,14 @@ function cmdLocation(arg) {
   if (arg === 'on') {
     if (!navigator.geolocation) { flashError('geolocation not supported'); return; }
     locationEnabled = true;
-    _geoWatchId = navigator.geolocation.watchPosition(
-      pos => { _lastPosition = pos; },
-      err => {
-        console.warn('[location] error:', err.message);
-        locationEnabled = false;
-        _lastPosition = null;
-        if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
-        flashError('location error: ' + err.message);
-      },
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
-    );
+    _startGeoWatch();
     flashCmd('location ON — awaiting GPS fix');
   } else if (arg === 'off') {
     locationEnabled = false;
     if (_geoWatchId !== null) { navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId = null; }
+    if (_geoRetryTimer) { clearTimeout(_geoRetryTimer); _geoRetryTimer = null; }
     _lastPosition = null;
+    _lastGeoTime = 0;
     flashCmd('location OFF');
   } else {
     flashError('usage: #location <on|off>');
