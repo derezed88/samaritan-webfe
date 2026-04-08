@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Samaritan — Knowledge Graph</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0f; color: #c8d0e0; font-family: 'Courier New', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  #top-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #111118; border-bottom: 1px solid #1e2230; flex-shrink: 0; }
+  #top-bar h1 { font-size: 11px; letter-spacing: 3px; color: #4a9eff; text-transform: uppercase; white-space: nowrap; }
+  #back-btn { font-size: 10px; color: #4a9eff; cursor: pointer; text-decoration: none; padding: 3px 8px; border: 1px solid #1e3a5f; border-radius: 2px; }
+  #back-btn:hover { background: #1e3a5f; }
+  #node-count { font-size: 10px; color: #556; margin-left: auto; }
+
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  #graph-wrap { position: relative; width: 70vw; flex-shrink: 0; }
+  #graph-canvas { width: 100%; height: 100%; }
+  #spinner { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(10,10,15,0.7); font-size: 12px; letter-spacing: 2px; color: #4a9eff; display: none; }
+
+  #detail-panel { flex: 1; border-left: 1px solid #1e2230; display: flex; flex-direction: column; overflow: hidden; padding: 14px; }
+  #detail-type-badge { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; display: inline-block; margin-bottom: 8px; }
+  #detail-title { font-size: 13px; color: #e0e8f8; margin-bottom: 8px; word-break: break-word; }
+  #detail-score { font-size: 10px; color: #556; margin-bottom: 10px; }
+  #detail-content { font-size: 11px; color: #8a96a8; line-height: 1.6; overflow-y: auto; flex: 1; white-space: pre-wrap; word-break: break-word; }
+  #detail-url { margin-top: 10px; }
+  #detail-url a { font-size: 10px; color: #4a9eff; text-decoration: none; }
+  #detail-url a:hover { text-decoration: underline; }
+  .placeholder { color: #334; font-size: 11px; text-align: center; margin-top: 40px; line-height: 1.8; }
+  #verify-btn { margin-top: 10px; font-size: 10px; letter-spacing: 1px; padding: 5px 10px; border: 1px solid #1e3a5f; background: transparent; color: #4a9eff; cursor: pointer; border-radius: 2px; font-family: inherit; }
+  #verify-btn:hover:not(:disabled) { background: #1e3a5f; }
+  #verify-btn:disabled { opacity: 0.5; cursor: default; }
+  #verify-status { margin-top: 8px; font-size: 10px; line-height: 1.6; }
+  .vspin { display: inline-block; animation: spin 1s linear infinite; margin-right: 4px; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .v-supported { color: #10b981; } .v-partial { color: #f59e0b; } .v-unsupported { color: #ef4444; }
+
+  #bottom-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #111118; border-top: 1px solid #1e2230; flex-shrink: 0; }
+  #query-input { flex: 1; background: #0d0d14; border: 1px solid #1e2230; color: #c8d0e0; padding: 6px 10px; font-family: inherit; font-size: 11px; border-radius: 2px; outline: none; }
+  #query-input:focus { border-color: #4a9eff; }
+  .bar-btn { font-size: 10px; letter-spacing: 1px; padding: 6px 12px; border: 1px solid #1e3a5f; background: transparent; color: #4a9eff; cursor: pointer; border-radius: 2px; font-family: inherit; }
+  .bar-btn:hover { background: #1e3a5f; }
+  .bar-btn.danger { border-color: #5f1e1e; color: #ff6464; }
+  .bar-btn.danger:hover { background: #5f1e1e; }
+
+  #legend { display: flex; gap: 12px; font-size: 9px; letter-spacing: 1px; }
+  .leg { display: flex; align-items: center; gap: 4px; }
+  .leg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .leg-line { width: 16px; height: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <a href="/" id="back-btn">← SAMARITAN</a>
+  <h1>Knowledge Graph</h1>
+  <div id="legend">
+    <div class="leg"><div class="leg-dot" style="background:#7c3aed"></div>belief</div>
+    <div class="leg"><div class="leg-dot" style="background:#0ea5e9"></div>source</div>
+    <div class="leg"><div class="leg-dot" style="background:#10b981"></div>drive</div>
+    <div class="leg"><div class="leg-dot" style="background:#f59e0b"></div>memory</div>
+    <div style="width:1px;background:#1e2230;margin:0 4px"></div>
+    <div class="leg"><div class="leg-line" style="background:#0ea5e9"></div>ref</div>
+    <div class="leg"><div class="leg-line" style="background:#94a3b8"></div>keyword</div>
+    <div class="leg"><div class="leg-line" style="background:#10b981"></div>domain</div>
+    <div class="leg"><div class="leg-line" style="background:#7c3aed"></div>semantic</div>
+    <div class="leg"><div class="leg-line" style="background:#ef4444;opacity:0.5;border-top:1px dashed #ef4444"></div>suggested</div>
+  </div>
+  <span id="node-count"></span>
+</div>
+
+<div id="main">
+  <div id="graph-wrap">
+    <div id="graph-canvas"></div>
+    <div id="spinner">LOADING…</div>
+  </div>
+
+  <div id="detail-panel">
+    <div class="placeholder">Click a node to inspect it.</div>
+  </div>
+</div>
+
+<div id="bottom-bar">
+  <input id="query-input" type="text" placeholder="Search nodes… (empty = full corpus overview)" autocomplete="off">
+  <button class="bar-btn" id="search-btn">SEARCH</button>
+  <button class="bar-btn" id="extend-btn">+EXTEND</button>
+  <button class="bar-btn" id="highlight-btn" title="Highlight matching nodes in the current view — no redraw">HIGHLIGHT</button>
+  <button class="bar-btn" id="save-btn">SAVE VIEW</button>
+  <button class="bar-btn" id="views-btn">SAVED ▾</button>
+  <button class="bar-btn danger" id="clear-btn">CLEAR</button>
+</div>
+
+<div id="views-dropdown" style="display:none;position:fixed;bottom:44px;right:140px;background:#111118;border:1px solid #1e2230;min-width:200px;max-height:300px;overflow-y:auto;z-index:999;"></div>
+
+<script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+<script>
+const API_KEY = '%%SAMARITAN_API_KEY%%';
+const AUTH_HEADERS = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` };
+
+const NODE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b' };
+const EDGE_COLORS = { source_reference: '#0ea5e9', keyword_overlap: '#94a3b8', domain_tag: '#10b981', semantic: '#7c3aed', contradictory: '#ef4444' };
+const BADGE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b' };
+
+let sessionCache = new Map();   // query → {nodes, links}
+let graph = null;
+let graphData = { nodes: [], links: [] };
+let selectedNode = null;
+let connectedIds = new Set();   // IDs of nodes linked to selectedNode
+let altPressed = false;
+let labelOverlay = null;
+let labelRafId = null;
+
+// ── Graph init ─────────────────────────────────────────────────────────────
+function initGraph() {
+  const el = document.getElementById('graph-canvas');
+
+  // Overlay for persistent alt-held labels
+  labelOverlay = document.createElement('div');
+  labelOverlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:10;overflow:hidden;';
+  el.parentElement.appendChild(labelOverlay);
+
+  graph = ForceGraph3D()(el)
+    .backgroundColor('#0a0a0f')
+    .nodeColor(n => n === selectedNode ? '#ffffff' : (NODE_COLORS[n.type] || '#888'))
+    .nodeLabel(n => `<span style="font-family:monospace;font-size:11px;background:#111118;padding:3px 6px;border-radius:2px;color:#c8d0e0">${n.label}</span>`)
+    .nodeRelSize(4)
+    .nodeVal(n => n === selectedNode ? (n._normVal || 1) * 1.6 : (n._normVal || 1))
+    .linkColor(l => l.suggested ? '#ef444488' : (EDGE_COLORS[l.reason] || '#334'))
+    .linkWidth(l => l.suggested ? 0.5 : (l.weight || 0.5) * 3)
+    .linkOpacity(l => l.suggested ? 0.25 : 0.5)
+    .onNodeClick(onNodeClick)
+    .onBackgroundClick(deselectNode)
+    .onNodeDragEnd(node => { node.fx = node.x; node.fy = node.y; node.fz = node.z; })
+    .onNodeRightClick(node => { node.fx = undefined; node.fy = undefined; node.fz = undefined; graph.d3ReheatSimulation(); })
+    .width(el.parentElement.offsetWidth)
+    .height(el.parentElement.offsetHeight);
+
+  window.addEventListener('resize', () => {
+    graph.width(el.parentElement.offsetWidth).height(el.parentElement.offsetHeight);
+  });
+
+  // Alt key → show/hide connected labels
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { deselectNode(); return; }
+    if ((e.key === 'Alt' || e.key === 'Option') && !altPressed) {
+      altPressed = true;
+      e.preventDefault();
+      startLabelLoop();
+    }
+  });
+  document.addEventListener('keyup', e => {
+    if (e.key === 'Alt' || e.key === 'Option') {
+      altPressed = false;
+      stopLabelLoop();
+    }
+  });
+}
+
+// ── Connected-node label overlay ────────────────────────────────────────────
+function getNodeId(ref) { return typeof ref === 'object' && ref !== null ? ref.id : ref; }
+
+function buildConnectedIds(node) {
+  const ids = new Set();
+  for (const l of graph.graphData().links) {
+    const s = getNodeId(l.source), t = getNodeId(l.target);
+    if (s === node.id) ids.add(t);
+    else if (t === node.id) ids.add(s);
+  }
+  return ids;
+}
+
+function startLabelLoop() {
+  if (labelRafId) return;
+  function tick() {
+    renderConnectedLabels();
+    if (altPressed) labelRafId = requestAnimationFrame(tick);
+    else labelRafId = null;
+  }
+  labelRafId = requestAnimationFrame(tick);
+}
+
+function stopLabelLoop() {
+  if (labelRafId) { cancelAnimationFrame(labelRafId); labelRafId = null; }
+  labelOverlay.innerHTML = '';
+}
+
+function renderConnectedLabels() {
+  if (!selectedNode || !connectedIds.size) { labelOverlay.innerHTML = ''; return; }
+  const nodeMap = new Map(graph.graphData().nodes.map(n => [n.id, n]));
+  let html = '';
+  for (const nid of connectedIds) {
+    const n = nodeMap.get(nid);
+    if (!n || n.x == null) continue;
+    const sc = graph.graph2ScreenCoords(n.x, n.y, n.z);
+    const label = n.label.length > 32 ? n.label.slice(0, 32) + '…' : n.label;
+    const col = NODE_COLORS[n.type] || '#888';
+    html += `<div style="position:absolute;left:${sc.x}px;top:${sc.y - 20}px;transform:translateX(-50%);
+      font-size:10px;font-family:'Courier New',monospace;color:${col};
+      background:rgba(10,10,15,0.88);padding:2px 6px;border-radius:2px;
+      border:1px solid ${col}44;white-space:nowrap;">${label}</div>`;
+  }
+  labelOverlay.innerHTML = html;
+}
+
+function renderGraph(data) {
+  graphData = data;
+  // Normalize scores within this result set so min→max always spans the full visual range.
+  // This ensures size differences are visible even when all nodes cluster at high confidence.
+  const scores = data.nodes.map(n => n.score ?? 0.3);
+  const minS = Math.min(...scores), maxS = Math.max(...scores);
+  const range = maxS - minS > 0.05 ? maxS - minS : 1; // avoid div-by-zero on flat data
+  data.nodes.forEach(n => {
+    const norm = (n.score != null ? n.score - minS : 0.3) / range;
+    n._normVal = Math.max(0.5, norm * 14 + 1); // 1 (min) → 15 (max)
+  });
+
+  // Merge suggested_links (dashed) into the full link set, tagged as suggested
+  const suggested = (data.suggested_links || []).map(l => ({ ...l, suggested: true }));
+  const suggestedKeys = new Set(suggested.map(l => `${l.source}-${l.target}`));
+  const allLinks = [
+    ...data.links.map(l => ({ ...l, suggested: false })),
+    ...suggested.filter(l => !data.links.some(x => x.source === l.source && x.target === l.target)),
+  ];
+  graph.graphData({ nodes: [...data.nodes], links: allLinks });
+  const sugCount = suggested.length;
+  document.getElementById('node-count').textContent =
+    `${data.nodes.length} nodes · ${data.links.length} edges${sugCount ? ` · ${sugCount} suggested` : ''}`;
+}
+
+// ── Deselect ───────────────────────────────────────────────────────────────
+function deselectNode() {
+  clearHighlight();
+  if (!selectedNode) return;
+  selectedNode = null;
+  connectedIds = new Set();
+  graph.nodeColor(n => {
+    if (n._verifyVerdict === 'unsupported') return '#444455';
+    if (n._verifyVerdict === 'partial')     return '#f59e0b';
+    return NODE_COLORS[n.type] || '#888';
+  }).nodeVal(n => {
+    if (n._verifyVerdict === 'unsupported') return Math.max(0.5, (n._normVal || 1) * 0.4);
+    return n._normVal || 1;
+  });
+  labelOverlay.innerHTML = '';
+  document.getElementById('detail-panel').innerHTML = '<div class="placeholder">Click a node to inspect it.</div>';
+}
+
+// ── Node click ─────────────────────────────────────────────────────────────
+function onNodeClick(node) {
+  selectedNode = node;
+  connectedIds = buildConnectedIds(node);
+  graph.nodeColor(n => {
+    if (n === selectedNode) return '#ffffff';
+    if (n._verifyVerdict === 'unsupported') return '#444455';
+    if (n._verifyVerdict === 'partial')     return '#f59e0b';
+    return NODE_COLORS[n.type] || '#888';
+  }).nodeVal(n => {
+    const base = n === selectedNode ? (n._normVal || 1) * 1.6 : (n._normVal || 1);
+    if (n._verifyVerdict === 'unsupported') return Math.max(0.5, base * 0.4);
+    return base;
+  });
+  const panel = document.getElementById('detail-panel');
+  const color = BADGE_COLORS[node.type] || '#444';
+  const scoreRaw = node.score != null ? node.score : null;
+  const score = scoreRaw != null ? {
+    belief:  (scoreRaw * 10).toFixed(0) + '/10',
+    source:  (scoreRaw * 100).toFixed(0) + '%',
+    drive:   (scoreRaw * 100).toFixed(0) + '%',
+    memory:  (scoreRaw * 10).toFixed(0) + '/10',
+  }[node.type] ?? (scoreRaw * 100).toFixed(0) + '%' : '—';
+  const scoreLabel = { belief: 'confidence', source: 'truth score', drive: 'value', memory: 'importance' }[node.type] || 'score';
+  const verifyBtn = node.type === 'source' && node.url
+    ? `<button id="verify-btn" onclick="verifySource(selectedNode)">VERIFY SUMMARY</button>
+       <div id="verify-status"></div>`
+    : '';
+  panel.innerHTML = `
+    <span id="detail-type-badge" style="background:${color}22;color:${color};border:1px solid ${color}44">${node.type}</span>
+    <div id="detail-title">${escHtml(node.label)}</div>
+    <div id="detail-score" id="detail-score-val">${scoreLabel}: ${score}</div>
+    <div id="detail-content">${escHtml(node.content || '(no content)')}</div>
+    ${node.url ? `<div id="detail-url"><a href="${escHtml(node.url)}" target="_blank" rel="noopener">Open source ↗</a></div>` : ''}
+    ${verifyBtn}
+  `;
+}
+
+// ── Source verification ─────────────────────────────────────────────────────
+async function verifySource(node) {
+  const btn = document.getElementById('verify-btn');
+  const status = document.getElementById('verify-status');
+  if (!btn || !status) return;
+
+  btn.disabled = true;
+  btn.textContent = 'VERIFYING…';
+  status.innerHTML = '<span class="vspin">↻</span><span style="color:#4a9eff">Extracting source URL…</span>';
+
+  // Stagger status messages so user sees progress
+  const t1 = setTimeout(() => {
+    if (btn.disabled) status.innerHTML = '<span class="vspin">↻</span><span style="color:#4a9eff">Cross-checking with xAI search…</span>';
+  }, 8000);
+  const t2 = setTimeout(() => {
+    if (btn.disabled) status.innerHTML = '<span class="vspin">↻</span><span style="color:#4a9eff">Running LLM assessment…</span>';
+  }, 18000);
+
+  try {
+    const sourceId = node.id ? parseInt(node.id.replace(/\D/g, '')) : null;
+    const resp = await fetch('/api/knowledge-graph/verify-source', {
+      method: 'POST', headers: AUTH_HEADERS,
+      body: JSON.stringify({ source_id: sourceId, url: node.url, summary: node.content || '', title: node.label })
+    });
+    clearTimeout(t1); clearTimeout(t2);
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const r = await resp.json();
+
+    const cls = { supported: 'v-supported', partial: 'v-partial', unsupported: 'v-unsupported' }[r.verdict] || 'v-partial';
+    const icon = { supported: '✓', partial: '⚠', unsupported: '✗' }[r.verdict] || '?';
+    const label = { supported: 'VERIFIED', partial: 'PARTIAL', unsupported: 'NOT SUPPORTED' }[r.verdict] || r.verdict.toUpperCase();
+
+    btn.textContent = `${icon} ${label}`;
+    btn.classList.add(cls.replace('v-', 'bar-btn-'));
+    btn.style.borderColor = { supported: '#10b981', partial: '#f59e0b', unsupported: '#ef4444' }[r.verdict] || '';
+    btn.style.color       = { supported: '#10b981', partial: '#f59e0b', unsupported: '#ef4444' }[r.verdict] || '';
+
+    const scoreNote = r.score_updated
+      ? `· truth score updated to ${Math.round(r.new_score * 100)}%`
+      : `· truth score unchanged (insufficient evidence to update)`;
+    let html = `<div class="${cls}" style="margin-top:4px;font-size:10px">${icon} ${label} · confidence ${Math.round(r.confidence * 100)}% ${scoreNote}</div>`;
+    if (r.unsupported_claims?.length) {
+      html += `<div style="color:#ef444499;font-size:10px;margin-top:4px">Unsupported claims:<br>${r.unsupported_claims.map(c => `• ${escHtml(c)}`).join('<br>')}</div>`;
+    }
+    if (r.notes) html += `<div style="color:#556;font-size:10px;margin-top:4px">${escHtml(r.notes)}</div>`;
+    const sources = [r.url_extracted && 'URL content', r.xai_searched && 'xAI search', r.sonar_consulted && 'Sonar', r.google_consulted && 'Google'].filter(Boolean).join(' + ');
+    html += `<div style="color:#334;font-size:9px;margin-top:4px">Sources: ${sources || 'none'}</div>`;
+    status.innerHTML = html;
+
+    // Update score display in panel only if score was actually written
+    const scoreEl = document.getElementById('detail-score-val') || document.getElementById('detail-score');
+    if (scoreEl && r.score_updated) scoreEl.textContent = `truth score: ${Math.round(r.new_score * 100)}% (updated)`;
+
+    // Update node visuals immediately — color and size reflect verdict
+    node.score = r.new_score;
+    node._verifyVerdict = r.verdict;
+    // Re-normalize _normVal for this node within the current graph data
+    const allScores = graph.graphData().nodes.map(n => n.score ?? 0.3);
+    const minS = Math.min(...allScores), maxS = Math.max(...allScores);
+    const range = maxS - minS > 0.05 ? maxS - minS : 1;
+    graph.graphData().nodes.forEach(n => {
+      n._normVal = Math.max(0.5, ((n.score ?? 0.3) - minS) / range * 14 + 1);
+    });
+    // Refresh color + size accessors to pick up verdict state
+    graph
+      .nodeColor(n => {
+        if (n === selectedNode) return '#ffffff';
+        if (n._verifyVerdict === 'unsupported') return '#444455';
+        if (n._verifyVerdict === 'partial')     return '#f59e0b';
+        return NODE_COLORS[n.type] || '#888';
+      })
+      .nodeVal(n => {
+        const base = n === selectedNode ? (n._normVal || 1) * 1.6 : (n._normVal || 1);
+        if (n._verifyVerdict === 'unsupported') return Math.max(0.5, base * 0.4);
+        return base;
+      });
+
+  } catch (err) {
+    clearTimeout(t1); clearTimeout(t2);
+    btn.disabled = false;
+    btn.textContent = 'VERIFY SUMMARY';
+    status.innerHTML = `<span style="color:#ef4444">Verification failed: ${escHtml(String(err))}</span>`;
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Fetch + merge ──────────────────────────────────────────────────────────
+async function fetchGraph(query) {
+  if (sessionCache.has(query)) return sessionCache.get(query);
+  showSpinner(true);
+  try {
+    const resp = await fetch('/api/knowledge-graph', {
+      method: 'POST', headers: AUTH_HEADERS,
+      body: JSON.stringify({ query, node_types: ['belief','source','drive','memory'], limit: 150 })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    sessionCache.set(query, data);
+    return data;
+  } finally {
+    showSpinner(false);
+  }
+}
+
+async function doSearch() {
+  const q = document.getElementById('query-input').value.trim();
+  const data = await fetchGraph(q);
+  renderGraph(data);
+}
+
+let highlightIds = null;  // Set of matching node IDs, or null when no highlight active
+
+async function doHighlight() {
+  const q = document.getElementById('query-input').value.trim();
+  if (!q) { clearHighlight(); return; }
+  if (!graphData.nodes.length) return;
+  showSpinner(true);
+  const data = await fetchGraph(q);
+  showSpinner(false);
+  highlightIds = new Set(data.nodes.map(n => n.id));
+  applyHighlight();
+}
+
+function applyHighlight() {
+  if (!highlightIds) return;
+  document.getElementById('highlight-btn').textContent = 'HIGHLIGHT ✕';
+  graph.nodeColor(n => {
+    if (!highlightIds.has(n.id)) return '#1e2230';  // dim non-matching
+    if (n._verifyVerdict === 'unsupported') return '#444455';
+    if (n._verifyVerdict === 'partial')     return '#f59e0b';
+    return NODE_COLORS[n.type] || '#888';
+  }).nodeVal(n => {
+    const base = n._normVal || 1;
+    return highlightIds.has(n.id) ? base * 1.5 : base * 0.3;
+  });
+}
+
+function clearHighlight() {
+  if (!highlightIds) return;
+  highlightIds = null;
+  document.getElementById('highlight-btn').textContent = 'HIGHLIGHT';
+  graph.nodeColor(n => {
+    if (n === selectedNode) return '#ffffff';
+    if (n._verifyVerdict === 'unsupported') return '#444455';
+    if (n._verifyVerdict === 'partial')     return '#f59e0b';
+    return NODE_COLORS[n.type] || '#888';
+  }).nodeVal(n => {
+    const base = n === selectedNode ? (n._normVal || 1) * 1.6 : (n._normVal || 1);
+    if (n._verifyVerdict === 'unsupported') return Math.max(0.5, base * 0.4);
+    return base;
+  });
+}
+
+async function doExtend() {
+  const q = document.getElementById('query-input').value.trim();
+  const data = await fetchGraph(q);
+  // merge: deduplicate by id
+  const existingIds = new Set(graphData.nodes.map(n => n.id));
+  const newNodes = [...graphData.nodes, ...data.nodes.filter(n => !existingIds.has(n.id))];
+  const existingEdges = new Set(graphData.links.map(l => `${l.source}-${l.target}`));
+  const newLinks = [...graphData.links, ...data.links.filter(l => !existingEdges.has(`${l.source}-${l.target}`))];
+  renderGraph({ nodes: newNodes, links: newLinks.slice(0, 300) });
+}
+
+function doClear() {
+  selectedNode = null; connectedIds = new Set(); stopLabelLoop();
+  graph.nodeColor(n => {
+    if (n._verifyVerdict === 'unsupported') return '#444455';
+    if (n._verifyVerdict === 'partial')     return '#f59e0b';
+    return NODE_COLORS[n.type] || '#888';
+  }).nodeVal(n => {
+    const base = n._normVal || 1;
+    return n._verifyVerdict === 'unsupported' ? Math.max(0.5, base * 0.4) : base;
+  });
+  sessionCache.clear();
+  graphData = { nodes: [], links: [] };
+  graph.graphData({ nodes: [], links: [] });
+  document.getElementById('node-count').textContent = '';
+  document.getElementById('detail-panel').innerHTML = '<div class="placeholder">Click a node to inspect it.</div>';
+}
+
+function showSpinner(on) {
+  document.getElementById('spinner').style.display = on ? 'flex' : 'none';
+}
+
+// ── Saved views ─────────────────────────────────────────────────────────────
+async function saveView() {
+  const name = prompt('View name:');
+  if (!name) return;
+  const query = document.getElementById('query-input').value.trim();
+  const resp = await fetch('/api/knowledge-graph/saved-views', {
+    method: 'POST', headers: AUTH_HEADERS,
+    body: JSON.stringify({ name, payload: { query } })
+  });
+  const result = await resp.json();
+  if (!resp.ok || result.error) {
+    alert(`Save failed: ${result.error || resp.status}`);
+  } else {
+    alert(`Saved: ${name}`);
+  }
+}
+
+async function showViews() {
+  const dd = document.getElementById('views-dropdown');
+  if (dd.style.display !== 'none') { dd.style.display = 'none'; return; }
+  const resp = await fetch('/api/knowledge-graph/saved-views', { headers: AUTH_HEADERS });
+  const views = await resp.json();
+  if (!views.length) { dd.innerHTML = '<div style="padding:10px;font-size:11px;color:#556">No saved views.</div>'; }
+  else {
+    dd.innerHTML = views.map(v => `
+      <div class="view-item" data-name="${escHtml(v.name)}" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;font-size:11px;cursor:pointer;border-bottom:1px solid #1e2230">
+        <span class="view-label">${escHtml(v.name)}</span>
+        <span class="view-del" data-name="${escHtml(v.name)}" style="margin-left:8px;color:#556;font-size:13px;line-height:1;cursor:pointer" title="Delete">✕</span>
+      </div>`).join('');
+    dd.querySelectorAll('.view-label').forEach(el => el.addEventListener('click', async () => {
+      dd.style.display = 'none';
+      const v = views.find(x => x.name === el.closest('.view-item').dataset.name);
+      if (v?.query) {
+        document.getElementById('query-input').value = v.query;
+        await doSearch();
+      }
+    }));
+    dd.querySelectorAll('.view-del').forEach(el => el.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const name = el.dataset.name;
+      if (!confirm(`Delete view "${name}"?`)) return;
+      const r = await fetch('/api/knowledge-graph/saved-views', {
+        method: 'DELETE', headers: AUTH_HEADERS,
+        body: JSON.stringify({ name })
+      });
+      if ((await r.json()).ok) {
+        el.closest('.view-item').remove();
+        if (!dd.querySelector('.view-item')) dd.style.display = 'none';
+      }
+    }));
+  }
+  dd.style.display = 'block';
+}
+
+// ── Event wiring ───────────────────────────────────────────────────────────
+document.getElementById('search-btn').addEventListener('click', doSearch);
+document.getElementById('extend-btn').addEventListener('click', doExtend);
+document.getElementById('highlight-btn').addEventListener('click', () => {
+  if (highlightIds) { clearHighlight(); } else { doHighlight(); }
+});
+document.getElementById('clear-btn').addEventListener('click', doClear);
+document.getElementById('save-btn').addEventListener('click', saveView);
+document.getElementById('views-btn').addEventListener('click', showViews);
+document.getElementById('query-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+document.addEventListener('click', e => {
+  if (!document.getElementById('views-dropdown').contains(e.target) && e.target.id !== 'views-btn')
+    document.getElementById('views-dropdown').style.display = 'none';
+});
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+initGraph();
+doSearch(); // auto-load full corpus on open
+</script>
+</body>
+</html>
