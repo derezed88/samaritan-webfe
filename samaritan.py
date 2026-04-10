@@ -936,13 +936,24 @@ async def stt_inworld_proxy(websocket: WebSocket, token: str = ""):
     vp_threshold   = float(params.get("vp_threshold", 0.3))
     vad_threshold  = float(params.get("vad_threshold", 0.7))
     eot_silence_ms = int(params.get("eot_silence_ms", 600))
+    # 2026-04-10 additions — Inworld was finalizing turns after ~1s of silence
+    # despite eot_silence_ms=3500, because that param only applies when Inworld
+    # is "confident" speech is complete. Inworld's confidence model fires too
+    # eagerly on falling-tone sentence endings. Solution: stop trusting the
+    # confidence model. Set the unconfident threshold and max-silence to match
+    # Speechmatics's 1.5s behavior, and raise the confidence threshold so
+    # Inworld is rarely "confident."
+    eot_unconfident_silence_ms = int(params.get("eot_unconfident_silence_ms", 1500))
+    eot_max_silence_ms         = int(params.get("eot_max_silence_ms",         1500))
+    eot_confidence_threshold   = float(params.get("eot_confidence_threshold", 0.95))
 
     await websocket.accept()
     _stt_start = time.time()
 
     inworld_url = "wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional"
-    logger.debug("Inworld STT connect: rate=%d vp_thresh=%.1f vad=%.1f eot=%dms",
-                sample_rate, vp_threshold, vad_threshold, eot_silence_ms)
+    logger.debug("Inworld STT connect: rate=%d vp_thresh=%.1f vad=%.1f eot=%dms eot_unconf=%dms eot_max=%dms eot_conf_thresh=%.2f",
+                sample_rate, vp_threshold, vad_threshold, eot_silence_ms,
+                eot_unconfident_silence_ms, eot_max_silence_ms, eot_confidence_threshold)
 
     try:
         async with ws_lib.connect(
@@ -966,7 +977,10 @@ async def stt_inworld_proxy(websocket: WebSocket, token: str = ""):
                         "voiceProfileThreshold": vp_threshold,
                         "inworldSttV1Config": {
                             "vadThreshold": vad_threshold,
-                            "minEndOfTurnSilenceWhenConfident": eot_silence_ms,
+                            "minEndOfTurnSilenceWhenConfident":   eot_silence_ms,
+                            "minEndOfTurnSilenceWhenUnconfident": eot_unconfident_silence_ms,
+                            "maxEndOfTurnSilence":                eot_max_silence_ms,
+                            "endOfTurnConfidenceThreshold":       eot_confidence_threshold,
                         },
                     },
                 }

@@ -3677,15 +3677,73 @@ const ttsProviders = {
       return this._clientSecret || null;
     },
 
+    // Retry config — added 2026-04-10 after Safari console diagnosis revealed
+    // that xAI TTS cutoffs are network failures (voice-token HTTP failure or
+    // WebSocket bad-response/abnormal-close), NOT decode errors. Original code
+    // had zero retry — one transient flake = one lost sentence. With multi-
+    // sentence responses, each sentence is its own connection so failure
+    // opportunities multiply.
+    _MAX_ATTEMPTS: 3,
+    _RETRY_DELAY_MS: 250,
+
     speak(text, _unused, onDone, onError) {
+      this._attemptSpeak(text, onDone, onError, 0);
+    },
+
+    _attemptSpeak(text, onDone, onError, attemptNum) {
       (async () => {
+        // Reset cached client secret per attempt — stale tokens should not be reused
+        if (attemptNum > 0) this._clientSecret = null;
+
         const clientSecret = await this._getToken();
-        if (!clientSecret) { onError('voice token failed'); return; }
-        this._speakWithToken(text, clientSecret, onDone, onError);
+        if (!clientSecret) {
+          // Token fetch failed — retry or fall back
+          if (attemptNum < this._MAX_ATTEMPTS - 1) {
+            console.warn(`[xai-tts] voice token failed (attempt ${attemptNum + 1}/${this._MAX_ATTEMPTS}), retrying...`);
+            setTimeout(() => this._attemptSpeak(text, onDone, onError, attemptNum + 1), this._RETRY_DELAY_MS);
+            return;
+          }
+          // All attempts exhausted — fall back to Inworld for this sentence so
+          // the response still completes in a comparable voice.
+          console.warn('[xai-tts] all token attempts failed, falling back to Inworld for this sentence');
+          ttsProviders.inworld.speak(text, null, onDone, onError);
+          return;
+        }
+        this._speakWithToken(text, clientSecret, onDone, onError, attemptNum);
       })();
     },
 
-    _speakWithToken(text, clientSecret, onDone, onError) {
+    _speakWithToken(text, clientSecret, onDone, onError, attemptNum = 0) {
+      // Track whether audio has actually started arriving — once any audio
+      // chunk is delivered, retries become unsafe (would replay partial audio)
+      let audioStarted = false;
+      // CRITICAL: when a WebSocket fails, BOTH onerror and onclose fire.
+      // Without this guard, retryOrFail runs twice per failure → two retries
+      // scheduled → two parallel WebSockets → audio doubling ("burn the
+      // budget-burn the budget" symptom observed 2026-04-10).
+      // This flag also coordinates with the success path (response.done)
+      // so a late onclose after success doesn't trigger a phantom retry.
+      let done = false;
+      const self = this;
+      const retryOrFail = (errMsg) => {
+        if (done) return;  // already handled this WebSocket's outcome
+        done = true;
+        if (audioStarted) {
+          // Mid-stream failure — too late to retry, propagate the error
+          onError(errMsg);
+          return;
+        }
+        if (attemptNum < self._MAX_ATTEMPTS - 1) {
+          console.warn(`[xai-tts] connection failed (${errMsg}, attempt ${attemptNum + 1}/${self._MAX_ATTEMPTS}), retrying...`);
+          setTimeout(() => self._attemptSpeak(text, onDone, onError, attemptNum + 1), self._RETRY_DELAY_MS);
+          return;
+        }
+        // All attempts exhausted — fall back to Inworld for this sentence
+        console.warn(`[xai-tts] all attempts failed (${errMsg}), falling back to Inworld for this sentence`);
+        ttsProviders.inworld.speak(text, null, onDone, onError);
+      };
+      const markDone = () => { done = true; };
+
       // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
       const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
       let ws;
@@ -3693,7 +3751,7 @@ const ttsProviders = {
         ws = new WebSocket('wss://api.x.ai/v1/realtime',
                            [`xai-client-secret.${clientSecret}`]);
       } catch (e) {
-        onError('ws: ' + e.message.slice(0, 40));
+        retryOrFail('ws: ' + e.message.slice(0, 40));
         return;
       }
       this._ws = ws;
@@ -3728,27 +3786,45 @@ const ttsProviders = {
         switch (msg.type) {
           case 'response.output_audio.delta':
             if (msg.delta) {
-              try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
-              catch (e) { onError('pcm: ' + e.message.slice(0, 25)); }
-              simliSendPcmBase64(msg.delta);
+              audioStarted = true;  // mark before scheduling — once any audio
+                                    // arrives, retries become unsafe
+              // 2026-04-10 fix: skip-and-continue on decode failure instead of
+              // aborting the whole response. xAI TTS occasionally sends a
+              // malformed PCM chunk ("Out of bounds access" in Safari console).
+              // Previous behavior: propagated to onError → TTS queue empties →
+              // cooldown chime fires → user perceives "Samaritan cut herself
+              // off." New behavior: log the bad chunk, skip it (creates a
+              // ~20-50ms imperceptible gap), let the rest of the sentence play.
+              // See belief 307 for the original diagnosis and beliefs 303/308
+              // for symptom history.
+              try {
+                scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000));
+                simliSendPcmBase64(msg.delta);
+              } catch (e) {
+                console.warn('[xai-tts] decode failed, skipping chunk:', e.message);
+                // Do NOT call onError — that would abort the whole response.
+                // The lost chunk is preferable to the lost sentence.
+              }
             }
             break;
           case 'response.done':
+            markDone();  // claim outcome before closing — prevents onclose-triggered retry
             ws.close(); this._ws = null;
             // Delay onDone to let final PCM chunks finish scheduling to activeSrcs
             setTimeout(onDone, 300);
             break;
           case 'error':
             ws.close(); this._ws = null;
-            onError((msg.error?.message || 'voice error').slice(0, 60)); break;
+            retryOrFail((msg.error?.message || 'voice error').slice(0, 60));
+            break;
         }
       };
 
-      ws.onerror = () => { this._ws = null; onError('voice ws error'); };
+      ws.onerror = () => { this._ws = null; retryOrFail('voice ws error'); };
 
       ws.onclose = (evt) => {
         if (this._ws === ws) this._ws = null;
-        if (evt.code !== 1000 && evt.code !== 1005) onError('voice closed: ' + evt.code);
+        if (evt.code !== 1000 && evt.code !== 1005) retryOrFail('voice closed: ' + evt.code);
       };
     },
 
@@ -3936,9 +4012,17 @@ const ttsProviders = {
         switch (msg.type) {
           case 'response.output_audio.delta':
             if (msg.delta) {
-              try { scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000)); }
-              catch (e) { if (this._currentError) this._currentError('pcm: ' + e.message.slice(0, 25)); }
-              simliSendPcmBase64(msg.delta);
+              // 2026-04-10 fix: skip-and-continue on decode failure (see xai
+              // provider above for full rationale). Was propagating to
+              // _currentError → cooldown chime + queue empty. Now drops bad
+              // chunk and continues the sentence.
+              try {
+                scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000));
+                simliSendPcmBase64(msg.delta);
+              } catch (e) {
+                console.warn('[xai-persistent] decode failed, skipping chunk:', e.message);
+                // Do NOT call _currentError — preserve the rest of the sentence.
+              }
             }
             break;
           case 'response.done': {
@@ -5254,6 +5338,13 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
         vp_threshold: 0.3,
         vad_threshold: 0.90,
         eot_silence_ms: 3500,
+        // 2026-04-10: stop trusting Inworld's confidence model — set
+        // unconfident silence and max silence to Speechmatics-equivalent
+        // 1500ms, raise confidence threshold so Inworld rarely fires the
+        // shorter "confident" path. See server log diagnosis 12:16-12:20.
+        eot_unconfident_silence_ms: 1500,
+        eot_max_silence_ms: 1500,
+        eot_confidence_threshold: 0.95,
         token: _apiKey,
       });
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
