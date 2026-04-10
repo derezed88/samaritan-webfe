@@ -61,11 +61,16 @@
     <div class="leg"><div class="leg-dot" style="background:#0ea5e9"></div>source</div>
     <div class="leg"><div class="leg-dot" style="background:#10b981"></div>drive</div>
     <div class="leg"><div class="leg-dot" style="background:#f59e0b"></div>memory</div>
+    <div class="leg"><div class="leg-dot" style="background:#ef4444"></div>goal</div>
+    <div class="leg"><div class="leg-dot" style="background:#94a3b8"></div>step</div>
     <div style="width:1px;background:#1e2230;margin:0 4px"></div>
     <div class="leg"><div class="leg-line" style="background:#0ea5e9"></div>ref</div>
     <div class="leg"><div class="leg-line" style="background:#94a3b8"></div>keyword</div>
     <div class="leg"><div class="leg-line" style="background:#10b981"></div>domain</div>
     <div class="leg"><div class="leg-line" style="background:#7c3aed"></div>semantic</div>
+    <div class="leg"><div class="leg-line" style="background:#a78bfa"></div>supports</div>
+    <div class="leg"><div class="leg-line" style="background:#f87171"></div>depends_on</div>
+    <div class="leg"><div class="leg-line" style="background:#fbbf24"></div>supersedes</div>
     <div class="leg"><div class="leg-line" style="background:#ef4444;opacity:0.5;border-top:1px dashed #ef4444"></div>suggested</div>
   </div>
   <span id="node-count"></span>
@@ -99,9 +104,9 @@
 const API_KEY = '%%SAMARITAN_API_KEY%%';
 const AUTH_HEADERS = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` };
 
-const NODE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b' };
-const EDGE_COLORS = { source_reference: '#0ea5e9', keyword_overlap: '#94a3b8', domain_tag: '#10b981', semantic: '#7c3aed', contradictory: '#ef4444' };
-const BADGE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b' };
+const NODE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b', goal: '#ef4444', step: '#94a3b8' };
+const EDGE_COLORS = { source_reference: '#0ea5e9', keyword_overlap: '#94a3b8', domain_tag: '#10b981', semantic: '#7c3aed', contradictory: '#ef4444', supports: '#a78bfa', supersedes: '#fbbf24', depends_on: '#f87171', contradicts: '#ef4444', derives_from: '#34d399', references: '#60a5fa' };
+const BADGE_COLORS = { belief: '#7c3aed', source: '#0ea5e9', drive: '#10b981', memory: '#f59e0b', goal: '#ef4444', step: '#94a3b8' };
 
 let sessionCache = new Map();   // query → {nodes, links}
 let graph = null;
@@ -331,7 +336,7 @@ async function verifySource(node) {
       html += `<div style="color:#ef444499;font-size:10px;margin-top:4px">Unsupported claims:<br>${r.unsupported_claims.map(c => `• ${escHtml(c)}`).join('<br>')}</div>`;
     }
     if (r.notes) html += `<div style="color:#556;font-size:10px;margin-top:4px">${escHtml(r.notes)}</div>`;
-    const sources = [r.url_extracted && 'URL content', r.xai_searched && 'xAI search', r.sonar_consulted && 'Sonar', r.google_consulted && 'Google'].filter(Boolean).join(' + ');
+    const sources = [r.drive_used && 'Google Drive', r.url_extracted && 'URL content', r.xai_searched && 'xAI search', r.sonar_consulted && 'Sonar', r.google_consulted && 'Google'].filter(Boolean).join(' + ');
     html += `<div style="color:#334;font-size:9px;margin-top:4px">Sources: ${sources || 'none'}</div>`;
     status.innerHTML = html;
 
@@ -382,7 +387,7 @@ async function fetchGraph(query) {
   try {
     const resp = await fetch('/api/knowledge-graph', {
       method: 'POST', headers: AUTH_HEADERS,
-      body: JSON.stringify({ query, node_types: ['belief','source','drive','memory'], limit: 150 })
+      body: JSON.stringify({ query, node_types: ['belief','source','drive','memory','goal','step'], limit: 150 })
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();

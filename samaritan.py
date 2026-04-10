@@ -1031,7 +1031,16 @@ async def stt_inworld_proxy(websocket: WebSocket, token: str = ""):
                     except Exception:
                         pass
 
-            await asyncio.gather(browser_to_inworld(), inworld_to_browser())
+            async def keepalive_ping():
+                """Send WebSocket pings to Inworld every 15s to prevent idle disconnect."""
+                try:
+                    while True:
+                        await asyncio.sleep(15)
+                        await iw_ws.ping()
+                except Exception:
+                    pass
+
+            await asyncio.gather(browser_to_inworld(), inworld_to_browser(), keepalive_ping())
 
     except Exception as e:
         logger.info("Inworld STT connect error: %s", e)
@@ -1047,6 +1056,158 @@ async def stt_inworld_proxy(websocket: WebSocket, token: str = ""):
             unit="seconds", unit_count=round(duration_s, 2),
         ))
 
+
+@app.websocket("/api/stt-speechmatics-proxy")
+async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
+    """Proxy browser WebSocket → Speechmatics Real-Time STT.
+    Browser sends raw PCM Int16 binary; proxy forwards binary directly.
+    Speechmatics returns JSON transcript messages which are forwarded to browser.
+    Query param: ?token=<SAMARITAN_API_KEY>&sample_rate=48000
+    """
+    if SAMARITAN_API_KEY and token != SAMARITAN_API_KEY:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    sm_key = os.getenv("SPEECHMATICS_API_KEY", "")
+    if not sm_key:
+        await websocket.close(code=4002, reason="SPEECHMATICS_API_KEY not configured")
+        return
+
+    params = dict(websocket.query_params)
+    params.pop("token", None)
+    sample_rate = int(params.get("sample_rate", 16000))
+    barge_mode = params.get("barge") == "1"
+
+    await websocket.accept()
+    _stt_start = time.time()
+
+    sm_url = "wss://us.rt.speechmatics.com/v2"
+    logger.info("Speechmatics STT connect: rate=%d url=%s barge=%s", sample_rate, sm_url, barge_mode)
+
+    try:
+        async with ws_lib.connect(
+            sm_url,
+            additional_headers={"Authorization": f"Bearer {sm_key}"},
+        ) as sm_ws:
+            logger.info("Speechmatics STT handshake OK")
+
+            # Barge-in mode: fast partials, no diarization, tight delays
+            # Speaker mode: accurate transcription, diarization enabled
+            if barge_mode:
+                transcription_config = {
+                    "language": "en",
+                    "operating_point": "enhanced",
+                    "enable_partials": True,
+                    "max_delay": 0.7,
+                }
+            else:
+                transcription_config = {
+                    "language": "en",
+                    "operating_point": "enhanced",
+                    "diarization": "speaker",
+                    "speaker_diarization_config": {
+                        "max_speakers": 5,
+                        "prefer_current_speaker": True,
+                    },
+                    "enable_partials": True,
+                    "max_delay": 4.0,
+                    "conversation_config": {
+                        "end_of_utterance_silence_trigger": 1.5,
+                    },
+                }
+
+            # Send StartRecognition config message
+            config_msg = json.dumps({
+                "message": "StartRecognition",
+                "audio_format": {
+                    "type": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": sample_rate,
+                },
+                "transcription_config": transcription_config,
+            })
+            await sm_ws.send(config_msg)
+
+            async def browser_to_speechmatics():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if "bytes" in msg and msg["bytes"]:
+                            # Raw PCM binary → forward directly to Speechmatics
+                            await sm_ws.send(msg["bytes"])
+                        elif "text" in msg and msg["text"]:
+                            # Pass through text messages (e.g. EndOfStream)
+                            await sm_ws.send(msg["text"])
+                        else:
+                            break
+                except (WebSocketDisconnect, Exception):
+                    pass
+                finally:
+                    try:
+                        await sm_ws.send(json.dumps({"message": "EndOfStream", "last_seq_no": 0}))
+                    except Exception:
+                        pass
+
+            async def speechmatics_to_browser():
+                try:
+                    async for message in sm_ws:
+                        if isinstance(message, str):
+                            try:
+                                sm_msg = json.loads(message)
+                            except Exception:
+                                continue
+                            msg_type = sm_msg.get("message", "")
+                            # Skip noisy ack messages — only forward transcript/control msgs
+                            if msg_type in ("AudioAdded", "ChannelAudioAdded"):
+                                continue
+                            try:
+                                await websocket.send_text(message)
+                            except Exception as send_err:
+                                logger.warning("Speechmatics→browser send failed: %s", send_err)
+                                break
+                            try:
+                                if msg_type in ("AddTranscript", "AddPartialTranscript"):
+                                    pass  # finals/partials forwarded to browser only — no server log
+                                elif msg_type == "EndOfUtterance":
+                                    logger.info("Speechmatics EndOfUtterance at %.2fs", sm_msg.get("end_time", 0))
+                                elif msg_type == "Error":
+                                    logger.warning("Speechmatics error: %s", json.dumps(sm_msg, separators=(',', ':')))
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.info("Speechmatics STT stream closed: %s %s", type(e).__name__, e)
+                finally:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+
+            async def keepalive_ping():
+                """Send WebSocket pings to Speechmatics every 15s to prevent idle disconnect."""
+                try:
+                    while True:
+                        await asyncio.sleep(15)
+                        await sm_ws.ping()
+                except Exception:
+                    pass
+
+            await asyncio.gather(browser_to_speechmatics(), speechmatics_to_browser(), keepalive_ping())
+
+    except Exception as e:
+        logger.warning("Speechmatics STT error: %s %s", type(e).__name__, e)
+        import traceback
+        logger.warning("Speechmatics traceback: %s", traceback.format_exc())
+        try:
+            await websocket.close(code=1011, reason=str(e)[:100])
+        except Exception:
+            pass
+    finally:
+        duration_s = time.time() - _stt_start
+        asyncio.ensure_future(_log_cost(
+            provider="speechmatics", service="speechmatics-enhanced",
+            cost_usd=duration_s * 0.60 / 3600,
+            unit="seconds", unit_count=round(duration_s, 2),
+        ))
 
 
 @app.get("/knowledge-graph", response_class=HTMLResponse)
@@ -1075,7 +1236,7 @@ async def knowledge_graph_api(request: Request):
     import aiomysql
     body   = await request.json()
     query  = body.get("query", "").strip().lower()
-    types  = set(body.get("node_types", ["belief", "source", "drive", "memory"]))
+    types  = set(body.get("node_types", ["belief", "source", "drive", "memory", "goal"]))
     limit  = min(int(body.get("limit", 150)), 300)
 
     mysql_user = os.getenv("MYSQL_USER", "markj")
@@ -1226,6 +1387,97 @@ async def knowledge_graph_api(request: Request):
                                 links.append({"source": src_nid, "target": n["id"],
                                               "weight": 1.0, "reason": "source_reference"})
 
+            # ── goals ─────────────────────────────────────────────────
+            # Active and recently-done goals. Goals are first-class entities
+            # in samaritan_relationships (depends_on edges to plan steps).
+            if "goal" in types:
+                if words:
+                    tclauses = [f"LOWER(title) LIKE %s" for _ in words]
+                    dclauses = [f"LOWER(description) LIKE %s" for _ in words]
+                    params = [f"%{w}%" for w in words] + [f"%{w}%" for w in words]
+                    where = " AND (" + " OR ".join(tclauses + dclauses) + ")"
+                else:
+                    where, params = "", []
+                sql = f"SELECT id, title, description, importance, status FROM samaritan_goals WHERE status IN ('active','done'){where} ORDER BY importance DESC, updated_at DESC LIMIT {limit // 2}"
+                await cur.execute(sql, params)
+                for r in await cur.fetchall():
+                    nid = f"g{r['id']}"
+                    nodes.append({"id": nid, "label": r["title"], "type": "goal",
+                                  "content": (r["description"] or "")[:1500],
+                                  "score": float(r["importance"] or 0) / 10.0})
+                    node_ids.add(nid)
+
+            # ── steps ─────────────────────────────────────────────────
+            # Plan steps belonging to loaded goals. Without this filter the
+            # graph would explode (1,673 steps in the table). Only load steps
+            # whose goal_id is already in the result set.
+            if "step" in types or "goal" in types:
+                goal_nids = [int(nid[1:]) for nid in node_ids if nid.startswith("g") and nid[1:].isdigit()]
+                if goal_nids:
+                    placeholders = ",".join(["%s"] * len(goal_nids))
+                    # Newest steps first — relationship edges are populated for
+                    # recent steps. Loading by goal_id ASC would load old goals'
+                    # earliest steps and miss every relationship edge.
+                    sql = (
+                        f"SELECT id, goal_id, description, status, step_type "
+                        f"FROM samaritan_plans WHERE goal_id IN ({placeholders}) "
+                        f"ORDER BY id DESC LIMIT {limit}"
+                    )
+                    await cur.execute(sql, goal_nids)
+                    for r in await cur.fetchall():
+                        nid = f"st{r['id']}"
+                        # Truncate long step descriptions for label readability
+                        label = (r["description"] or "")[:80]
+                        nodes.append({"id": nid, "label": label, "type": "step",
+                                      "content": r["description"] or "",
+                                      "score": 0.5 if r["status"] == "done" else 0.3})
+                        node_ids.add(nid)
+
+            # ── edges: samaritan_relationships (explicit typed graph) ──
+            _TYPE_PREFIX = {
+                "belief": "b", "source": "s", "memory": "m",
+                "goal": "g", "step": "st", "procedure": "p", "conditioned": "c",
+                "prospective": "pr",
+            }
+            if node_ids:
+                # Collect numeric IDs grouped by entity type
+                _nids_by_type: dict[str, list[int]] = {}
+                for nid in node_ids:
+                    for etype, prefix in _TYPE_PREFIX.items():
+                        if nid.startswith(prefix) and (nid[len(prefix):]).isdigit():
+                            _nids_by_type.setdefault(etype, []).append(int(nid[len(prefix):]))
+                            break
+                # Query relationships where BOTH endpoints are loaded.
+                # Pairwise AND clauses (source_type×target_type combinations) —
+                # avoids LIMIT cutting off rows that point at unloaded nodes.
+                pair_clauses, rel_params = [], []
+                etypes = list(_nids_by_type.items())
+                for s_etype, s_eids in etypes:
+                    s_ph = ",".join(["%s"] * len(s_eids))
+                    for t_etype, t_eids in etypes:
+                        t_ph = ",".join(["%s"] * len(t_eids))
+                        pair_clauses.append(
+                            f"(source_type=%s AND source_id IN ({s_ph}) "
+                            f"AND target_type=%s AND target_id IN ({t_ph}))"
+                        )
+                        rel_params.extend([s_etype] + s_eids + [t_etype] + t_eids)
+                if pair_clauses:
+                    rel_sql = (
+                        "SELECT source_type, source_id, target_type, target_id, "
+                        "relationship_type, weight FROM samaritan_relationships "
+                        "WHERE " + " OR ".join(pair_clauses) + " LIMIT 500"
+                    )
+                    await cur.execute(rel_sql, rel_params)
+                    for r in await cur.fetchall():
+                        s_nid = f"{_TYPE_PREFIX.get(r['source_type'], 'x')}{r['source_id']}"
+                        t_nid = f"{_TYPE_PREFIX.get(r['target_type'], 'x')}{r['target_id']}"
+                        if len(links) < 300:
+                            links.append({
+                                "source": s_nid, "target": t_nid,
+                                "weight": float(r["weight"] or 1.0),
+                                "reason": r["relationship_type"],
+                            })
+
             # ── edges: keyword overlap (topic keywords shared) ────────
             # Require 1 shared word that is >= 5 chars (filters trivial single-domain
             # tokens like "aruba" or "lee" that would over-connect all beliefs).
@@ -1293,12 +1545,15 @@ async def knowledge_graph_api(request: Request):
             s, t = lnk["source"], lnk["target"]
             edge_pairs.add((s, t)); edge_pairs.add((t, s))
 
-        # Group node IDs by type prefix
+        # Group node IDs by type prefix. Only single-char prefixes have Qdrant
+        # collections (b/s/m); multi-char prefixes like "st" (step) and "g"
+        # (goal) are skipped — they have no embeddings.
         by_type: dict = {"b": [], "s": [], "m": []}
         for nid in node_ids:
             prefix = nid[0]
-            if prefix in by_type:
-                by_type[prefix].append(int(nid[1:]))
+            rest = nid[1:]
+            if prefix in by_type and rest.isdigit():
+                by_type[prefix].append(int(rest))
 
         def _build_semantic_edges():
             qc = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=10)
@@ -1363,6 +1618,41 @@ async def kg_verify_source(request: Request):
     if not url or not summary:
         return JSONResponse({"error": "url and summary required"}, status_code=400)
 
+    # ── Drive source detection ───────────────────────────────────────────────
+    # If source_id resolves to a Drive source, read the doc via Google Drive API
+    # instead of url_extract_tavily (which can't access private docs).
+    drive_file_id = None
+    is_drive_source = False
+    if source_id:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=10, write=5, pool=5)) as http:
+                meta_resp = await http.post(
+                    f"{MCP_DIRECT_URL}/db_query",
+                    json={"sql": f"SELECT source_type, source_ref, drive_file_id FROM samaritan_sources WHERE id={int(source_id)} LIMIT 1"}
+                )
+            if meta_resp.is_success:
+                meta_result = meta_resp.json().get("result", "")
+                if "drive" in str(meta_result).lower():
+                    is_drive_source = True
+                    # Extract file_id from source_ref (format: "gdrive:<file_id>")
+                    import re as _re
+                    gdrive_match = _re.search(r'gdrive:([A-Za-z0-9_\-]+)', str(meta_result))
+                    if gdrive_match:
+                        drive_file_id = gdrive_match.group(1)
+        except Exception as _exc:
+            logger.warning("verify-source drive detection failed: %s", _exc)
+
+    # Also detect by URL pattern as fallback
+    if not is_drive_source and ("docs.google.com" in url or "drive.google.com" in url):
+        is_drive_source = True
+        gdrive_id_match = None
+        import re as _re
+        for pattern in (r'/d/([A-Za-z0-9_\-]+)', r'id=([A-Za-z0-9_\-]+)'):
+            m = _re.search(pattern, url)
+            if m:
+                drive_file_id = m.group(1)
+                break
+
     def _is_substantial(text: str, min_chars: int = 300) -> bool:
         """True if text looks like real extracted content, not an error/empty response."""
         if not text or len(text) < min_chars:
@@ -1378,43 +1668,67 @@ async def kg_verify_source(request: Request):
         )
         return not any(p in low for p in error_phrases)
 
-    # ── Step 1: fetch all four sources in parallel ────────────────────────────
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as http:
-        url_task    = http.post(f"{MCP_DIRECT_URL}/url_extract_tavily",
-                                json={"url": url, "query": title})
-        xai_task    = http.post(f"{MCP_DIRECT_URL}/xai_search",
-                                json={"query": f"{title} {' '.join(summary.split()[:6])}"})
-        sonar_task  = http.post(f"{MCP_DIRECT_URL}/sonar_answer",
-                                json={"query": f"What does '{title}' cover? Verify: {summary[:300]}"})
-        google_task = http.post(f"{MCP_DIRECT_URL}/google_search",
-                                json={"query": f"{title} {' '.join(summary.split()[:8])}"})
-        url_resp, xai_resp, sonar_resp, google_resp = await asyncio.gather(
-            url_task, xai_task, sonar_task, google_task, return_exceptions=True)
-
+    # ── Step 1: fetch source content ─────────────────────────────────────────
     url_content = ""
     xai_content = ""
     sonar_content  = ""
     google_content = ""
 
-    if not isinstance(url_resp, Exception) and url_resp.is_success:
-        url_content = str(url_resp.json().get("result", ""))[:3000]
-    elif isinstance(url_resp, Exception):
-        logger.warning("verify-source url_extract failed: %s", url_resp)
+    if is_drive_source and drive_file_id:
+        # Drive path: read doc via Google Drive API, cross-check claims with web
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as http:
+            drive_task = http.post(f"{MCP_DIRECT_URL}/google_drive",
+                                   json={"operation": "read", "file_id": drive_file_id})
+            xai_task   = http.post(f"{MCP_DIRECT_URL}/xai_search",
+                                   json={"query": f"{title} {' '.join(summary.split()[:6])}"})
+            sonar_task = http.post(f"{MCP_DIRECT_URL}/sonar_answer",
+                                   json={"query": f"What does '{title}' cover? Verify: {summary[:300]}"})
+            drive_resp, xai_resp, sonar_resp = await asyncio.gather(
+                drive_task, xai_task, sonar_task, return_exceptions=True)
 
-    if not isinstance(xai_resp, Exception) and xai_resp.is_success:
-        xai_content = str(xai_resp.json().get("result", ""))[:2000]
-    elif isinstance(xai_resp, Exception):
-        logger.warning("verify-source xai_search failed: %s", xai_resp)
+        if not isinstance(drive_resp, Exception) and drive_resp.is_success:
+            url_content = str(drive_resp.json().get("result", ""))[:4000]
+        else:
+            logger.warning("verify-source google_drive read failed: %s", drive_resp)
 
-    if not isinstance(sonar_resp, Exception) and sonar_resp.is_success:
-        sonar_content = str(sonar_resp.json().get("result", ""))[:2000]
-    elif isinstance(sonar_resp, Exception):
-        logger.warning("verify-source sonar failed: %s", sonar_resp)
+        if not isinstance(xai_resp, Exception) and xai_resp.is_success:
+            xai_content = str(xai_resp.json().get("result", ""))[:2000]
+        if not isinstance(sonar_resp, Exception) and sonar_resp.is_success:
+            sonar_content = str(sonar_resp.json().get("result", ""))[:2000]
 
-    if not isinstance(google_resp, Exception) and google_resp.is_success:
-        google_content = str(google_resp.json().get("result", ""))[:2000]
-    elif isinstance(google_resp, Exception):
-        logger.warning("verify-source google failed: %s", google_resp)
+    else:
+        # Internet path: all four sources in parallel
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as http:
+            url_task    = http.post(f"{MCP_DIRECT_URL}/url_extract_tavily",
+                                    json={"url": url, "query": title})
+            xai_task    = http.post(f"{MCP_DIRECT_URL}/xai_search",
+                                    json={"query": f"{title} {' '.join(summary.split()[:6])}"})
+            sonar_task  = http.post(f"{MCP_DIRECT_URL}/sonar_answer",
+                                    json={"query": f"What does '{title}' cover? Verify: {summary[:300]}"})
+            google_task = http.post(f"{MCP_DIRECT_URL}/google_search",
+                                    json={"query": f"{title} {' '.join(summary.split()[:8])}"})
+            url_resp, xai_resp, sonar_resp, google_resp = await asyncio.gather(
+                url_task, xai_task, sonar_task, google_task, return_exceptions=True)
+
+        if not isinstance(url_resp, Exception) and url_resp.is_success:
+            url_content = str(url_resp.json().get("result", ""))[:3000]
+        elif isinstance(url_resp, Exception):
+            logger.warning("verify-source url_extract failed: %s", url_resp)
+
+        if not isinstance(xai_resp, Exception) and xai_resp.is_success:
+            xai_content = str(xai_resp.json().get("result", ""))[:2000]
+        elif isinstance(xai_resp, Exception):
+            logger.warning("verify-source xai_search failed: %s", xai_resp)
+
+        if not isinstance(sonar_resp, Exception) and sonar_resp.is_success:
+            sonar_content = str(sonar_resp.json().get("result", ""))[:2000]
+        elif isinstance(sonar_resp, Exception):
+            logger.warning("verify-source sonar failed: %s", sonar_resp)
+
+        if not isinstance(google_resp, Exception) and google_resp.is_success:
+            google_content = str(google_resp.json().get("result", ""))[:2000]
+        elif isinstance(google_resp, Exception):
+            logger.warning("verify-source google failed: %s", google_resp)
 
     url_substantial    = _is_substantial(url_content)
     xai_substantial    = _is_substantial(xai_content, min_chars=100)
@@ -1426,7 +1740,46 @@ async def kg_verify_source(request: Request):
         return JSONResponse({"error": "Could not retrieve any source content for verification"}, status_code=502)
 
     # ── Step 2: LLM assessment ────────────────────────────────────────────────
-    prompt = f"""You are verifying whether a stored source summary is supported by the actual source content.
+    if is_drive_source:
+        prompt = f"""You are verifying whether a stored summary accurately describes an internally-authored Google Drive document.
+
+DOCUMENT CONTENT (read from Google Drive — "{title}"):
+{url_content if url_substantial else "(document read failed — check Drive permissions)"}
+
+XAI/GROK SEARCH RESULTS (cross-checking external facts cited in the doc):
+{xai_content if xai_substantial else "(no relevant external results)"}
+
+SONAR/PERPLEXITY (cross-checking external facts cited in the doc):
+{sonar_content if sonar_substantial else "(not consulted or no results)"}
+
+STORED SUMMARY TO VERIFY:
+{summary}
+
+This is an internal document authored by Samaritan. The document content above IS the source of truth.
+Task:
+1. If document was read successfully: check whether the stored summary accurately describes the document contents. Return "supported" if yes, "partial" if partially, "unsupported" if the summary misrepresents the doc.
+2. If document read failed: return "partial" with confidence 0.3 and note the read failure.
+3. Optionally: flag any factual claims in the doc that appear to be contradicted by the web search results above.
+
+IMPORTANT — use SEMANTIC matching, not literal string matching:
+- A summary claim is supported if the CONCEPT appears ANYWHERE in the doc, even briefly, even if the exact words differ.
+  Example: summary says "firmware management" → doc mentions firmware versions, upgrades, image files, rollback, or any firmware-related content → SUPPORTED.
+- Do NOT require a dedicated section, heading, or detailed coverage. A single paragraph or even a passing reference to a concept counts as that topic being covered.
+- Do NOT flag a claim as unsupported because the doc "lacks specific details" or "has no dedicated section." That is a quality observation, not an unsupported claim.
+- Only flag as unsupported if the concept is completely absent from the document or directly contradicted.
+- Differences in phrasing, terminology level (technical vs. plain language), or specificity do NOT make a claim unsupported.
+
+"Unverifiable" is NOT the same as "unsupported". Only return "unsupported" if you found CONTRADICTING evidence.
+
+Respond with ONLY valid JSON (no markdown):
+{{
+  "verdict": "supported" | "partial" | "unsupported",
+  "confidence": 0.0-1.0,
+  "unsupported_claims": ["claim 1", "claim 2"],
+  "notes": "one sentence explanation"
+}}"""
+    else:
+        prompt = f"""You are verifying whether a stored source summary is supported by the actual source content.
 
 SOURCE URL CONTENT (extracted from {url}):
 {url_content if url_substantial else "(extraction failed — URL may require auth or be a private document)"}
@@ -1487,7 +1840,7 @@ Respond with ONLY valid JSON (no markdown):
     can_upgrade   = verdict == "supported" and confidence >= 0.6
     should_update_score = can_upgrade or (can_downgrade and verdict != "supported")
 
-    if source_id and should_update_score:
+    if source_id:
         try:
             import aiomysql
             mysql_user = os.getenv("MYSQL_USER", "markj")
@@ -1496,11 +1849,18 @@ Respond with ONLY valid JSON (no markdown):
                 host="localhost", user=mysql_user, password=mysql_pass,
                 db="mymcp", charset="utf8mb4", autocommit=True,
             )
+            methods_label = "drive+xai+sonar" if is_drive_source else "url+xai+sonar+google"
             async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE samaritan_sources SET truth_score=%s WHERE id=%s",
-                    (new_raw_score, source_id)
-                )
+                if should_update_score:
+                    await cur.execute(
+                        "UPDATE samaritan_sources SET truth_score=%s, verified_at=NOW(), verification_methods=%s WHERE id=%s",
+                        (new_raw_score, methods_label, source_id)
+                    )
+                else:
+                    await cur.execute(
+                        "UPDATE samaritan_sources SET verified_at=NOW(), verification_methods=%s WHERE id=%s",
+                        (methods_label, source_id)
+                    )
             conn.close()
         except Exception as exc:
             logger.warning("verify-source DB update failed: %s", exc)
@@ -1512,7 +1872,8 @@ Respond with ONLY valid JSON (no markdown):
         "notes":              assessment.get("notes", ""),
         "new_score":          round(new_raw_score / 10.0, 1),
         "score_updated":      bool(source_id and should_update_score),
-        "url_extracted":      bool(url_content),
+        "drive_used":         bool(is_drive_source and url_content),
+        "url_extracted":      bool(url_content and not is_drive_source),
         "xai_searched":       bool(xai_content),
         "sonar_consulted":    bool(sonar_content),
         "google_consulted":   bool(google_content),

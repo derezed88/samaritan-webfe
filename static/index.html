@@ -819,6 +819,7 @@
     #mic-btn.barge       { border-color: var(--red); color: var(--red); }
     #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
     #mic-btn.inworld     { border-color: #00d4ff;    color: #00d4ff; }
+    #mic-btn.sm-barge    { border-color: #ff6b6b;    color: #ff6b6b; }
     @keyframes dg-di-pulse {
       from { border-color: #3b82f6; color: #3b82f6; box-shadow: 0 0 4px #3b82f6; }
       to   { border-color: var(--red); color: var(--red); box-shadow: 0 0 18px rgba(254,45,45,0.5); }
@@ -1517,6 +1518,11 @@
       color: #3b82f6;
       box-shadow: 0 0 6px rgba(59,130,246,0.5);
     }
+    #spk-filter-btn.active {
+      border-color: #10b981;
+      color: #10b981;
+      box-shadow: 0 0 6px rgba(16,185,129,0.5);
+    }
 
     .cam-btn {
       background: transparent;
@@ -1607,15 +1613,6 @@
       #cam-controls { right: 70px; }
     }
     /* ─── Simli avatar mode ─── */
-    #av-controls {
-      display: flex;
-      gap: 4px;
-      align-items: center;
-      position: absolute;
-      left: 150px;
-      top: 50%;
-      transform: translateY(-50%);
-    }
     #av-btn.active {
       border-color: #a855f7;
       color: #a855f7;
@@ -1708,8 +1705,7 @@
       <span>SAMARITAN // INTERFACE v2.0</span>
       <div id="di-controls">
         <button id="di-btn" class="cam-btn" title="Speaker diarization (Nova-3) — for multi-person conversations">DI</button>
-      </div>
-      <div id="av-controls">
+        <button id="spk-filter-btn" class="cam-btn" style="display:none" title="Speaker filter: 1=only you, ALL=everyone tagged">1</button>
         <button id="av-btn" class="cam-btn" title="Avatar mode: off — tap to activate">AV</button>
       </div>
       <div id="cam-controls">
@@ -1944,13 +1940,31 @@ let fullVoiceMode = false; // true when Samaritan TTS is active
 let micMode = 'off';
 let diMode  = false;  // true = nova-3 diarization overlay active
 let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
-const MIC_MODES = ['off', 'barge', 'speaker', 'inworld'];
-const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW' };
+const MIC_MODES = ['off', 'barge', 'speaker', 'inworld', 'speechmatics', 'sm-barge'];
+const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW', speechmatics: 'SM', 'sm-barge': 'SMB' };
+
+// ── SM speaker filter ──────────────────────────────────────────
+// spkFilter=true (default): only S1 (first speaker = admin) text is submitted
+// spkFilter=false: all speakers' text submitted with "S1:/S2:" prefixes
+let spkFilter = true;
+let _smPrimarySpeaker = null;  // speaker label assigned to admin (first speaker detected)
+
+function _smIsSMMode() { return micMode === 'speechmatics' || micMode === 'sm-barge'; }
+
+function _updateSpkFilterBtn() {
+  const btn = document.getElementById('spk-filter-btn');
+  if (!btn) return;
+  btn.style.display = _smIsSMMode() ? '' : 'none';
+  btn.textContent = spkFilter ? '1' : 'ALL';
+  btn.classList.toggle('active', !spkFilter);
+}
 
 function setMicMode(mode) {
   micMode = mode;
+  _smPrimarySpeaker = null;  // reset speaker tracking on mode change
+  _updateSpkFilterBtn();
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker', 'inworld');
+  micBtn.classList.remove('barge', 'speaker', 'inworld', 'speechmatics', 'sm-barge');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -2033,14 +2047,14 @@ const THEME_TRANSITION_MS     = 3000;  // ms for dark/light crossfade (must matc
 const LONG_RESPONSE_THRESHOLD = 10;    // words — responses >= this use terminal display instead of word flash
 const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewriter effect
 const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
-let   TTS_PROVIDER            = 'inworld';              // active TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
-const XAI_VOICE               = 'ara';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
+let   TTS_PROVIDER            = 'inworld';               // active TTS provider: 'deepgram' | 'inworld' | 'xai' | 'xai-persistent'
+const XAI_VOICE               = 'eve';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
 let   INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
 const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en'; // Deepgram Aura TTS model
 // Model to auto-switch to when xai-persistent TTS is selected, and back when leaving.
 // Set to null to disable auto-switch (use !model manually instead).
 const XAI_PERSISTENT_MODEL    = 'samaritan-voice-fast';  // llmem-gw model key for persistent mode
-const INWORLD_MODEL           = 'inworld-tts-1.5-mini'; // Inworld model ID
+const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
 const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
@@ -2565,7 +2579,8 @@ function handleCommand(raw) {
       else if (args[0] === 'chat') enterChatMode();
       else if (args[0] === 'chat-ged') enterChatGedMode();
       else if (args[0] === 'claude') enterClaudeMode();
-      else flashError('usage: #mode <cognitive|default|chat|chat-ged|claude>');
+      else if (args[0] === 'knowledge-graph' || args[0] === 'kg') window.location.href = '/knowledge-graph';
+      else flashError('usage: #mode <cognitive|default|chat|chat-ged|claude|knowledge-graph>');
       break;
     case '#db':
       if (!args[0]) { flashError('usage: #db <name>'); break; }
@@ -3719,7 +3734,10 @@ const ttsProviders = {
             }
             break;
           case 'response.done':
-            ws.close(); this._ws = null; onDone(); break;
+            ws.close(); this._ws = null;
+            // Delay onDone to let final PCM chunks finish scheduling to activeSrcs
+            setTimeout(onDone, 300);
+            break;
           case 'error':
             ws.close(); this._ws = null;
             onError((msg.error?.message || 'voice error').slice(0, 60)); break;
@@ -3926,7 +3944,8 @@ const ttsProviders = {
           case 'response.done': {
             const cb = this._currentDone;
             this._currentDone = null; this._currentError = null;
-            if (cb) cb();
+            // Delay onDone to let final PCM chunks finish scheduling to activeSrcs
+            if (cb) setTimeout(cb, 300);
             break;
           }
           case 'error': {
@@ -4165,7 +4184,7 @@ function _ttsFlush() {
             setTimeout(waitForAudio, 100);
           } else {
             isSpeaking = false;
-            if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
+            if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
             waitForDrainThenListen(_ttsWasKbd);
           }
         })();
@@ -4181,7 +4200,7 @@ function _ttsFlush() {
         _ttsFlush();
       } else if (_ttsDone) {
         isSpeaking = false;
-        if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
+        if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
         waitForDrainThenListen(_ttsWasKbd);
       } else {
         isSpeaking = false;
@@ -4195,7 +4214,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
-    if (micMode === 'speaker' || micMode === 'inworld' || diMode) startSpeakerCooldown();
+    if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
@@ -4617,6 +4636,12 @@ function waitForDrainThenListen(wasKbd) {
 // Shared state used by both providers:
 let isListening = false;
 
+function onSttConnecting() {
+  micBtn.classList.add('listening');
+  micIcon.textContent = '◌';   // hollow circle = connecting, not ready yet
+  voicePreview.textContent = 'CONNECTING…';
+  setStatus('CONNECTING', true);
+}
 function onSttStart() {
   isListening = true;
   _sttRestartAttempted = false;  // successful start — reset restart guard
@@ -4632,7 +4657,7 @@ function onSttPartial(text) {
   // Barge-in: in 'barge' mode — stop TTS immediately when speech is heard.
   // Require actual transcript text to avoid false barge-in from ambient noise
   // triggering StartOfTurn with empty/short partials.
-  if (isSpeaking && micMode === 'barge' && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
+  if (isSpeaking && (micMode === 'barge' || micMode === 'sm-barge') && text.trim().split(/\s+/).filter(Boolean).length >= STT_BARGE_MIN_WORDS) {
     console.log('[TTS] barge-in triggered:', text.trim().slice(0, 40));
     stopAllAudio();
     resetTtsPipeline();
@@ -4687,6 +4712,9 @@ function beepReady() {
 function startSpeakerCooldown() {
   // Called whenever TTS ends in speaker mode — sets cooldown and schedules ready chime
   _sttCooldownUntil = Date.now() + STT_SPEAKER_COOLDOWN_MS;
+  // Reset SM speaker tracking after TTS — diarization may reassign speaker IDs
+  // when the audio profile changes (e.g. TTS output heard, AirPods removed)
+  _smPrimarySpeaker = null;
   setTimeout(beepReady, STT_SPEAKER_COOLDOWN_MS);
 }
 
@@ -4700,7 +4728,7 @@ function onSttFinal(text) {
   const wordCount = query.split(/\s+/).length;
   // Global minimum word filter — catches ambient noise across all mic modes
   // Barge-in modes use their own lighter filter (STT_BARGE_MIN_WORDS = 1)
-  if (micMode === 'barge') {
+  if (micMode === 'barge' || micMode === 'sm-barge') {
     if (wordCount < STT_BARGE_MIN_WORDS) {
       console.log('[STT] barge skip (too few words):', query);
       return;
@@ -4714,9 +4742,9 @@ function onSttFinal(text) {
   // Barge-in only exempted when TTS is actually playing (isSpeaking); while
   // waiting for LLM response (isStreaming, !isSpeaking) there's nothing to barge into.
   // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
-  if (isStreaming && !claudeMode && !(micMode === 'barge' && isSpeaking)) return;
+  if (isStreaming && !claudeMode && !((micMode === 'barge' || micMode === 'sm-barge') && isSpeaking)) return;
   // In speaker/diarize/inworld mode: suppress while TTS is playing or during post-TTS cooldown.
-  if (micMode === 'speaker' || micMode === 'inworld' || diMode) {
+  if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) {
     if (isSpeaking) return;
     // Also suppress during cooldown unconditionally — catches Deepgram finals that
     // arrive after isSpeaking clears but were captured while audio was still playing.
@@ -4814,7 +4842,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
 
   async function startDg() {
     active = true;
-    onSttStart();
+    onSttConnecting();
     try {
 
       // Create AudioContext FIRST (synchronously in user-gesture context) so iOS
@@ -4849,6 +4877,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
       dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
+        onSttStart();
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
 
         // Try AudioWorklet first; fall back to ScriptProcessorNode for iOS Safari
@@ -4893,7 +4922,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
         // In speaker mode, drop mic audio while TTS is playing or cooldown is active.
         // This prevents Deepgram from transcribing speaker output at all.
-        if (micMode === 'speaker' && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+        if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
           _pcmBuf = []; _pcmBufLen = 0;  // discard any buffered audio too
           return;
         }
@@ -5011,7 +5040,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
     active = true;
     _speakerWords = [];
     _pendingDiTranscript = null;
-    onSttStart();
+    onSttConnecting();
     try {
       audioCtxDg = new AudioContext();
       if (audioCtxDg.state === 'suspended') {
@@ -5046,6 +5075,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
       dgWs.binaryType = 'arraybuffer';
 
       dgWs.onopen = async () => {
+        onSttStart();
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
         let usedWorklet = false;
         try {
@@ -5200,7 +5230,7 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
   async function startIw() {
     active = true;
     _iwVoiceProfile = null;
-    onSttStart();
+    onSttConnecting();
     try {
       audioCtxIw = new AudioContext();
       if (audioCtxIw.state === 'suspended') {
@@ -5222,14 +5252,15 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
       const params = new URLSearchParams({
         sample_rate: actualRate,
         vp_threshold: 0.3,
-        vad_threshold: 0.85,
-        eot_silence_ms: 2000,
+        vad_threshold: 0.90,
+        eot_silence_ms: 3500,
         token: _apiKey,
       });
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       iwWs = new WebSocket(`${wsProto}//${location.host}/api/stt-inworld-proxy?${params}`);
       iwWs.binaryType = 'arraybuffer';
       iwWs.onopen = async () => {
+        onSttStart();
         const source = audioCtxIw.createMediaStreamSource(mediaStream);
         let usedWorklet = false;
         try {
@@ -5259,7 +5290,7 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
       let _pcmBufLen = 0;
       function sendPcm(f32) {
         if (!iwWs || iwWs.readyState !== WebSocket.OPEN) return;
-        if (micMode === 'speaker' && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+        if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
           _pcmBuf = []; _pcmBufLen = 0;
           return;
         }
@@ -5338,6 +5369,140 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
   return { start: startIw, stop: stopIw };
 })();
 
+// ── Speechmatics STT provider ─────────────────────
+const STT_SM_STITCH_MS = 3000;  // ms to hold SM finals before submitting — merges split segments
+const _sm = (() => {
+  let smWs = null, audioCtxSm = null, workletNode = null, mediaStream = null, active = false;
+  let _stitchTimer = null, _stitchBuf = '', _stitchSpeakers = [];
+  function _flushStitch() {
+    _stitchTimer = null;
+    let combined = _stitchBuf.trim();
+    const speakers = _stitchSpeakers.filter(Boolean);
+    _stitchBuf = ''; _stitchSpeakers = [];
+    if (!combined) return;
+
+    // Determine majority speaker in this utterance
+    const spkCounts = {};
+    for (const s of speakers) spkCounts[s] = (spkCounts[s] || 0) + 1;
+    const majoritySpeaker = Object.entries(spkCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+    // Auto-assign primary speaker (first majority speaker detected = admin)
+    if (majoritySpeaker && !_smPrimarySpeaker) _smPrimarySpeaker = majoritySpeaker;
+
+    // Filter mode: drop utterances where majority speaker is not admin
+    if (spkFilter && _smPrimarySpeaker && majoritySpeaker && majoritySpeaker !== _smPrimarySpeaker) {
+      return;  // silently drop non-admin utterance
+    }
+
+    // Multi-speaker mode: prefix with majority speaker label
+    if (!spkFilter && majoritySpeaker) {
+      combined = majoritySpeaker + ': ' + combined;
+    }
+    onSttPartial(combined); onSttFinal(combined);
+  }
+  function _queueStitch(text, speaker) {
+    _stitchBuf = _stitchBuf ? _stitchBuf + ' ' + text : text;
+    if (speaker) _stitchSpeakers.push(speaker);
+    if (_stitchTimer) clearTimeout(_stitchTimer);
+    _stitchTimer = setTimeout(_flushStitch, STT_SM_STITCH_MS);
+  }
+  const WORKLET_CODE = `class PcmSm extends AudioWorkletProcessor {
+    process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.buffer, [ch.buffer]); return true; }
+  } registerProcessor('pcm-sm', PcmSm);`;
+
+  async function start() {
+    active = true; onSttConnecting();
+    try {
+      audioCtxSm = new AudioContext();
+      if (audioCtxSm.state === 'suspended') try { await audioCtxSm.resume(); } catch(_) {}
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }, video: false });
+      } catch (e) {
+        flashError('mic denied: ' + e.message.slice(0, 30));
+        audioCtxSm.close().catch(() => {}); audioCtxSm = null; active = false; onSttStop(); return;
+      }
+      const actualRate = audioCtxSm.sampleRate;
+      const params = new URLSearchParams({ sample_rate: actualRate, token: _apiKey });
+      if (micMode === 'sm-barge') params.set('barge', '1');
+      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      smWs = new WebSocket(`${wsProto}//${location.host}/api/stt-speechmatics-proxy?${params}`);
+      smWs.binaryType = 'arraybuffer';
+
+      let _pcmBuf = [], _pcmBufLen = 0;
+      function sendPcm(f32) {
+        if (!smWs || smWs.readyState !== WebSocket.OPEN) return;
+        if (micMode !== 'sm-barge' && (isSpeaking || Date.now() < _sttCooldownUntil)) { _pcmBuf = []; _pcmBufLen = 0; return; }
+        _pcmBuf.push(f32); _pcmBufLen += f32.length;
+        const target = Math.round((audioCtxSm.sampleRate || 48000) * 0.08);
+        if (_pcmBufLen < target) return;
+        const merged = new Float32Array(_pcmBufLen);
+        let off = 0; for (const c of _pcmBuf) { merged.set(c, off); off += c.length; }
+        _pcmBuf = []; _pcmBufLen = 0;
+        const i16 = new Int16Array(merged.length);
+        for (let i = 0; i < merged.length; i++) i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
+        smWs.send(i16.buffer);
+      }
+
+      smWs.onopen = async () => {
+        onSttStart();
+        const source = audioCtxSm.createMediaStreamSource(mediaStream);
+        try {
+          const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+          const url = URL.createObjectURL(blob);
+          await audioCtxSm.audioWorklet.addModule(url); URL.revokeObjectURL(url);
+          workletNode = new AudioWorkletNode(audioCtxSm, 'pcm-sm');
+          workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
+          source.connect(workletNode);
+        } catch (_) {
+          const spn = audioCtxSm.createScriptProcessor(4096, 1, 1);
+          spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
+          source.connect(spn); spn.connect(audioCtxSm.destination);
+          workletNode = spn;
+        }
+      };
+
+      smWs.onmessage = (e) => {
+        let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
+        const t = msg.message || '';
+        if (t === 'AddPartialTranscript' || t === 'AddTranscript') {
+          const results = msg.results || [];
+          // Extract speaker from first result with a speaker label
+          const spk = results.find(r => r.alternatives?.[0]?.speaker)?.alternatives?.[0]?.speaker || null;
+
+          const tx = results.map(r => (r.alternatives?.[0]?.content) || '').join(' ').trim();
+          if (!tx) return;
+
+          if (t === 'AddPartialTranscript') {
+            // Partials: show with speaker prefix for preview only (no filtering — too noisy)
+            onSttPartial(!spkFilter && spk ? spk + ': ' + tx : tx);
+          } else {
+            // Finals: always stitch — filtering happens at flush time by majority speaker
+            _queueStitch(tx, spk);
+          }
+        } else if (t === 'EndOfUtterance') {
+          if (_stitchBuf.trim()) _flushStitch();
+        } else if (t === 'Error') {
+          flashError('SM: ' + (msg.reason || 'error'));
+        }
+      };
+      smWs.onerror = () => { flashError('SM WS error'); stop(); };
+      smWs.onclose = (ev) => { if (active) { active = false; stop(); } };
+    } catch (err) { flashError('SM: ' + String(err).slice(0, 40)); active = false; onSttStop(); }
+  }
+
+  function stop() {
+    active = false;
+    if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; _stitchBuf = ''; _stitchSpeakers = []; }
+    if (workletNode) { try { workletNode.disconnect(); } catch(_) {} workletNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxSm) { try { audioCtxSm.close(); } catch(_) {} audioCtxSm = null; }
+    if (smWs) { try { smWs.close(); } catch(_) {} smWs = null; }
+    onSttStop();
+  }
+  return { start, stop };
+})();
+
 // ── Mic button wiring ─────────────────────
 
 // Returns the active STT provider: mic mode IS the provider
@@ -5345,6 +5510,7 @@ registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
 function getActiveProvider() {
   if (diMode && micMode !== 'off') return _dgDi;
   if (micMode === 'inworld') return _iw;
+  if (micMode === 'speechmatics' || micMode === 'sm-barge') return _sm;
   return _dg;  // barge and speaker both use deepgram
 }
 
@@ -5419,6 +5585,17 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   });
 })();
 
+// ── Speaker filter button (SM modes only) ────────────────────
+(function() {
+  const spkBtn = document.getElementById('spk-filter-btn');
+  if (!spkBtn) return;
+  spkBtn.addEventListener('click', () => {
+    spkFilter = !spkFilter;
+    _smPrimarySpeaker = null;  // reset speaker tracking on toggle
+    _updateSpkFilterBtn();
+  });
+})();
+
 // (iOS background/foreground recovery handled by mic-reconnect-overlay below)
 
 // ── Initial state ─────────────────────────────────────────────
@@ -5482,6 +5659,11 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
           const diBtn = document.getElementById('di-btn');
           if (diBtn) diBtn.classList.add('active');
         }
+        // Restore speaker filter state
+        if (saved.spkFilter !== undefined) {
+          spkFilter = saved.spkFilter;
+          _updateSpkFilterBtn();
+        }
         // Restore mic mode + start STT (extra delay so async TTS init settles first)
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
@@ -5506,6 +5688,7 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
     sessionStorage.setItem(RELOAD_KEY, JSON.stringify({
       micMode,
       diMode,
+      spkFilter,
       ttsProvider: TTS_PROVIDER,
       fullVoiceMode: simliMode ? _fullVoiceModeBeforeSimli : fullVoiceMode,  // don't persist Simli-forced state
       claudeMode,

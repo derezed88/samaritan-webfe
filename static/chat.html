@@ -345,22 +345,8 @@
       margin: 0 auto;
     }
 
-    /* When in empty-state, lift the input to center of viewport */
+    /* Empty-mode: keep input at bottom, no special positioning */
     body.empty-mode #chat-scroll { pointer-events: none; }
-    body.empty-mode #input-area {
-      position: absolute;
-      bottom: 50%;
-      left: 0; right: 0;
-      transform: translateY(50%);
-      border: none;
-      background: transparent;
-    }
-    body.empty-mode #input-wrapper {
-      background: var(--input-bg);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      box-shadow: 0 4px 24px var(--shadow);
-    }
 
     #input-row {
       display: flex;
@@ -372,14 +358,7 @@
       padding: 6px 8px 6px 14px;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    body.empty-mode #input-row {
-      background: transparent;
-      border: none;
-      border-radius: 0;
-      padding: 10px 10px 10px 16px;
-    }
     #input-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
-    body.empty-mode #input-row:focus-within { box-shadow: none; border: none; }
 
     #text-input {
       flex: 1;
@@ -438,18 +417,6 @@
       padding: 4px 2px 0;
     }
 
-    #model-select {
-      font-family: inherit;
-      font-size: 12px;
-      color: var(--text-muted);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 8px;
-      cursor: pointer;
-      outline: none;
-    }
-    #model-select:focus { border-color: var(--accent); }
 
     #status-text {
       font-size: 12px;
@@ -528,8 +495,8 @@
 
     <!-- Empty state -->
     <div id="empty-state">
-      <h1>Claude Chat</h1>
-      <p>Start a conversation below.</p>
+      <h1>Baby's Chat</h1>
+      <p>Select or create a chat from the left panel to begin.</p>
     </div>
 
     <!-- Input area -->
@@ -559,9 +526,6 @@
           </button>
         </div>
         <div id="toolbar-row">
-          <select id="model-select" title="Select model">
-            <option value="">Loading…</option>
-          </select>
           <div id="status-text"></div>
         </div>
       </div>
@@ -605,18 +569,23 @@ const textInput     = document.getElementById('text-input');
 const sendBtn       = document.getElementById('send-btn');
 const micBtn        = document.getElementById('mic-btn');
 const ttsBtn        = document.getElementById('tts-btn');
-const modelSelect   = document.getElementById('model-select');
 const statusText    = document.getElementById('status-text');
 
 // ── State ─────────────────────────────────────────────────────
 let currentDb       = null;
+let claudeChannel   = null;   // channel name for claude dispatch: "chat-{dbName}"
 let knownDbs        = [];
 let activeEvtSource = null;
 let isStreaming     = false;
+let pollAbort       = null;   // AbortController for active poll loop
 let ttsEnabled      = false;
 let micActive       = false;
+let isSpeaking      = false; // true while TTS audio is playing
+let _sttCooldownUntil = 0;   // timestamp: block STT until this time after TTS ends
+const STT_SPEAKER_COOLDOWN_MS = 1500;
 let currentAsst     = null; // current streaming assistant bubble element
 let currentAsstText = '';   // raw text accumulating in current bubble
+let _switchingDb    = false; // guard against concurrent switchToDb calls
 
 // Protected DBs — no delete allowed
 const PROTECTED_DBS = new Set(['mymcp', 'qwen']);
@@ -1067,54 +1036,8 @@ async function runCommand(cmd, timeoutMs = 15000) {
   }
 }
 
-// ── Model list ────────────────────────────────────────────────
-// Parse !model output:
-//   Available models:
-//     key          model_id (current)
-//     key2         model_id2
-//     key3         model_id3  [disabled]
-function parseModelList(text) {
-  const models = [];
-  let current = null;
-  for (const line of text.split('\n')) {
-    // Match lines like "  key   model_id (current)" or "  key   model_id  [disabled]"
-    const m = line.match(/^\s+([a-zA-Z0-9_\-\.]+)\s+(\S.*?)(\s+\(current\))?(\s+\[disabled\])?\s*$/);
-    if (!m) continue;
-    const key     = m[1];
-    const label   = m[2].trim();
-    const isCur   = !!m[3];
-    const disabled = !!m[4];
-    if (disabled) continue;  // skip disabled models
-    models.push({ key, label });
-    if (isCur) current = key;
-  }
-  return { models, current };
-}
-
 let currentModel = 'default-chat';
 
-async function loadModelList() {
-  try {
-    // Use throwaway session for the list — model list is global.
-    // currentModel is already set by switchSessionModel; pre-select it in the dropdown.
-    const text = await runCommand('!model');
-    const { models } = parseModelList(text);
-    modelSelect.innerHTML = '';
-    if (models.length === 0) {
-      modelSelect.innerHTML = '<option value="">No models</option>';
-      return;
-    }
-    for (const { key } of models) {
-      const opt = document.createElement('option');
-      opt.value = key;
-      opt.textContent = key;
-      if (key === currentModel) opt.selected = true;
-      modelSelect.appendChild(opt);
-    }
-  } catch (e) {
-    modelSelect.innerHTML = '<option value="">Error</option>';
-  }
-}
 
 // ── Memory display ────────────────────────────────────────────
 // Strip llmem-gw metadata from !memory list output:
@@ -1185,6 +1108,9 @@ function _renderMemoryRows(rows) {
     if (!text) continue;
 
     if (row.source === 'user') {
+      // Strip conv_log metadata prefix: "--- [typed]", "--- [voice|emotion:...]", etc.
+      text = text.replace(/^---\s*\[[^\]]*\]\s*/, '');
+      if (!text) continue;
       addMessage('user', text);
     } else if (row.source === 'session' || row.source === 'assistant') {
       var bubble = addMessage('assistant', '');
@@ -1247,10 +1173,9 @@ function parseSessionsList(text) {
 async function loadDbList() {
   setStatus('Loading chats…');
   try {
-    const text = await runCommand('!db sessions');
-    const { names } = parseSessionsList(text);
-    // Don't trust the throwaway session's (current) — only track currentDb via runOnSession calls
-    knownDbs = names;
+    const res = await fetch('/api/chat/sessions');
+    const data = await res.json();
+    knownDbs = (data.sessions || []).map(s => s.name);
     updateDbLabel();
     renderDbList();
     setStatus('');
@@ -1261,35 +1186,48 @@ async function loadDbList() {
 }
 
 async function switchToDb(name) {
-  if (name === currentDb && knownDbs.includes(name)) {
-    // Already here — just reload memory
-  } else {
-    setStatus(`Switching to ${name}…`);
-    try {
-      await runOnSession(`!db switch ${name}`);
-    } catch (e) {
-      setStatus('Switch failed');
-      return;
-    }
-    currentDb = name;
-    if (!knownDbs.includes(name)) knownDbs.push(name);
-    updateDbLabel();
-    renderDbList();
-  }
+  if (_switchingDb) return;        // prevent overlapping switches
+  _switchingDb = true;
 
-  // Load memory for this db (long-term first, then short-term, oldest to newest)
+  // Immediate visual feedback: highlight the row and close sidebar
+  const needsSwitch = name !== currentDb || !knownDbs.includes(name);
+  currentDb = name;
+  claudeChannel = 'chat-' + name;
+  if (!knownDbs.includes(name)) knownDbs.push(name);
+  updateDbLabel();
+  renderDbList();
+  closeSidebar();
+
   clearChat();
-  setStatus(`Loading history…`);
+  setStatus(`Loading ${name}…`);
+
   try {
+    // Switch llmem-gw admin session (skip if already on this db)
+    if (needsSwitch) {
+      try { await runOnSession(`!db switch ${name}`); }
+      catch (e) { console.warn('db switch failed, trying to load anyway:', e); }
+    }
+
+    // Ensure Claude session is running (await so status doesn't race)
+    await ensureChatSession(name);
+    setStatus(`Loading history…`);
+
+    // Load memory (long-term first, then short-term, oldest to newest)
     await loadLongTermMemory(currentDb);
     await loadMemoryTurns(currentDb);
     setStatus('');
-  } catch (e) {
-    setStatus('');
-  }
 
-  // Close sidebar on mobile after switching
-  if (window.innerWidth <= 600) closeSidebar();
+    // Enable input now that a chat is selected
+    textInput.disabled = false;
+    sendBtn.disabled = false;
+    textInput.placeholder = 'Message Claude...';
+    textInput.focus();
+  } catch (e) {
+    setStatus('Failed to load history');
+    console.error('switchToDb:', e);
+  } finally {
+    _switchingDb = false;
+  }
 }
 
 async function createNewChat() {
@@ -1301,24 +1239,57 @@ async function createNewChat() {
     alert('Name must start with a letter and contain only lowercase letters, digits, or underscores.');
     return;
   }
-  setStatus(`Creating ${name}…`);
+
+  // Immediate feedback: close sidebar, set state, show spinner
+  currentDb = name;
+  claudeChannel = 'chat-' + name;
+  if (!knownDbs.includes(name)) knownDbs.unshift(name);
+  updateDbLabel();
+  renderDbList();
+  closeSidebar();
+  clearChat();
+  setStatus(`Initializing "${name}"…`);
+  textInput.disabled = true;
+  sendBtn.disabled = true;
+  textInput.placeholder = 'Initializing chat…';
+
   try {
-    await runOnSession(`!db switch ${name}`);
-    currentDb = name;
-    if (!knownDbs.includes(name)) knownDbs.unshift(name);
-    updateDbLabel();
-    renderDbList();
-    clearChat();
-    setStatus('New chat ready');
+    // Start Claude session (creates workspace + tmux + db) — this can take ~30-60s
+    const ok = await ensureChatSession(name);
+    if (!ok) {
+      setStatus('Failed to start chat session');
+      return;
+    }
+    // Switch llmem-gw admin session for db_query
+    try { await runOnSession(`!db switch ${name}`); }
+    catch (e) { console.warn('db switch failed during create:', e); }
+
+    setStatus('Chat ready');
     setTimeout(() => setStatus(''), 2000);
   } catch (e) {
     setStatus('Failed to create chat');
+    console.error('createNewChat:', e);
+  } finally {
+    textInput.disabled = false;
+    sendBtn.disabled = false;
+    textInput.placeholder = 'Message Claude...';
+    textInput.focus();
   }
 }
 
 async function deleteDb(name) {
   setStatus(`Deleting ${name}…`);
   try {
+    // Kill the Claude Code tmux session
+    try {
+      await fetch('/api/chat/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+    } catch (_) {} // best-effort
+
+    // Delete the database via llmem-gw
     await runOnSession(`!db delete ${name} confirm`);
     knownDbs = knownDbs.filter(d => d !== name);
     if (currentDb === name) {
@@ -1328,6 +1299,7 @@ async function deleteDb(name) {
       } else {
         clearChat();
         currentDb = null;
+        claudeChannel = null;
         updateDbLabel();
       }
     }
@@ -1364,27 +1336,87 @@ function ttsClean(t) {
     .replace(/\s+/g, ' ').trim();
 }
 
+// ── Claude dispatch helpers ────────────────────────────────────
+
+async function ensureChatSession(name) {
+  // Check if Claude session is already alive
+  const channel = 'chat-' + name;
+  try {
+    const res = await fetch('/api/claude/status?channel=' + encodeURIComponent(channel));
+    const data = await res.json();
+    if (data.claude_alive) return true;
+  } catch (_) {}
+
+  // Fire off start (returns immediately — server spawns in background)
+  setStatus(`Starting chat for ${name}…`);
+  try {
+    await fetch('/api/chat/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, database: name }),
+    });
+  } catch (_) {}
+
+  // Poll until Claude is alive (up to 120s)
+  const startedAt = Date.now();
+  const deadline = startedAt + 120_000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const res = await fetch('/api/claude/status?channel=' + encodeURIComponent(channel));
+      const data = await res.json();
+      if (data.claude_alive) return true;
+    } catch (_) {}
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    setStatus(`Starting chat for ${name}… (${elapsed}s)`);
+  }
+  setStatus('Failed to start session: timeout after 120s');
+  return false;
+}
+
 async function submitText(text) {
   if (!text.trim() || isStreaming) return;
 
-  // Close any existing stream
-  if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; }
+  // Cancel any active poll
+  if (pollAbort) { pollAbort.abort(); pollAbort = null; }
   isStreaming = true;
   sendBtn.disabled = true;
   setStatus('Thinking…');
 
   addMessage('user', text);
 
-  // Start assistant bubble
+  // Start assistant bubble with streaming indicator
   currentAsstText = '';
   currentAsst = addMessage('assistant', '', true);
 
+  const channel = claudeChannel || 'chat-default';
+
+  // Ensure Claude session is running for this chat
+  if (!(await ensureChatSession(currentDb || 'default'))) {
+    currentAsst.classList.remove('streaming-cursor');
+    currentAsst.textContent = '[Session not available]';
+    finishStream();
+    return;
+  }
+
+  // Submit to Claude via tmux dispatch
   try {
-    await fetch('/api/submit', {
+    const res = await fetch('/api/claude/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ text, client_id: SESSION_ID }),
+      body: JSON.stringify({
+        text,
+        channel,
+        source: 'typed',
+      }),
     });
+    const data = await res.json();
+    if (data.error) {
+      currentAsst.classList.remove('streaming-cursor');
+      currentAsst.textContent = '[Error: ' + data.error + ']';
+      finishStream();
+      return;
+    }
   } catch (e) {
     currentAsst.classList.remove('streaming-cursor');
     currentAsst.textContent = '[Error submitting: ' + e.message + ']';
@@ -1392,50 +1424,50 @@ async function submitText(text) {
     return;
   }
 
-  const mySessionId = SESSION_ID;
-  const es = new EventSource(`/api/stream/${encodeURIComponent(SESSION_ID)}?token=${encodeURIComponent(_apiKey)}`);
-  activeEvtSource = es;
+  // Poll for response
+  pollAbort = new AbortController();
+  const myChannel = channel;
+  const maxPolls = 60;  // ~10 min with 10s waits
+  let gotResponse = false;
 
-  // samaritan.py wraps all SSE as plain `data:` (no event: line) → all arrive as 'message'.
-  // Payload is JSON: {"type": "tok"|"flush"|"done"|"error"|"vtok", ...}
-  es.onmessage = (e) => {
-    if (SESSION_ID !== mySessionId) { es.close(); activeEvtSource = null; return; }
-    let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
-    if (msg.type === 'tok' || msg.type === 'flush') {
-      currentAsstText += (msg.text || '');
-      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
-      scrollToBottom();
-    } else if (msg.type === 'done') {
-      es.close();
-      activeEvtSource = null;
-      currentAsst.classList.remove('streaming-cursor');
-      currentAsst.innerHTML = renderMarkdown(preprocessMath(currentAsstText));
-      renderMath(currentAsst);
-      scrollToBottom();
-      if (ttsEnabled && currentAsstText.trim()) {
-        speakInworld(ttsClean(currentAsstText));
+  for (let i = 0; i < maxPolls; i++) {
+    if (pollAbort.signal.aborted) break;
+    try {
+      const res = await fetch(
+        `/api/claude/poll?channel=${encodeURIComponent(myChannel)}&wait=10`,
+        { signal: pollAbort.signal }
+      );
+      const data = await res.json();
+      if (data.status === 'ok' && data.text) {
+        currentAsstText = data.text || '';
+        currentAsst.classList.remove('streaming-cursor');
+        currentAsst.innerHTML = renderMarkdown(_processAssistantContent(currentAsstText));
+        renderMath(currentAsst);
+        scrollToBottom();
+        if (ttsEnabled && currentAsstText.trim()) {
+          speakInworld(ttsClean(currentAsstText));
+        }
+        gotResponse = true;
+        break;
       }
-      finishStream();
-    } else if (msg.type === 'error') {
-      es.close();
-      activeEvtSource = null;
-      currentAsst.classList.remove('streaming-cursor');
-      if (!currentAsstText) currentAsst.textContent = '[Error: ' + (msg.message || 'stream error') + ']';
-      finishStream();
+      // status === 'empty' means no response yet, keep polling
+    } catch (e) {
+      if (e.name === 'AbortError') break;
+      // Network error — brief pause then retry
+      await new Promise(r => setTimeout(r, 2000));
     }
-  };
+  }
 
-  es.onerror = () => {
-    es.close();
-    activeEvtSource = null;
+  if (!gotResponse && currentAsst) {
     currentAsst.classList.remove('streaming-cursor');
-    if (!currentAsstText) currentAsst.textContent = '[Connection error]';
-    finishStream();
-  };
+    if (!currentAsstText) currentAsst.textContent = '[No response received — Claude may still be processing]';
+  }
+  finishStream();
 }
 
 function finishStream() {
   isStreaming = false;
+  pollAbort = null;
   sendBtn.disabled = false;
   setStatus('');
   currentAsst = null;
@@ -1527,23 +1559,6 @@ function autoResize(el) {
 }
 textInput.addEventListener('input', () => autoResize(textInput));
 
-// ── Model selector ────────────────────────────────────────────
-modelSelect.addEventListener('change', async () => {
-  const val = modelSelect.value;
-  if (!val) return;
-  setStatus(`Switching model…`);
-  try {
-    await runOnSession(`!model ${val}`);
-    currentModel = val;
-    setStatus(`Model: ${modelSelect.options[modelSelect.selectedIndex].text}`);
-    setTimeout(() => setStatus(''), 2500);
-  } catch (e) {
-    setStatus('Model switch failed');
-    // Revert selector to previous model
-    if (currentModel) modelSelect.value = currentModel;
-  }
-});
-
 // ── New chat button ───────────────────────────────────────────
 newChatBtn.addEventListener('click', createNewChat);
 
@@ -1595,9 +1610,11 @@ function speakInworld(text) {
   if (_inworldAbort) { _inworldAbort.abort(); _inworldAbort = null; }
   stopAllAudio();
   initAudioCtx();
+  isSpeaking = true;
   const ctrl = new AbortController();
   _inworldAbort = ctrl;
   const WAV_HEADER = 44;
+  let lastChunkEndMs = 0;
 
   (async () => {
     let resp;
@@ -1605,14 +1622,15 @@ function speakInworld(text) {
       resp = await fetch('/api/tts/inworld', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, speaking_rate: 1.3, model_id: 'inworld-tts-1.5-mini' }),
         signal: ctrl.signal,
       });
     } catch (e) {
       if (e.name !== 'AbortError') setStatus('TTS error');
+      isSpeaking = false;
       return;
     }
-    if (!resp.ok) { setStatus('TTS error ' + resp.status); return; }
+    if (!resp.ok) { setStatus('TTS error ' + resp.status); isSpeaking = false; return; }
 
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -1623,7 +1641,7 @@ function speakInworld(text) {
       if (bin.length <= WAV_HEADER) return;
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      scheduleAudioChunk(pcmBytesToAudioBuf(bytes.subarray(WAV_HEADER), 24000));
+      lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(bytes.subarray(WAV_HEADER), 24000));
     };
 
     try {
@@ -1645,7 +1663,15 @@ function speakInworld(text) {
       }
     } catch (e) {
       if (e.name !== 'AbortError') setStatus('TTS stream error');
+      isSpeaking = false;
+      return;
     }
+
+    // After all audio chunks are scheduled, wait for playback to finish then start cooldown
+    setTimeout(() => {
+      isSpeaking = false;
+      if (micActive) startSpeakerCooldown();
+    }, lastChunkEndMs + 150);
   })();
 }
 
@@ -1653,7 +1679,7 @@ ttsBtn.addEventListener('click', () => {
   initAudioCtx();
   ttsEnabled = !ttsEnabled;
   ttsBtn.classList.toggle('active', ttsEnabled);
-  if (!ttsEnabled && _inworldAbort) { _inworldAbort.abort(); _inworldAbort = null; stopAllAudio(); }
+  if (!ttsEnabled && _inworldAbort) { _inworldAbort.abort(); _inworldAbort = null; stopAllAudio(); isSpeaking = false; }
   setStatus(ttsEnabled ? 'Voice on' : 'Voice off');
   setTimeout(() => setStatus(''), 1500);
 });
@@ -1662,11 +1688,15 @@ ttsBtn.addEventListener('click', () => {
 const DG_MODEL        = 'flux-general-en';
 const DG_ENCODING     = 'linear16';
 const DG_EOT_THRESHOLD = 0.8;
+const DG_ENDPOINTING  = 1500;  // ms silence before finalizing utterance (outdoor/noisy default)
 
 // Confirmation beep on EndOfTurn (880 Hz, 80 ms)
 function beepConfirm() {
+  // Reuse the already-unlocked audioCtx — creating a fresh AudioContext outside a
+  // user gesture will be suspended on iOS Safari and produce no sound.
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = audioCtx;
+    if (!ctx || ctx.state === 'closed') return;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain); gain.connect(ctx.destination);
@@ -1674,15 +1704,43 @@ function beepConfirm() {
     gain.gain.setValueAtTime(0.15, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
     osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08);
-    osc.onended = () => ctx.close();
   } catch (_) {}
+}
+
+// Ready chime after speaker cooldown clears (C5 → G5, two notes)
+function playReadyChime() {
+  try {
+    const ctx = audioCtx;
+    if (!ctx || ctx.state === 'closed') return;
+    [[523, 0], [784, 120]].forEach(([freq, delayMs]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq; osc.type = 'sine';
+      const t = ctx.currentTime + delayMs / 1000;
+      gain.gain.setValueAtTime(0.15, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.start(t); osc.stop(t + 0.08);
+    });
+  } catch (_) {}
+}
+
+// Start speaker mode cooldown after TTS ends
+function startSpeakerCooldown() {
+  _sttCooldownUntil = Date.now() + STT_SPEAKER_COOLDOWN_MS;
+  setTimeout(() => { if (!isSpeaking) playReadyChime(); }, STT_SPEAKER_COOLDOWN_MS);
 }
 
 const WORKLET_CODE = `
 class PcmCaptureChat extends AudioWorkletProcessor {
   process(inputs) {
     const ch = inputs[0][0];
-    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
+    if (!ch) return true;
+    // RMS noise gate — discard near-silence to prevent ambient noise from triggering VAD
+    let sum = 0;
+    for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+    if (Math.sqrt(sum / ch.length) < 0.004) return true;
+    this.port.postMessage(ch.buffer, [ch.buffer]);
     return true;
   }
 }
@@ -1698,6 +1756,11 @@ let _pcmBuf = [], _pcmBufLen = 0;
 
 function sendPcm(f32) {
   if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+  // Speaker mode: drop mic audio while TTS is playing or in cooldown to prevent echo
+  if (isSpeaking || Date.now() < _sttCooldownUntil) {
+    _pcmBuf = []; _pcmBufLen = 0;
+    return;
+  }
   _pcmBuf.push(f32);
   _pcmBufLen += f32.length;
   // Buffer to ~80ms chunks (Flux requirement)
@@ -1719,17 +1782,21 @@ async function startDg() {
   _pcmBuf = []; _pcmBufLen = 0;
   micBtn.classList.add('active');
 
-  // Get mic stream first to learn the real sample rate
+  // Create AudioContext FIRST (synchronously in user-gesture context) so iOS Safari
+  // doesn't suspend it. getUserMedia is async and exits the user-gesture call stack.
+  dgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (dgAudioCtx.state === 'suspended') {
+    try { await dgAudioCtx.resume(); } catch (_) {}
+  }
+  const actualRate = dgAudioCtx.sampleRate;
+
   try {
     dgStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch (e) {
     setStatus('Mic access denied');
+    dgAudioCtx.close().catch(() => {}); dgAudioCtx = null;
     dgActive = false; micActive = false; micBtn.classList.remove('active'); return;
   }
-
-  // Use native AudioContext rate — pass actual rate to Deepgram
-  dgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const actualRate = dgAudioCtx.sampleRate;
 
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({
@@ -1830,30 +1897,11 @@ micBtn.addEventListener('click', async () => {
 
 // ── Init ──────────────────────────────────────────────────────
 (async function init() {
-  // Disable input while init commands hold SESSION_ID stream open
   textInput.disabled = true;
   sendBtn.disabled = true;
-  try {
-    // 1. Switch model first — session inherits samaritan-voice db until we explicitly switch
-    await switchSessionModel('default-chat');
-    // 2. Switch to default-chat's database (defined as "default" in llm-models.json)
-    await runOnSession('!db switch default');
-    // 3. Populate sidebar (throwaway — don't set currentDb from it)
-    await loadDbList();
-    // 4. Populate model selector (SESSION_ID — correct (current) after model switch)
-    await loadModelList();
-    // 5. Load memory from "default" db (long-term first, then short-term)
-    currentDb = 'default';
-    updateDbLabel();
-    try {
-      await loadLongTermMemory(currentDb);
-      await loadMemoryTurns(currentDb);
-    } catch (_) {}
-  } finally {
-    textInput.disabled = false;
-    sendBtn.disabled = false;
-    textInput.focus();
-  }
+  textInput.placeholder = 'Select a chat to start…';
+  await switchSessionModel('default-chat');
+  await loadDbList();
 })();
 </script>
 </body>

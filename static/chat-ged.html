@@ -12,6 +12,7 @@
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"
     onload="window._katexReady=true"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js"></script>
   <script>
     mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
     window._mermaid = mermaid;
@@ -2154,6 +2155,35 @@ textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
 });
 
+// ── Autocorrect (Typo.js) ─────────────────────────────────────────
+let _typo = null;
+(async () => {
+  try {
+    const base = 'https://cdn.jsdelivr.net/npm/typo-js@1.2.4/dictionaries/en_US/en_US';
+    const [affResp, dicResp] = await Promise.all([fetch(base + '.aff'), fetch(base + '.dic')]);
+    const [affData, dicData] = await Promise.all([affResp.text(), dicResp.text()]);
+    _typo = new Typo('en_US', affData, dicData, { platform: 'any' });
+  } catch (e) { console.warn('[autocorrect] dict load failed:', e); }
+})();
+
+textInput.addEventListener('keydown', (e) => {
+  if (!_typo || !' .,?!;:'.includes(e.key)) return;
+  const pos = textInput.selectionStart;
+  const before = textInput.value.slice(0, pos);
+  const wordMatch = before.match(/([a-zA-Z]{2,})$/);
+  if (!wordMatch) return;
+  const word = wordMatch[1];
+  if (_typo.check(word)) return;
+  const suggestions = _typo.suggest(word);
+  if (!suggestions.length) return;
+  const raw = suggestions[0];
+  const corrected = /^[A-Z]/.test(word) ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+  const newBefore = before.slice(0, before.length - word.length) + corrected;
+  textInput.value = newBefore + textInput.value.slice(pos);
+  textInput.selectionStart = textInput.selectionEnd = newBefore.length;
+  autoResize(textInput);
+});
+
 function autoResize(el) {
   el.style.height = 'auto';
   const maxH = 6 * 1.5 * 15;
@@ -2330,7 +2360,7 @@ function speakInworld(text) {
       resp = await fetch('/api/tts/inworld', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, model_id: 'inworld-tts-1.5-mini' }),
         signal: ctrl.signal,
       });
     } catch (e) {
