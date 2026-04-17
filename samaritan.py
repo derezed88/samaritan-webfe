@@ -75,9 +75,9 @@ async def _auto_embed_sources_loop():
     """Every 5 min: embed any samaritan_sources rows missing from Qdrant samaritan_sources collection."""
     import pymysql
     import pymysql.cursors
-    _EMBED_URL   = os.getenv("EMBED_URL",   "http://192.168.10.101:8000/v1/embeddings")
+    _EMBED_URL   = os.getenv("EMBED_URL",   "http://10.0.0.101:8000/v1/embeddings")
     _EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-    _QDRANT_HOST = os.getenv("QDRANT_HOST", "192.168.10.101")
+    _QDRANT_HOST = os.getenv("QDRANT_HOST", "10.0.0.101")
     _QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
     _COLL        = "samaritan_sources"
     _INTERVAL    = 300  # seconds
@@ -1324,7 +1324,7 @@ async def knowledge_graph_api(request: Request):
     _SUGGESTED_THRESHOLD  = 0.80
     try:
         from qdrant_client import QdrantClient
-        qdrant_host = os.getenv("QDRANT_HOST", "192.168.10.101")
+        qdrant_host = os.getenv("QDRANT_HOST", "10.0.0.101")
         qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
 
         # Build existing-edge set for dedup
