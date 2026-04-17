@@ -731,6 +731,7 @@ async function claudeSubmit(text) {
     setTimeout(() => setStatus('🟣 Claude mode — select a subject'), 2000);
     return;
   }
+  if (gedBackend !== 'claude') { return await geminiSubmit(text); }
   isStreaming = true;
   sendBtn.disabled = true;
 
@@ -854,6 +855,8 @@ async function claudeSubmit(text) {
       renderMermaid(asst);
       scrollToBottom();
       if (ttsEnabled) speakText(response.text);
+      gedHistory.push({ role: 'user', text });
+      gedHistory.push({ role: 'assistant', text: response.text });
     } else {
       asst.innerHTML = '<em>Claude did not respond in time.</em>';
     }
@@ -866,11 +869,48 @@ async function claudeSubmit(text) {
   }
 }
 
+// ── Gemini fallback submit ────────────────────────────────────
+async function geminiSubmit(text) {
+  if (isStreaming) return;
+  isStreaming = true;
+  sendBtn.disabled = true;
+  setStatus('✦ Gemini thinking…');
+  addMessage('user', text);
+  const asst = addMessage('assistant', '', true);
+  try {
+    const resp = await fetch('/api/ged/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ text, channel: claudeChannel, history: gedHistory.slice(-10) }),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    let cleaned = data.text;
+    cleaned = cleaned.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => '$$' + expr.replace(/\s*\n\s*/g, ' ').trim() + '$$');
+    asst.innerHTML = renderMarkdown(cleaned);
+    fixAnswerChoices(asst);
+    renderMath(asst);
+    renderMermaid(asst);
+    scrollToBottom();
+    if (ttsEnabled) speakText(data.text);
+    gedHistory.push({ role: 'user', text });
+    gedHistory.push({ role: 'assistant', text: data.text });
+  } catch (e) {
+    asst.innerHTML = '<em>Gemini error: ' + e.message + '</em>';
+  } finally {
+    isStreaming = false;
+    sendBtn.disabled = false;
+    setStatus('✦ Gemini 2.5 Flash');
+  }
+}
+
 // ── State ─────────────────────────────────────────────────────
 let currentDb       = null;
 let knownDbs        = [];
 let activeEvtSource = null;
 let isStreaming     = false;
+let gedBackend      = 'claude';   // 'claude' | 'gemini'
+let gedHistory      = [];         // [{role:'user'|'assistant', text:'...'}] for Gemini context
 let ttsEnabled      = false;
 let micActive       = false;
 let currentAsst     = null; // current streaming assistant bubble element
@@ -1038,9 +1078,15 @@ async function renderMermaid(el) {
     // 4. "bar series "Name"\n  data [...]" → "bar [...]" (invalid v11 syntax)
     src = src.replace(/bar\s+series\s+"[^"]*"\s*\n\s*data\s*/g, 'bar ');
     src = src.replace(/line\s+series\s+"[^"]*"\s*\n\s*data\s*/g, 'line ');
-    // 5. x-axis "Label" or y-axis "Label" without data → strip quoted label (v11 wants x-axis [...])
+    // 5. x-axis/y-axis title handling (v11 doesn't support quoted titles on most axis forms)
+    // 5a. x-axis "Title" [data...] → x-axis [data...]  (title + bracket on same line)
+    src = src.replace(/x-axis[ \t]+"[^"]*"[ \t]*(\[[^\]]+\])/g, 'x-axis $1');
+    // 5b. x-axis "Title"\n (title-only, no data) → x-axis\n
     src = src.replace(/x-axis\s+"[^"]*"\s*\n/g, 'x-axis\n');
-    src = src.replace(/y-axis\s+"[^"]*"\s*\n/g, 'y-axis\n');
+    // 5c. y-axis "Title" (title-only, no numeric range) → remove line (auto-scale)
+    src = src.replace(/^[ \t]*y-axis[ \t]+"[^"]*"[ \t]*$/mg, '');
+    // 5d. bare y-axis keyword with no range (result of old strip) → remove line
+    src = src.replace(/^[ \t]*y-axis[ \t]*$/mg, '');
     // 6. Duplicate bar lines → keep only the one with actual data values
     const barLines = src.split('\n').filter(l => /^\s*bar\s*\[/.test(l));
     if (barLines.length > 1) {
@@ -2195,6 +2241,12 @@ textInput.addEventListener('input', () => autoResize(textInput));
 modelSelect.addEventListener('change', async () => {
   const val = modelSelect.value;
   if (!val) return;
+  if (claudeMode) {
+    gedBackend = val;
+    setStatus(val === 'claude' ? '🟣 Claude' : '✦ Gemini 2.5 Flash');
+    setTimeout(() => setStatus(''), 2000);
+    return;
+  }
   setStatus(`Switching model…`);
   try {
     await runOnSession(`!model ${val} database=target`);
@@ -2234,6 +2286,7 @@ async function _switchGedSubject(model) {
   // Immediate visual feedback: close sidebar, clear chat, show loading
   closeSidebar();
   chatMessages.innerHTML = '';
+  gedHistory = [];
   exitEmptyMode();
   currentModel = model;
   if (modelSelect) modelSelect.value = model;
@@ -2590,7 +2643,14 @@ micBtn.addEventListener('click', async () => {
   sendBtn.disabled = true;
   try {
     if (claudeMode) {
-      // Claude mode — skip LLM model switching, show indicator
+      // Claude mode — populate backend selector (Claude default + Gemini fallback)
+      modelSelect.innerHTML = '';
+      for (const [val, lbl] of [['claude', '🟣 Claude'], ['gemini', '✦ Gemini 2.5 Flash']]) {
+        const opt = document.createElement('option');
+        opt.value = val; opt.textContent = lbl;
+        if (val === gedBackend) opt.selected = true;
+        modelSelect.appendChild(opt);
+      }
       setStatus('🟣 Claude mode — select a subject');
       const subtitle = document.getElementById('empty-subtitle');
       if (subtitle) subtitle.innerHTML = '🟣 <strong>Claude Code</strong> — choose a subject';

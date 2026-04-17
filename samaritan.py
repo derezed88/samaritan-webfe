@@ -44,6 +44,7 @@ SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 SIMLI_API_KEY    = os.getenv("SIMLI_API_KEY", "")       # Simli avatar API key
 SIMLI_FACE_ID    = os.getenv("SIMLI_FACE_ID", "")       # Simli avatar face ID
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")      # Gemini fallback for GED tutor
 
 # ── Cost event logging ────────────────────────────────────────────────────────
 
@@ -553,32 +554,6 @@ async def stream_proxy(client_id: str, request: Request):
     )
 
 
-@app.post("/api/voice-token")
-async def voice_token(request: Request):
-    """Fetch a short-lived xAI ephemeral token for the realtime WebSocket API.
-    The browser never sees the raw XAI_API_KEY; it only gets a single-use token.
-    """
-    if not _check_auth(request):
-        return _auth_error()
-
-    xai_key = os.getenv("XAI_API_KEY", "")
-    if not xai_key:
-        return JSONResponse({"error": "XAI_API_KEY not configured"}, status_code=503)
-
-    body = await request.json()
-    expires_in = body.get("expires_in", 60)  # seconds; browser can request shorter
-
-    async with httpx.AsyncClient(timeout=10) as http:
-        resp = await http.post(
-            "https://api.x.ai/v1/realtime/client_secrets",
-            headers={"Authorization": f"Bearer {xai_key}", "Content-Type": "application/json"},
-            json={"expires_in": expires_in},
-        )
-        resp.raise_for_status()
-
-    return resp.json()
-
-
 @app.post("/api/tts/inworld")
 async def tts_inworld(request: Request):
     """Proxy Inworld TTS streaming endpoint — keeps INWORLD_API_KEY server-side.
@@ -698,57 +673,6 @@ async def tts_xai(request: Request):
     return StreamingResponse(
         stream_audio(),
         media_type="audio/pcm",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@app.post("/api/tts/deepgram")
-async def tts_deepgram(request: Request):
-    """Proxy Deepgram Aura TTS — keeps DEEPGRAM_API_KEY server-side.
-    Accepts: { "text": "...", "model": "aura-2-thalia-en" }
-    Returns: streaming PCM16-LE at 24kHz (raw bytes, no header).
-    Browser feeds each chunk directly to pcmBytesToAudioBuf for gapless playback.
-    """
-    if not _check_auth(request):
-        return _auth_error()
-
-    dg_key = os.getenv("DEEPGRAM_API_KEY", "")
-    if not dg_key:
-        return JSONResponse({"error": "DEEPGRAM_API_KEY not configured"}, status_code=503)
-
-    body = await request.json()
-    text  = body.get("text", "")
-    model = body.get("model", "aura-2-thalia-en")
-
-    if not text:
-        return JSONResponse({"error": "empty text"}, status_code=400)
-
-    logger.debug("DG-TTS (%d chars, %s): %r", len(text), model, text[:120])
-
-    async def stream_audio():
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=120, write=10, pool=5)
-        ) as http:
-            async with http.stream(
-                "POST",
-                f"https://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=24000&container=none",
-                headers={
-                    "Authorization": f"Token {dg_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"text": text},
-            ) as resp:
-                if not resp.is_success:
-                    err = await resp.aread()
-                    logger.warning("DG-TTS error %s: %s", resp.status_code, err.decode()[:200])
-                    yield b""
-                    return
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
-
-    return StreamingResponse(
-        stream_audio(),
-        media_type="application/octet-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
@@ -914,163 +838,6 @@ async def stt_proxy(websocket: WebSocket, token: str = ""):
             pass
 
 
-@app.websocket("/api/stt-inworld-proxy")
-async def stt_inworld_proxy(websocket: WebSocket, token: str = ""):
-    """Proxy browser WebSocket → Inworld STT, injecting Authorization header.
-    Browser sends raw PCM Int16 binary; proxy base64-encodes and wraps in JSON.
-    Inworld voice profile data (emotion, pitch, vocal_style) forwarded to browser.
-    Query param: ?token=<SAMARITAN_API_KEY>&sample_rate=48000
-    """
-    if SAMARITAN_API_KEY and token != SAMARITAN_API_KEY:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
-
-    inworld_key = os.getenv("INWORLD_API_KEY", "")
-    if not inworld_key:
-        await websocket.close(code=4002, reason="INWORLD_API_KEY not configured")
-        return
-
-    params = dict(websocket.query_params)
-    params.pop("token", None)
-    sample_rate    = int(params.get("sample_rate", 16000))
-    vp_threshold   = float(params.get("vp_threshold", 0.3))
-    vad_threshold  = float(params.get("vad_threshold", 0.7))
-    eot_silence_ms = int(params.get("eot_silence_ms", 600))
-    # 2026-04-10 additions — Inworld was finalizing turns after ~1s of silence
-    # despite eot_silence_ms=3500, because that param only applies when Inworld
-    # is "confident" speech is complete. Inworld's confidence model fires too
-    # eagerly on falling-tone sentence endings. Solution: stop trusting the
-    # confidence model. Set the unconfident threshold and max-silence to match
-    # Speechmatics's 1.5s behavior, and raise the confidence threshold so
-    # Inworld is rarely "confident."
-    eot_unconfident_silence_ms = int(params.get("eot_unconfident_silence_ms", 1500))
-    eot_max_silence_ms         = int(params.get("eot_max_silence_ms",         1500))
-    eot_confidence_threshold   = float(params.get("eot_confidence_threshold", 0.95))
-
-    await websocket.accept()
-    _stt_start = time.time()
-
-    inworld_url = "wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional"
-    logger.debug("Inworld STT connect: rate=%d vp_thresh=%.1f vad=%.1f eot=%dms eot_unconf=%dms eot_max=%dms eot_conf_thresh=%.2f",
-                sample_rate, vp_threshold, vad_threshold, eot_silence_ms,
-                eot_unconfident_silence_ms, eot_max_silence_ms, eot_confidence_threshold)
-
-    try:
-        async with ws_lib.connect(
-            inworld_url,
-            additional_headers={"Authorization": f"Basic {inworld_key}"},
-        ) as iw_ws:
-            logger.debug("Inworld STT handshake OK")
-
-            # Send config message
-            config_msg = json.dumps({
-                "transcribeConfig": {
-                    "modelId": "inworld/inworld-stt-1",
-                    "audioEncoding": "LINEAR16",
-                    "sampleRateHertz": sample_rate,
-                    "language": "en-US",
-                    "voiceProfileConfig": {
-                        "enableVoiceProfile": True,
-                        "topN": 3,
-                    },
-                    "inworldConfig": {
-                        "voiceProfileThreshold": vp_threshold,
-                        "inworldSttV1Config": {
-                            "vadThreshold": vad_threshold,
-                            "minEndOfTurnSilenceWhenConfident":   eot_silence_ms,
-                            "minEndOfTurnSilenceWhenUnconfident": eot_unconfident_silence_ms,
-                            "maxEndOfTurnSilence":                eot_max_silence_ms,
-                            "endOfTurnConfidenceThreshold":       eot_confidence_threshold,
-                        },
-                    },
-                }
-            })
-            await iw_ws.send(config_msg)
-
-            async def browser_to_inworld():
-                try:
-                    while True:
-                        msg = await websocket.receive()
-                        if "bytes" in msg and msg["bytes"]:
-                            # Raw PCM binary → base64 → JSON audioChunk
-                            b64_audio = base64.b64encode(msg["bytes"]).decode("ascii")
-                            await iw_ws.send(json.dumps({
-                                "audioChunk": {"content": b64_audio}
-                            }))
-                        elif "text" in msg and msg["text"]:
-                            # Pass through text messages (endTurn, closeStream)
-                            await iw_ws.send(msg["text"])
-                        else:
-                            break
-                except (WebSocketDisconnect, Exception):
-                    pass
-                finally:
-                    await iw_ws.close()
-
-            async def inworld_to_browser():
-                try:
-                    async for message in iw_ws:
-                        if isinstance(message, str):
-                            await websocket.send_text(message)
-                            try:
-                                iw_msg = json.loads(message)
-                                result = iw_msg.get("result", {})
-                                tx = result.get("transcription", {})
-                                transcript = (tx.get("transcript") or "").strip()
-                                is_final = tx.get("isFinal", False)
-                                if transcript:
-                                    tag = "final" if is_final else "partial"
-                                    logger.info("Inworld STT [%s]: %s", tag, transcript)
-                                    if is_final:
-                                        logger.debug("Inworld raw: %s", json.dumps(iw_msg, separators=(',', ':')))
-                                vp = tx.get("voiceProfile")
-                                if vp:
-                                    emo_arr = vp.get("emotion") or []
-                                    emo = emo_arr[0] if isinstance(emo_arr, list) and emo_arr else {}
-                                    pit_arr = vp.get("pitch") or []
-                                    pit = pit_arr[0] if isinstance(pit_arr, list) and pit_arr else {}
-                                    vs_arr = vp.get("vocalStyle") or []
-                                    vs = vs_arr[0] if isinstance(vs_arr, list) and vs_arr else {}
-                                    if emo.get("label"):
-                                        logger.info("Inworld VP: emotion=%s(%.2f) pitch=%s vocal=%s",
-                                            emo.get("label"), emo.get("confidence", 0),
-                                            pit.get("label", "?"), vs.get("label", "?"))
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.info("Inworld STT stream closed: %s", e)
-                finally:
-                    try:
-                        await websocket.close()
-                    except Exception:
-                        pass
-
-            async def keepalive_ping():
-                """Send WebSocket pings to Inworld every 15s to prevent idle disconnect."""
-                try:
-                    while True:
-                        await asyncio.sleep(15)
-                        await iw_ws.ping()
-                except Exception:
-                    pass
-
-            await asyncio.gather(browser_to_inworld(), inworld_to_browser(), keepalive_ping())
-
-    except Exception as e:
-        logger.info("Inworld STT connect error: %s", e)
-        try:
-            await websocket.close(code=1011, reason=str(e)[:100])
-        except Exception:
-            pass
-    finally:
-        duration_s = time.time() - _stt_start
-        asyncio.ensure_future(_log_cost(
-            provider="inworld", service="inworld-stt-1",
-            cost_usd=duration_s * 77.78 / 1_000_000,
-            unit="seconds", unit_count=round(duration_s, 2),
-        ))
-
-
 @app.websocket("/api/stt-speechmatics-proxy")
 async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
     """Proxy browser WebSocket → Speechmatics Real-Time STT.
@@ -1092,11 +859,17 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
     sample_rate = int(params.get("sample_rate", 16000))
     barge_mode = params.get("barge") == "1"
 
+    # Speechmatics self-service pricing (connection-time billed, silence included):
+    #   standard: $0.24/hr, enhanced: $0.56/hr. Keep this table in sync with whatever
+    #   operating_point the transcription_config below actually sends.
+    SM_TIER = "enhanced"
+    SM_HOURLY = {"standard": 0.24, "enhanced": 0.56}
+
     await websocket.accept()
     _stt_start = time.time()
 
     sm_url = "wss://us.rt.speechmatics.com/v2"
-    logger.info("Speechmatics STT connect: rate=%d url=%s barge=%s", sample_rate, sm_url, barge_mode)
+    logger.info("Speechmatics STT connect: rate=%d url=%s barge=%s tier=%s", sample_rate, sm_url, barge_mode, SM_TIER)
 
     try:
         async with ws_lib.connect(
@@ -1110,14 +883,14 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
             if barge_mode:
                 transcription_config = {
                     "language": "en",
-                    "operating_point": "enhanced",
+                    "operating_point": SM_TIER,
                     "enable_partials": True,
                     "max_delay": 0.7,
                 }
             else:
                 transcription_config = {
                     "language": "en",
-                    "operating_point": "enhanced",
+                    "operating_point": SM_TIER,
                     "diarization": "speaker",
                     "speaker_diarization_config": {
                         "max_speakers": 5,
@@ -1217,9 +990,10 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
             pass
     finally:
         duration_s = time.time() - _stt_start
+        hourly_rate = SM_HOURLY.get(SM_TIER, SM_HOURLY["enhanced"])
         asyncio.ensure_future(_log_cost(
-            provider="speechmatics", service="speechmatics-enhanced",
-            cost_usd=duration_s * 0.60 / 3600,
+            provider="speechmatics", service=f"speechmatics-{SM_TIER}",
+            cost_usd=duration_s * hourly_rate / 3600,
             unit="seconds", unit_count=round(duration_s, 2),
         ))
 
@@ -2127,6 +1901,72 @@ async def ged_start(request: Request):
     async with httpx.AsyncClient(timeout=75) as http:
         resp = await http.post(f"{MCP_DIRECT_URL}/ged/start", json=body)
         return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+# ── GED Gemini fallback ───────────────────────────────────────
+
+_GED_RULES_BASE = os.path.expanduser("~/projects/samaritan-ged")
+_GEMINI_GEN_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+def _load_ged_system_prompt(channel: str) -> str:
+    """Compose GED tutor system prompt from rule files (01/02/03 only)."""
+    subject = channel if channel.startswith("ged-") else "ged-math"
+    rules_dir = os.path.join(_GED_RULES_BASE, subject, ".claude", "rules")
+    parts = []
+    try:
+        for fname in sorted(os.listdir(rules_dir)):
+            if fname[:2] in ("01", "02", "03"):
+                with open(os.path.join(rules_dir, fname)) as f:
+                    parts.append(f.read().strip())
+    except OSError:
+        parts = ["You are a GED tutor. Help the student learn clearly and patiently."]
+    return "\n\n".join(parts)
+
+
+@app.post("/api/ged/ask")
+async def ged_ask(request: Request):
+    """Direct Gemini 2.5 Flash call for GED tutoring — fallback when Claude is unavailable."""
+    if not _check_auth(request):
+        return _auth_error()
+    if not GEMINI_API_KEY:
+        return JSONResponse({"error": "Gemini API key not configured"}, status_code=503)
+
+    body = await request.json()
+    text    = (body.get("text") or "").strip()
+    channel = body.get("channel") or "ged-math"
+    history = body.get("history") or []   # [{role: "user"|"assistant", text: "..."}]
+
+    if not text:
+        return JSONResponse({"error": "No text provided"}, status_code=400)
+
+    system_prompt = _load_ged_system_prompt(channel)
+
+    # Build Gemini contents — cap history at last 10 turns to stay in token budget
+    contents = []
+    for turn in history[-10:]:
+        gemini_role = "model" if turn.get("role") == "assistant" else "user"
+        contents.append({"role": gemini_role, "parts": [{"text": turn.get("text", "")}]})
+    contents.append({"role": "user", "parts": [{"text": text}]})
+
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as http:
+            resp = await http.post(
+                f"{_GEMINI_GEN_URL}?key={GEMINI_API_KEY}",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text_out = data["candidates"][0]["content"]["parts"][0]["text"]
+            return JSONResponse({"text": text_out})
+    except Exception as e:
+        logger.error(f"ged_ask Gemini error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 # ── Chat session management ───────────────────────────────────

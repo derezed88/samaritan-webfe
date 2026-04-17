@@ -1929,7 +1929,7 @@ let fullVoiceMode = false; // true when Samaritan TTS is active
 let micMode = 'off';
 let diMode  = false;  // true = nova-3 diarization overlay active
 let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
-const MIC_MODES = ['off', 'barge', 'speaker', 'inworld', 'speechmatics', 'sm-barge'];
+const MIC_MODES = ['off', 'barge', 'speaker', 'speechmatics', 'sm-barge'];
 const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW', speechmatics: 'SM', 'sm-barge': 'SMB' };
 
 // ── SM speaker filter ──────────────────────────────────────────
@@ -1953,7 +1953,7 @@ function setMicMode(mode) {
   _smPrimarySpeaker = null;  // reset speaker tracking on mode change
   _updateSpkFilterBtn();
   if (!isListening) micIcon.textContent = MIC_MODE_LABELS[mode];
-  micBtn.classList.remove('barge', 'speaker', 'inworld', 'speechmatics', 'sm-barge');
+  micBtn.classList.remove('barge', 'speaker', 'speechmatics', 'sm-barge');
   if (mode !== 'off') micBtn.classList.add(mode);
 }
 
@@ -2036,16 +2036,30 @@ const THEME_TRANSITION_MS     = 3000;  // ms for dark/light crossfade (must matc
 const LONG_RESPONSE_THRESHOLD = 10;    // words — responses >= this use terminal display instead of word flash
 const TERMINAL_CHAR_DELAY_MS  = 18;    // ms per character in terminal typewriter effect
 const CARD_CYCLE_DELAY_MS     = 5000;  // ms each group of 3 cards is shown when cycling
-let   TTS_PROVIDER            = 'inworld';               // active TTS provider: 'deepgram' | 'inworld' | 'xai'
+let   TTS_PROVIDER            = 'xai';                   // active TTS provider: 'xai' | 'inworld'
+// Synchronous restore from sessionStorage — must run BEFORE any TTS dispatching
+// can race against it. Using the deferred setTimeout path (further below) caused
+// the first sentence of the first post-reload response to dispatch to the default
+// 'inworld' before the restore's button-click could catch up. Setting the variable
+// directly here closes that race without touching the UI sync (which happens when
+// updateVoiceProviderBtn runs inside the provider-button IIFE).
+try {
+  const _earlyRestoreRaw = sessionStorage.getItem('sam_reload_state');
+  if (_earlyRestoreRaw) {
+    const _earlyRestore = JSON.parse(_earlyRestoreRaw);
+    if (_earlyRestore.ttsProvider && (_earlyRestore.ttsProvider === 'inworld' || _earlyRestore.ttsProvider === 'xai')) {
+      TTS_PROVIDER = _earlyRestore.ttsProvider;
+    }
+  }
+} catch (_) {}
 const XAI_VOICE               = 'eve';              // xAI realtime voice: Eve | Ara | Rex | Sal | Leo
 let   INWORLD_VOICE           = 'Evelyn';           // Inworld voice name
-const DEEPGRAM_TTS_MODEL      = 'aura-2-helena-en'; // Deepgram Aura TTS model
 const INWORLD_MODEL           = 'inworld-tts-1.5-max'; // Inworld model ID
 const INWORLD_SPEAKING_RATE   = 1.3;                // 0.5–1.5× native speed
 const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
 // ── STT config ───────────────────────────────────────────────
-let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram' | 'inworld'
+let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
 const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
@@ -2862,22 +2876,7 @@ async function claudeSubmit(text) {
       console.log('[camera] claude: auto-capture ignored (no trigger phrase)');
     }
 
-    // 1. Submit to Claude via tmux dispatch (include location + voice profile metadata)
-    // Attach Inworld voice profile as emotion prefix and metadata
-    if (_iwVoiceProfile) {
-      const vp = _iwVoiceProfile;
-      _iwVoiceProfile = null;
-      const emo = (Array.isArray(vp.emotion) ? vp.emotion[0] : vp.emotion) || {};
-      const vs  = (Array.isArray(vp.vocalStyle) ? vp.vocalStyle[0] : vp.vocalStyle) || {};
-      const pit = (Array.isArray(vp.pitch) ? vp.pitch[0] : vp.pitch) || {};
-      // Build [voice|emotion:label(conf)|vocal:style|pitch:level] prefix
-      const parts = ['voice'];
-      if (emo.label) parts.push(`emotion:${emo.label}(${(emo.confidence || 0).toFixed(2)})`);
-      if (vs.label)  parts.push(`vocal:${vs.label}`);
-      if (pit.label) parts.push(`pitch:${pit.label}`);
-      claudeText = `[${parts.join('|')}] ${claudeText}`;
-      console.log('[claudeSubmit] Inworld voice profile prefix attached');
-    }
+    // 1. Submit to Claude via tmux dispatch (include location metadata)
     const submitBody = { text: claudeText, source: 'voice' };
     // Attach voice profile emotion for samaritan_emotions storage
     if (claudeText.startsWith('[voice|emotion:')) {
@@ -3356,6 +3355,12 @@ function pcm16Base64ToFloat32(b64, sampleRate) {
 // Returns the wall-clock ms until playback of this buffer completes (for onDone timing).
 // Queue of AudioBuffers that arrived while AudioContext was resuming
 let _pendingChunks = [];
+let _pendingEndMs  = 0;    // cumulative ms of queued chunks while suspended — so scheduleAudioChunk can
+                           // return a truthful "end of last chunk" estimate even before resume resolves.
+                           // Without this, inworld/xai speak() callers see lastChunkEndMs=0 and
+                           // fire their onDone callback 150ms after stream-end — far earlier than the
+                           // audio actually plays — which drops the first sentence of each response
+                           // whenever the context was suspended on arrival (post-reload, post-idle).
 let _resumingCtx = false;
 
 function scheduleAudioChunk(audioBuf) {
@@ -3363,17 +3368,19 @@ function scheduleAudioChunk(audioBuf) {
   // iOS Safari can suspend AudioContext mid-session; queue chunks until resumed
   if (audioCtx.state === 'suspended') {
     _pendingChunks.push(audioBuf);
+    _pendingEndMs += audioBuf.duration * 1000;
     if (!_resumingCtx) {
       _resumingCtx = true;
       audioCtx.resume().then(() => {
         _resumingCtx = false;
+        _pendingEndMs = 0;
         // Drain queued chunks now that context is running
         while (_pendingChunks.length > 0) {
           _scheduleChunk(_pendingChunks.shift());
         }
-      }).catch(() => { _resumingCtx = false; _pendingChunks = []; });
+      }).catch(() => { _resumingCtx = false; _pendingChunks = []; _pendingEndMs = 0; });
     }
-    return 0;
+    return _pendingEndMs;
   }
   return _scheduleChunk(audioBuf);
 }
@@ -3403,6 +3410,8 @@ function stopAllAudio() {
     try { src.stop(); } catch (_) {}
   }
   activeSrcs.clear();
+  _pendingChunks = [];
+  _pendingEndMs = 0;
   if (simliClient && simliReady) { try { simliClient.ClearBuffer(); } catch(_) {} }
 }
 
@@ -3560,40 +3569,70 @@ function waitForSimliReady(timeoutMs = 25000) {
 // ── Provider registry ─────────────────────────────────────────
 const ttsProviders = {
 
-  // ── Deepgram Aura TTS (HTTP streaming PCM) ──────────────────
-  // Server proxies to api.deepgram.com/v1/speak — returns raw PCM16-LE at 24kHz.
-  // Each chunk of bytes is fed directly to pcmBytesToAudioBuf and scheduled
-  // for gapless playback as it arrives (same pattern as Inworld).
-  deepgram: {
+  // ── xAI TTS (HTTP POST streaming PCM) ─────────────────────
+  // Server proxies to https://api.x.ai/v1/tts with output_format codec=pcm,
+  // sample_rate=24000. Returns raw PCM16-LE bytes streamed back to browser,
+  // which feeds each chunk into pcmBytesToAudioBuf for gapless playback.
+  // 2026-04-10: rewritten from the wss://api.x.ai/v1/realtime path, which
+  // was using the Grok Realtime Agent API (wrong product, higher billing,
+  // required ephemeral client_secrets + "Say this:" prompt hack). Correct
+  // TTS endpoint is POST /v1/tts per docs.x.ai.
+  //
+  // 2026-04-10 retry layer: Safari drops the FIRST POST after a quiet period
+  // with "Load failed" / "The network connection was lost" — a cold-TCP/TLS
+  // flake, not a real API failure. One short retry absorbs it before the
+  // Inworld fallback kicks in, so cold-start sentence 1 actually lands on xai
+  // instead of silently degrading to the cheaper provider.
+  xai: {
     _abortCtrl: null,
+    _RETRY_DELAY_MS: 300,
 
-    speak(text, _clientSecret, onDone, onError) {
+    speak(text, _unused, onDone, onError) {
+      this._attemptSpeak(text, onDone, onError, 0);
+    },
+
+    _attemptSpeak(text, onDone, onError, attemptNum) {
       this._abortCtrl = new AbortController();
       const signal = this._abortCtrl.signal;
+      const self = this;
 
       (async () => {
         let resp;
         try {
-          resp = await fetch('/api/tts/deepgram', {
+          resp = await fetch('/api/tts/xai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ text, model: DEEPGRAM_TTS_MODEL }),
+            body: JSON.stringify({ text, voice_id: XAI_VOICE, language: 'en' }),
             signal,
           });
         } catch (e) {
-          if (e.name !== 'AbortError') onError('deepgram: ' + e.message.slice(0, 30));
+          if (e.name === 'AbortError') return;
+          if (attemptNum < 1) {
+            console.warn(`[xai-tts] fetch failed (${e.message}), retrying once...`);
+            setTimeout(() => self._attemptSpeak(text, onDone, onError, attemptNum + 1), self._RETRY_DELAY_MS);
+            return;
+          }
+          console.warn('[xai-tts] fetch failed twice, falling back to Inworld:', e.message);
+          ttsProviders.inworld.speak(text, null, onDone, onError);
           return;
         }
-        if (!resp.ok) { onError('deepgram http ' + resp.status); return; }
+        if (!resp.ok) {
+          if (attemptNum < 1 && resp.status >= 500) {
+            console.warn(`[xai-tts] http ${resp.status}, retrying once...`);
+            setTimeout(() => self._attemptSpeak(text, onDone, onError, attemptNum + 1), self._RETRY_DELAY_MS);
+            return;
+          }
+          console.warn('[xai-tts] http ' + resp.status + ', falling back to Inworld');
+          ttsProviders.inworld.speak(text, null, onDone, onError);
+          return;
+        }
 
-        // Read streaming PCM16-LE chunks — each chunk is raw samples at 24kHz.
-        // Feed directly to pcmBytesToAudioBuf (same helper used by xAI and Inworld).
+        // Read streaming PCM16-LE chunks (raw samples at 24kHz, no header).
         const reader = resp.body.getReader();
         let lastChunkEndMs = 0;
         let gotAny = false;
         let errored = false;
-        // PCM16 must be fed in even byte counts (2 bytes per sample).
-        // Buffer a trailing odd byte across reads.
+        // PCM16 samples are 2 bytes each — buffer a trailing odd byte across reads.
         let leftover = null;
 
         try {
@@ -3601,7 +3640,6 @@ const ttsProviders = {
             const { done, value } = await reader.read();
             if (done) break;
             let bytes = value;
-            // Prepend any leftover byte from previous chunk
             if (leftover) {
               const merged = new Uint8Array(leftover.length + bytes.length);
               merged.set(leftover);
@@ -3609,215 +3647,41 @@ const ttsProviders = {
               bytes = merged;
               leftover = null;
             }
-            // If odd number of bytes, save the last byte for next iteration
             if (bytes.length % 2 !== 0) {
               leftover = bytes.subarray(bytes.length - 1);
               bytes = bytes.subarray(0, bytes.length - 1);
             }
             if (bytes.length >= 2) {
-              lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(bytes, 24000));
-              simliSendPcm(bytes);
-              gotAny = true;
+              try {
+                lastChunkEndMs = scheduleAudioChunk(pcmBytesToAudioBuf(bytes, 24000));
+                simliSendPcm(bytes);
+                gotAny = true;
+              } catch (decodeErr) {
+                // Skip-and-continue on decode failure — lose a chunk, keep the sentence
+                console.warn('[xai-tts] decode failed, skipping chunk:', decodeErr.message);
+              }
             }
           }
         } catch (e) {
-          if (e.name !== 'AbortError') { onError('deepgram stream: ' + e.message.slice(0, 30)); errored = true; }
+          if (e.name !== 'AbortError') {
+            onError('xai stream: ' + e.message.slice(0, 30));
+            errored = true;
+          }
         }
 
-        if (errored || !gotAny) { if (!errored) onError('deepgram: no audio'); return; }
+        if (errored) return;
+        if (!gotAny) {
+          // Stream completed with zero usable audio — fall back to Inworld
+          console.warn('[xai-tts] no audio in stream, falling back to Inworld');
+          ttsProviders.inworld.speak(text, null, onDone, onError);
+          return;
+        }
         setTimeout(onDone, lastChunkEndMs + 150);
       })();
     },
 
     stop() {
       if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
-      stopAllAudio();
-    },
-  },
-
-  // ── xAI Realtime API ───────────────────────────────────────
-  xai: {
-    _ws: null,
-    _clientSecret: null,   // ephemeral token for this response
-    _cachedVtok:   null,   // pre-fetched token from SSE vtok event
-
-    // Fetch (or reuse cached) ephemeral token. Returns token string or null.
-    async _getToken() {
-      if (this._clientSecret) return this._clientSecret;
-      if (this._cachedVtok) {
-        const j = this._cachedVtok; this._cachedVtok = null;
-        this._clientSecret = j.client_secret?.value || j.value || j.token;
-        if (this._clientSecret) return this._clientSecret;
-      }
-      try {
-        const r = await fetch('/api/voice-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ expires_in: 120 }),
-        });
-        if (r.ok) {
-          const j = await r.json();
-          this._clientSecret = j.client_secret?.value || j.value || j.token;
-        }
-      } catch (_) {}
-      return this._clientSecret || null;
-    },
-
-    // Retry config — added 2026-04-10 after Safari console diagnosis revealed
-    // that xAI TTS cutoffs are network failures (voice-token HTTP failure or
-    // WebSocket bad-response/abnormal-close), NOT decode errors. Original code
-    // had zero retry — one transient flake = one lost sentence. With multi-
-    // sentence responses, each sentence is its own connection so failure
-    // opportunities multiply.
-    _MAX_ATTEMPTS: 3,
-    _RETRY_DELAY_MS: 250,
-
-    speak(text, _unused, onDone, onError) {
-      this._attemptSpeak(text, onDone, onError, 0);
-    },
-
-    _attemptSpeak(text, onDone, onError, attemptNum) {
-      (async () => {
-        // Reset cached client secret per attempt — stale tokens should not be reused
-        if (attemptNum > 0) this._clientSecret = null;
-
-        const clientSecret = await this._getToken();
-        if (!clientSecret) {
-          // Token fetch failed — retry or fall back
-          if (attemptNum < this._MAX_ATTEMPTS - 1) {
-            console.warn(`[xai-tts] voice token failed (attempt ${attemptNum + 1}/${this._MAX_ATTEMPTS}), retrying...`);
-            setTimeout(() => this._attemptSpeak(text, onDone, onError, attemptNum + 1), this._RETRY_DELAY_MS);
-            return;
-          }
-          // All attempts exhausted — fall back to Inworld for this sentence so
-          // the response still completes in a comparable voice.
-          console.warn('[xai-tts] all token attempts failed, falling back to Inworld for this sentence');
-          ttsProviders.inworld.speak(text, null, onDone, onError);
-          return;
-        }
-        this._speakWithToken(text, clientSecret, onDone, onError, attemptNum);
-      })();
-    },
-
-    _speakWithToken(text, clientSecret, onDone, onError, attemptNum = 0) {
-      // Track whether audio has actually started arriving — once any audio
-      // chunk is delivered, retries become unsafe (would replay partial audio)
-      let audioStarted = false;
-      // CRITICAL: when a WebSocket fails, BOTH onerror and onclose fire.
-      // Without this guard, retryOrFail runs twice per failure → two retries
-      // scheduled → two parallel WebSockets → audio doubling ("burn the
-      // budget-burn the budget" symptom observed 2026-04-10).
-      // This flag also coordinates with the success path (response.done)
-      // so a late onclose after success doesn't trigger a phantom retry.
-      let done = false;
-      const self = this;
-      const retryOrFail = (errMsg) => {
-        if (done) return;  // already handled this WebSocket's outcome
-        done = true;
-        if (audioStarted) {
-          // Mid-stream failure — too late to retry, propagate the error
-          onError(errMsg);
-          return;
-        }
-        if (attemptNum < self._MAX_ATTEMPTS - 1) {
-          console.warn(`[xai-tts] connection failed (${errMsg}, attempt ${attemptNum + 1}/${self._MAX_ATTEMPTS}), retrying...`);
-          setTimeout(() => self._attemptSpeak(text, onDone, onError, attemptNum + 1), self._RETRY_DELAY_MS);
-          return;
-        }
-        // All attempts exhausted — fall back to Inworld for this sentence
-        console.warn(`[xai-tts] all attempts failed (${errMsg}), falling back to Inworld for this sentence`);
-        ttsProviders.inworld.speak(text, null, onDone, onError);
-      };
-      const markDone = () => { done = true; };
-
-      // Voice names must be capitalized per xAI docs (Eve, Ara, Rex, Sal, Leo)
-      const voiceName = XAI_VOICE.charAt(0).toUpperCase() + XAI_VOICE.slice(1).toLowerCase();
-      let ws;
-      try {
-        ws = new WebSocket('wss://api.x.ai/v1/realtime',
-                           [`xai-client-secret.${clientSecret}`]);
-      } catch (e) {
-        retryOrFail('ws: ' + e.message.slice(0, 40));
-        return;
-      }
-      this._ws = ws;
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({
-          type: 'session.update',
-          session: {
-            modalities: ['audio'],
-            voice: voiceName,
-            output_audio_format: 'audio/pcm',
-            turn_detection: null,
-          },
-        }));
-        // "Say this: <text>" — direct command, prevents LLM paraphrasing
-        ws.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: {
-            type: 'message', role: 'user',
-            content: [{ type: 'input_text', text: `Say this: ${text}` }],
-          },
-        }));
-        ws.send(JSON.stringify({
-          type: 'response.create',
-          response: { modalities: ['audio'] },
-        }));
-      };
-
-      ws.onmessage = (evt) => {
-        let msg;
-        try { msg = JSON.parse(evt.data); } catch (_) { return; }
-        switch (msg.type) {
-          case 'response.output_audio.delta':
-            if (msg.delta) {
-              audioStarted = true;  // mark before scheduling — once any audio
-                                    // arrives, retries become unsafe
-              // 2026-04-10 fix: skip-and-continue on decode failure instead of
-              // aborting the whole response. xAI TTS occasionally sends a
-              // malformed PCM chunk ("Out of bounds access" in Safari console).
-              // Previous behavior: propagated to onError → TTS queue empties →
-              // cooldown chime fires → user perceives "Samaritan cut herself
-              // off." New behavior: log the bad chunk, skip it (creates a
-              // ~20-50ms imperceptible gap), let the rest of the sentence play.
-              // See belief 307 for the original diagnosis and beliefs 303/308
-              // for symptom history.
-              try {
-                scheduleAudioChunk(pcm16Base64ToFloat32(msg.delta, 24000));
-                simliSendPcmBase64(msg.delta);
-              } catch (e) {
-                console.warn('[xai-tts] decode failed, skipping chunk:', e.message);
-                // Do NOT call onError — that would abort the whole response.
-                // The lost chunk is preferable to the lost sentence.
-              }
-            }
-            break;
-          case 'response.done':
-            markDone();  // claim outcome before closing — prevents onclose-triggered retry
-            ws.close(); this._ws = null;
-            // Delay onDone to let final PCM chunks finish scheduling to activeSrcs
-            setTimeout(onDone, 300);
-            break;
-          case 'error':
-            ws.close(); this._ws = null;
-            retryOrFail((msg.error?.message || 'voice error').slice(0, 60));
-            break;
-        }
-      };
-
-      ws.onerror = () => { this._ws = null; retryOrFail('voice ws error'); };
-
-      ws.onclose = (evt) => {
-        if (this._ws === ws) this._ws = null;
-        if (evt.code !== 1000 && evt.code !== 1005) retryOrFail('voice closed: ' + evt.code);
-      };
-    },
-
-    stop() {
-      if (this._ws) { try { this._ws.close(); } catch(_) {} this._ws = null; }
-      this._clientSecret = null;
-      this._cachedVtok   = null;
       stopAllAudio();
     },
   },
@@ -3919,9 +3783,8 @@ const ttsProviders = {
 
 // ── Wire voice provider button (after ttsProviders is defined) ───────────────
 (function() {
-  const PROVIDER_LABELS = { deepgram: 'D', inworld: 'I', xai: 'X' };
+  const PROVIDER_LABELS = { inworld: 'I', xai: 'X' };
   const PROVIDER_TITLES = {
-    deepgram: 'TTS: Deepgram Aura — tap to switch',
     inworld: 'TTS: Inworld — tap to switch',
     xai: 'TTS: xAI (per-turn) — tap to switch',
   };
@@ -3931,7 +3794,7 @@ const ttsProviders = {
     voiceProviderBtn.title = PROVIDER_TITLES[TTS_PROVIDER] ?? `TTS: ${TTS_PROVIDER} — tap to switch`;
   }
 
-  const providerOrder = ['inworld', 'deepgram', 'xai'];
+  const providerOrder = ['xai', 'inworld'];
   updateVoiceProviderBtn();
 
   voiceProviderBtn.addEventListener('click', () => {
@@ -4000,6 +3863,7 @@ function _ttsFlush() {
   const gen = _ttsGeneration;        // capture generation for stale-callback guard
   _ttsBusy = true;
   isSpeaking = true;
+  console.log(`[TTS-DIAG] dispatch via ${TTS_PROVIDER}: "${sentence.slice(0, 60)}${sentence.length > 60 ? '...' : ''}"`);
   provider.speak(
     sentence,
     null,
@@ -4011,14 +3875,18 @@ function _ttsFlush() {
       } else if (_ttsDone) {
         // All sentences spoken and SSE done — poll until Web Audio drains,
         // then clear isSpeaking. Needed for xAI where response.done arrives
-        // before all scheduled PCM chunks finish playing.
+        // before all scheduled PCM chunks finish playing. Also waits for
+        // _pendingChunks to drain — chunks scheduled during a suspended
+        // AudioContext sit there until resume fires, and if we advance
+        // before the drain runs, the last sentence's audio lands after the
+        // mic has already restarted for the next turn.
         (function waitForAudio() {
           if (gen !== _ttsGeneration) return;
-          if (activeSrcs.size > 0) {
+          if (activeSrcs.size > 0 || _pendingChunks.length > 0 || _resumingCtx) {
             setTimeout(waitForAudio, 100);
           } else {
             isSpeaking = false;
-            if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
+            if (micMode === 'speaker' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
             waitForDrainThenListen(_ttsWasKbd);
           }
         })();
@@ -4034,7 +3902,7 @@ function _ttsFlush() {
         _ttsFlush();
       } else if (_ttsDone) {
         isSpeaking = false;
-        if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
+        if (micMode === 'speaker' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
         waitForDrainThenListen(_ttsWasKbd);
       } else {
         isSpeaking = false;
@@ -4048,7 +3916,7 @@ async function speakWithSamaritan(sentence, wasKbd, isLast) {
   if (!sentence && isLast && !_ttsBusy && _ttsSentenceQueue.length === 0) {
     _ttsDone = true;
     isSpeaking = false;
-    if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
+    if (micMode === 'speaker' || micMode === 'speechmatics' || diMode) startSpeakerCooldown();
     waitForDrainThenListen(wasKbd);
     return;
   }
@@ -4147,17 +4015,6 @@ async function submit(textOverride) {
   showIdle(false);
   showLoader(true);
   sendBtn.disabled = true;
-
-  // Prefetch xAI voice token in parallel — only needed for per-turn xAI provider
-  if (fullVoiceMode && TTS_PROVIDER === 'xai') {
-    fetch('/api/voice-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ expires_in: 120 }),
-    }).then(r => r.ok ? r.json() : null)
-      .then(j => { if (j) ttsProviders.xai._cachedVtok = j; })
-      .catch(() => {});
-  }
 
   try {
     // 0. Photo handling: manual snap, auto-capture trigger, or deferred save
@@ -4323,9 +4180,6 @@ async function submit(textOverride) {
         } else if (data.type === 'progress') {
           showLoader(true, data.text || 'Still working…');
           if (fullVoiceMode) speakWithSamaritan(data.text || 'Still working…', wasKbd, false);
-        } else if (data.type === 'vtok') {
-          // xAI voice token pre-delivered over SSE — store directly on xAI provider
-          ttsProviders.xai._cachedVtok = data.token;
         } else if (data.type === 'done') {
           streamDone = true;
           evtSource.close(); activeEvtSource = null;
@@ -4574,7 +4428,7 @@ function onSttFinal(text) {
   // Claude mode exception: allow new submits (claudeSubmit handles cancellation internally).
   if (isStreaming && !claudeMode && !((micMode === 'barge' || micMode === 'sm-barge') && isSpeaking)) return;
   // In speaker/diarize/inworld mode: suppress while TTS is playing or during post-TTS cooldown.
-  if (micMode === 'speaker' || micMode === 'inworld' || micMode === 'speechmatics' || diMode) {
+  if (micMode === 'speaker' || micMode === 'speechmatics' || diMode) {
     if (isSpeaking) return;
     // Also suppress during cooldown unconditionally — catches Deepgram finals that
     // arrive after isSpeaking clears but were captured while audio was still playing.
@@ -4651,6 +4505,7 @@ const _ws = (() => {
 })();
 
 // ── Provider: Deepgram (browser WebSocket + AudioWorklet PCM) ─
+const STT_DG_STITCH_MS = 5000;  // ms to hold Deepgram EndOfTurn finals before submitting — merges rapid back-to-back utterances within the window into one submission
 const _dg = (() => {
   let dgKey    = null;   // fetched once from /api/stt-token
   let dgWs     = null;
@@ -4658,6 +4513,34 @@ const _dg = (() => {
   let workletNode = null;
   let mediaStream = null;
   let active   = false;
+  // Auto-reconnect state: Deepgram closes idle WebSockets in speaker mode
+  // (when the client stops sending PCM during TTS playback) and real-world
+  // network blips tear the TCP underneath. _explicitStop distinguishes user-
+  // initiated teardown (mic off, mode cycle) from unexpected close so we
+  // only reconnect when it's actually needed. Attempts are capped to prevent
+  // thrashing against a genuinely broken backend.
+  let _explicitStop = false;
+  let _reconnectAttempts = 0;
+  let _reconnectTimer = null;
+  const DG_MAX_RECONNECT = 3;
+  const DG_RECONNECT_BACKOFF_MS = 500;
+  // Stitch state — mirrors the Speechmatics pattern. Rapid back-to-back
+  // EndOfTurn events get merged into one submission via a rolling timeout.
+  let _stitchBuf = '';
+  let _stitchTimer = null;
+  function _flushStitch() {
+    _stitchTimer = null;
+    const combined = _stitchBuf.trim();
+    _stitchBuf = '';
+    if (!combined) return;
+    onSttPartial(combined);
+    onSttFinal(combined);
+  }
+  function _queueStitch(text) {
+    _stitchBuf = _stitchBuf ? _stitchBuf + ' ' + text : text;
+    if (_stitchTimer) clearTimeout(_stitchTimer);
+    _stitchTimer = setTimeout(_flushStitch, STT_DG_STITCH_MS);
+  }
 
   // Inline AudioWorklet processor as a Blob URL — sends 256-sample PCM chunks
   const WORKLET_CODE = `
@@ -4672,6 +4555,8 @@ registerProcessor('pcm-capture', PcmCapture);`;
 
   async function startDg() {
     active = true;
+    _explicitStop = false;
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     onSttConnecting();
     try {
 
@@ -4707,6 +4592,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
       dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
       dgWs.binaryType = 'arraybuffer';
       dgWs.onopen = async () => {
+        _reconnectAttempts = 0;  // healthy connection — clear retry counter
         onSttStart();
         const source = audioCtxDg.createMediaStreamSource(mediaStream);
 
@@ -4731,42 +4617,35 @@ registerProcessor('pcm-capture', PcmCapture);`;
           workletNode = spn;
         }
         // After all async setup, resume if iOS suspended the context.
-        // Called here (inside onopen callback) rather than before WS creation
-        // to avoid hanging the initial fresh-page-load gesture chain.
         if (audioCtxDg && audioCtxDg.state === 'suspended') {
           audioCtxDg.resume().catch(() => {});
         }
         // Silent primer: send ~200ms of silence to warm up the Deepgram decoder
         // and the local audio pipeline before the user's first word arrives.
-        // Prevents first-utterance garbling (the "Samaritan → American" problem).
         const primerSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.2);
-        const primerPcm16 = new Int16Array(primerSamples); // all zeros = silence
+        const primerPcm16 = new Int16Array(primerSamples);
         if (dgWs.readyState === WebSocket.OPEN) dgWs.send(primerPcm16.buffer);
       };
 
       // Flux requires ~80ms chunks for optimal performance.
-      // Buffer incoming PCM and flush once we have enough samples.
       let _pcmBuf = [];
       let _pcmBufLen = 0;
       function sendPcm(f32) {
         if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
         // In speaker mode, drop mic audio while TTS is playing or cooldown is active.
-        // This prevents Deepgram from transcribing speaker output at all.
         if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
-          _pcmBuf = []; _pcmBufLen = 0;  // discard any buffered audio too
+          _pcmBuf = []; _pcmBufLen = 0;
           return;
         }
         _pcmBuf.push(f32);
         _pcmBufLen += f32.length;
-        const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08); // 80ms
+        const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08);
         if (_pcmBufLen < targetSamples) return;
-        // Flatten buffered chunks
         const merged = new Float32Array(_pcmBufLen);
         let offset = 0;
         for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
         _pcmBuf = [];
         _pcmBufLen = 0;
-        // Noise gate: compute RMS and skip if below threshold (filters ambient noise)
         if (STT_NOISE_GATE > 0) {
           let sumSq = 0;
           for (let i = 0; i < merged.length; i++) sumSq += merged[i] * merged[i];
@@ -4784,20 +4663,42 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (msg.type !== 'TurnInfo') return;
         const transcript = (msg.transcript || '').trim();
         if (msg.event === 'StartOfTurn') {
-          // User started speaking — clear preview but do NOT barge-in yet.
-          // Wait for Update/EndOfTurn with enough words to confirm real speech,
-          // otherwise ambient noise StartOfTurn kills TTS prematurely.
           onSttPartial('');
         } else if (msg.event === 'Update') {
           if (transcript) onSttPartial(transcript);
         } else if (msg.event === 'EndOfTurn') {
-          if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
+          // Queue into the stitch buffer so rapid back-to-back finals merge
+          // into one submission (3s rolling window). A short follow-up within
+          // the window extends the timer and gets appended to the previous text.
+          if (transcript) { onSttPartial(transcript); _queueStitch(transcript); }
         }
       };
-      dgWs.onerror = (ev) => { flashError('DG WS error'); stopDg(); };
+      dgWs.onerror = (ev) => {
+        console.warn('[DG] WS error', ev);
+      };
       dgWs.onclose = (ev) => {
-        flashError('DG closed ' + ev.code);
-        if (active) { active = false; stopDg(); }
+        dgWs = null;
+        if (_explicitStop || !active) {
+          if (active) { active = false; stopDg(); }
+          return;
+        }
+        _reconnectAttempts++;
+        if (_reconnectAttempts > DG_MAX_RECONNECT) {
+          flashError('DG reconnect gave up after ' + DG_MAX_RECONNECT + ' tries (code=' + ev.code + ')');
+          active = false;
+          stopDg();
+          return;
+        }
+        console.warn('[DG] WS closed (code=' + ev.code + '), reconnect ' + _reconnectAttempts + '/' + DG_MAX_RECONNECT);
+        if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+        if (audioCtxDg) { try { audioCtxDg.close(); } catch (_) {} audioCtxDg = null; }
+        if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+        _reconnectTimer = setTimeout(() => {
+          _reconnectTimer = null;
+          if (!_explicitStop && voiceMode && micMode !== 'off') {
+            startDg();
+          }
+        }, DG_RECONNECT_BACKOFF_MS);
       };
     } catch (err) {
       flashError('DG catch: ' + String(err).slice(0, 40));
@@ -4808,7 +4709,10 @@ registerProcessor('pcm-capture', PcmCapture);`;
 
   function stopDg() {
     active = false;
-    _pcmBuf = []; _pcmBufLen = 0;
+    _explicitStop = true;
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; _stitchBuf = ''; }
+    _reconnectAttempts = 0;
     if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
     if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (audioCtxDg) { try { audioCtxDg.close(); }  catch (_) {} audioCtxDg = null; }
@@ -5038,203 +4942,191 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
   return { start: startDgDi, stop: stopDgDi };
 })();
 
-// ── Provider: Inworld STT (voice profile: emotion, pitch, vocal style) ──
-let _iwVoiceProfile = null;  // latest Inworld voice profile for emotion metadata
-const _iw = (() => {
-  let iwWs       = null;
-  let audioCtxIw = null;
-  let workletNode = null;
-  let mediaStream = null;
-  let active      = false;
-
-  const WORKLET_CODE_IW = `
-class PcmCaptureIw extends AudioWorkletProcessor {
-  process(inputs) {
-    const ch = inputs[0][0];
-    if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
-    return true;
-  }
-}
-registerProcessor('pcm-capture-iw', PcmCaptureIw);`;
-
-  async function startIw() {
-    active = true;
-    _iwVoiceProfile = null;
-    onSttConnecting();
-    try {
-      audioCtxIw = new AudioContext();
-      if (audioCtxIw.state === 'suspended') {
-        try { await audioCtxIw.resume(); } catch(_) {}
-      }
-
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({
-          audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
-          video: false,
-        });
-      } catch (e) {
-        flashError('mic denied: ' + e.message.slice(0, 30));
-        audioCtxIw.close().catch(() => {}); audioCtxIw = null;
-        active = false; onSttStop(); return;
-      }
-      const actualRate = audioCtxIw.sampleRate;
-
-      const params = new URLSearchParams({
-        sample_rate: actualRate,
-        vp_threshold: 0.3,
-        vad_threshold: 0.90,
-        eot_silence_ms: 3500,
-        // 2026-04-10: stop trusting Inworld's confidence model — set
-        // unconfident silence and max silence to Speechmatics-equivalent
-        // 1500ms, raise confidence threshold so Inworld rarely fires the
-        // shorter "confident" path. See server log diagnosis 12:16-12:20.
-        eot_unconfident_silence_ms: 1500,
-        eot_max_silence_ms: 1500,
-        eot_confidence_threshold: 0.95,
-        token: _apiKey,
-      });
-      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      iwWs = new WebSocket(`${wsProto}//${location.host}/api/stt-inworld-proxy?${params}`);
-      iwWs.binaryType = 'arraybuffer';
-      iwWs.onopen = async () => {
-        onSttStart();
-        const source = audioCtxIw.createMediaStreamSource(mediaStream);
-        let usedWorklet = false;
-        try {
-          const blob    = new Blob([WORKLET_CODE_IW], { type: 'application/javascript' });
-          const blobUrl = URL.createObjectURL(blob);
-          await audioCtxIw.audioWorklet.addModule(blobUrl);
-          URL.revokeObjectURL(blobUrl);
-          workletNode = new AudioWorkletNode(audioCtxIw, 'pcm-capture-iw');
-          workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
-          source.connect(workletNode);
-          usedWorklet = true;
-        } catch (_) {}
-        if (!usedWorklet) {
-          const spn = audioCtxIw.createScriptProcessor(4096, 1, 1);
-          spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
-          source.connect(spn);
-          spn.connect(audioCtxIw.destination);
-          workletNode = spn;
-        }
-        if (audioCtxIw && audioCtxIw.state === 'suspended') {
-          audioCtxIw.resume().catch(() => {});
-        }
-      };
-
-      // Buffer PCM and flush ~80ms chunks (same pattern as Deepgram)
-      let _pcmBuf = [];
-      let _pcmBufLen = 0;
-      function sendPcm(f32) {
-        if (!iwWs || iwWs.readyState !== WebSocket.OPEN) return;
-        if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
-          _pcmBuf = []; _pcmBufLen = 0;
-          return;
-        }
-        _pcmBuf.push(f32);
-        _pcmBufLen += f32.length;
-        const targetSamples = Math.round((audioCtxIw.sampleRate || 48000) * 0.08);
-        if (_pcmBufLen < targetSamples) return;
-        const merged = new Float32Array(_pcmBufLen);
-        let offset = 0;
-        for (const chunk of _pcmBuf) { merged.set(chunk, offset); offset += chunk.length; }
-        _pcmBuf = [];
-        _pcmBufLen = 0;
-        if (STT_NOISE_GATE > 0) {
-          let sumSq = 0;
-          for (let i = 0; i < merged.length; i++) sumSq += merged[i] * merged[i];
-          if (Math.sqrt(sumSq / merged.length) < STT_NOISE_GATE) return;
-        }
-        const i16 = new Int16Array(merged.length);
-        for (let i = 0; i < merged.length; i++)
-          i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
-        iwWs.send(i16.buffer);
-      }
-
-      iwWs.onmessage = (e) => {
-        let msg;
-        try { msg = JSON.parse(e.data); } catch (_) { return; }
-        const result = msg.result || msg;
-
-        // Voice profile — store latest for emotion metadata
-        // Inworld nests voiceProfile inside transcription; fall back to top-level for safety
-        const vp = (result.transcription && result.transcription.voiceProfile) || result.voiceProfile || result.voice_profile;
-        if (vp) _iwVoiceProfile = vp;
-
-        // Speech started
-        if (result.speechStarted) {
-          onSttPartial('');
-          return;
-        }
-
-        // Transcription
-        const tx = result.transcription;
-        if (!tx) return;
-        const transcript = (tx.transcript || '').trim();
-        if (tx.isFinal) {
-          if (transcript) { onSttPartial(transcript); onSttFinal(transcript); }
-        } else {
-          if (transcript) onSttPartial(transcript);
-        }
-      };
-      iwWs.onerror = () => { flashError('Inworld WS error'); stopIw(); };
-      iwWs.onclose = (ev) => {
-        if (active) { flashError('Inworld closed ' + ev.code); active = false; stopIw(); }
-      };
-    } catch (err) {
-      flashError('Inworld catch: ' + String(err).slice(0, 40));
-      active = false;
-      onSttStop();
-    }
-  }
-
-  function stopIw() {
-    active = false;
-    if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
-    if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-    if (audioCtxIw) { try { audioCtxIw.close(); }  catch (_) {} audioCtxIw = null; }
-    if (iwWs) {
-      try {
-        if (iwWs.readyState === WebSocket.OPEN) iwWs.send(JSON.stringify({ closeStream: {} }));
-        iwWs.close();
-      } catch (_) {}
-      iwWs = null;
-    }
-    onSttStop();
-  }
-
-  return { start: startIw, stop: stopIw };
-})();
-
-// ── Speechmatics STT provider ─────────────────────
-const STT_SM_STITCH_MS = 3000;  // ms to hold SM finals before submitting — merges split segments
+// ── Speechmatics STT provider — lazy connection with VAD auto-reconnect ─
+// The mic stays active on the client side continuously, but the WebSocket
+// to Speechmatics only opens when local voice-activity-detection fires, and
+// closes after SM_VAD_IDLE_CLOSE_MS of silence. Silence is free; you only
+// pay connection-time when you're actually speaking. A ring buffer of recent
+// PCM (sized by observed handshake p95 + margin) is flushed into the WS on
+// reconnect so the first syllable of each utterance survives the handshake
+// delay. Noise floor is learned continuously while idle so VAD calibrates
+// to the current mic profile (Peltor vs AirPods vs ambient cafe).
+const STT_SM_STITCH_MS = 3000;          // ms to hold SM finals before submitting
+const SM_VAD_IDLE_CLOSE_MS = 10000;     // ms of silence before closing WS
+const SM_VAD_NOISE_EMA_ALPHA = 0.05;    // EMA smoothing factor for idle noise floor
+const SM_VAD_ACTIVATION_MULT = 3;       // activation = noise_floor * N
+const SM_VAD_ACTIVATION_FLOOR = 0.012;  // absolute minimum activation RMS
+const SM_VAD_HOLD_MULT = 1.5;           // hold threshold (lower than activation)
+const SM_RING_BUF_DEFAULT_MS = 1000;    // default buffer until handshake history is collected
+const SM_RING_BUF_MARGIN_MS = 200;      // added to p95 handshake duration
+const SM_RING_BUF_HARD_CAP_MS = 2500;   // absolute upper bound on buffer depth
 const _sm = (() => {
-  let smWs = null, audioCtxSm = null, workletNode = null, mediaStream = null, active = false;
+  let smWs = null, audioCtxSm = null, workletNode = null, mediaStream = null;
+  let active = false;                   // true while mic is "on" (independent of WS state)
+  let _vadState = 'idle';               // 'idle' | 'connecting' | 'streaming'
+  let _vadIdleTimer = null;
+  let _noiseFloor = 0.003;              // EMA of RMS during idle (seeded low for initial activation)
+  let _ringBuf = [];                    // array of { f32, durMs } chunks
+  let _ringBufMs = 0;                   // current buffer duration
+  let _handshakeDurations = [];         // last 10 measured WS handshake durations (ms)
+  let _handshakeStartTs = 0;
+  let _pcmBuf = [], _pcmBufLen = 0;     // 80ms chunking buffer for WS send
   let _stitchTimer = null, _stitchBuf = '', _stitchSpeakers = [];
+
+  function _ringBufCapMs() {
+    if (_handshakeDurations.length === 0) return SM_RING_BUF_DEFAULT_MS;
+    const sorted = [..._handshakeDurations].sort((a, b) => a - b);
+    const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    return Math.min(SM_RING_BUF_HARD_CAP_MS, Math.max(500, p95 + SM_RING_BUF_MARGIN_MS));
+  }
+  function _activationThreshold() {
+    return Math.max(_noiseFloor * SM_VAD_ACTIVATION_MULT, SM_VAD_ACTIVATION_FLOOR);
+  }
+  function _holdThreshold() {
+    return Math.max(_noiseFloor * SM_VAD_HOLD_MULT, SM_VAD_ACTIVATION_FLOOR * 0.7);
+  }
+  function _computeRms(f32) {
+    let sumSq = 0;
+    for (let i = 0; i < f32.length; i++) sumSq += f32[i] * f32[i];
+    return Math.sqrt(sumSq / f32.length);
+  }
+  function _pushToRing(f32) {
+    const durMs = (f32.length / (audioCtxSm?.sampleRate || 48000)) * 1000;
+    _ringBuf.push({ f32, durMs });
+    _ringBufMs += durMs;
+    const cap = _ringBufCapMs();
+    while (_ringBufMs > cap && _ringBuf.length > 0) {
+      _ringBufMs -= _ringBuf.shift().durMs;
+    }
+  }
+  function _clearRing() { _ringBuf = []; _ringBufMs = 0; }
+
+  function _bufferAndSend(f32) {
+    _pcmBuf.push(f32); _pcmBufLen += f32.length;
+    const target = Math.round((audioCtxSm.sampleRate || 48000) * 0.08);
+    if (_pcmBufLen < target) return;
+    const merged = new Float32Array(_pcmBufLen);
+    let off = 0; for (const c of _pcmBuf) { merged.set(c, off); off += c.length; }
+    _pcmBuf = []; _pcmBufLen = 0;
+    if (smWs && smWs.readyState === WebSocket.OPEN) {
+      const i16 = new Int16Array(merged.length);
+      for (let i = 0; i < merged.length; i++) {
+        i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
+      }
+      smWs.send(i16.buffer);
+    }
+  }
+  function _flushRingToWs() {
+    for (const chunk of _ringBuf) _bufferAndSend(chunk.f32);
+    _clearRing();
+  }
+
+  // Called from the AudioWorklet message handler on every mic chunk.
+  // This is where the VAD state machine lives.
+  function _onWorkletChunk(f32) {
+    if (!active || !audioCtxSm) return;
+    // During TTS playback or speaker cooldown (non-barge), drop the chunk
+    // entirely so we don't VAD-wake on our own speaker output.
+    if (micMode !== 'sm-barge' && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+      _pcmBuf = []; _pcmBufLen = 0;
+      return;
+    }
+    const rms = _computeRms(f32);
+    if (_vadState === 'idle') {
+      _pushToRing(f32);
+      _noiseFloor = _noiseFloor * (1 - SM_VAD_NOISE_EMA_ALPHA) + rms * SM_VAD_NOISE_EMA_ALPHA;
+      if (rms > _activationThreshold()) _startConnecting();
+    } else if (_vadState === 'connecting') {
+      _pushToRing(f32);  // keep buffering while WS handshakes
+    } else if (_vadState === 'streaming') {
+      _bufferAndSend(f32);
+      // In barge mode, suppress the idle timer while TTS is playing — admin
+      // may barge in at any moment and we don't want to be mid-reconnect when
+      // they do. The 10s silence countdown only runs during true quiet gaps.
+      const bargeAndSpeaking = (micMode === 'sm-barge' && (isSpeaking || Date.now() < _sttCooldownUntil));
+      if (rms > _holdThreshold() || bargeAndSpeaking) {
+        if (_vadIdleTimer) { clearTimeout(_vadIdleTimer); _vadIdleTimer = null; }
+      } else if (!_vadIdleTimer) {
+        _vadIdleTimer = setTimeout(_closeIdleWs, SM_VAD_IDLE_CLOSE_MS);
+      }
+    }
+  }
+
+  function _startConnecting() {
+    _vadState = 'connecting';
+    _handshakeStartTs = performance.now();
+    const actualRate = audioCtxSm.sampleRate;
+    const params = new URLSearchParams({ sample_rate: actualRate, token: _apiKey });
+    if (micMode === 'sm-barge') params.set('barge', '1');
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try {
+      smWs = new WebSocket(`${wsProto}//${location.host}/api/stt-speechmatics-proxy?${params}`);
+    } catch (e) {
+      flashError('SM open: ' + e.message.slice(0, 30));
+      _vadState = 'idle';
+      return;
+    }
+    smWs.binaryType = 'arraybuffer';
+
+    smWs.onopen = () => {
+      if (!active) { try { smWs.close(); } catch(_) {} return; }
+      const dur = performance.now() - _handshakeStartTs;
+      _handshakeDurations.push(dur);
+      if (_handshakeDurations.length > 10) _handshakeDurations.shift();
+      _vadState = 'streaming';
+      _flushRingToWs();
+      // onSttStart is NOT called here — the mic was already visually "listening"
+      // from the user's POV. VAD cycling is invisible.
+    };
+
+    smWs.onmessage = (e) => {
+      let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
+      const t = msg.message || '';
+      if (t === 'AddPartialTranscript' || t === 'AddTranscript') {
+        const results = msg.results || [];
+        const spk = results.find(r => r.alternatives?.[0]?.speaker)?.alternatives?.[0]?.speaker || null;
+        const tx = results.map(r => (r.alternatives?.[0]?.content) || '').join(' ').trim();
+        if (!tx) return;
+        if (t === 'AddPartialTranscript') {
+          onSttPartial(!spkFilter && spk ? spk + ': ' + tx : tx);
+        } else {
+          _queueStitch(tx, spk);
+        }
+      } else if (t === 'EndOfUtterance') {
+        if (_stitchBuf.trim()) _flushStitch();
+      } else if (t === 'Error') {
+        flashError('SM: ' + (msg.reason || 'error'));
+      }
+    };
+    smWs.onerror = () => { flashError('SM WS error'); };
+    smWs.onclose = () => {
+      smWs = null;
+      if (_vadIdleTimer) { clearTimeout(_vadIdleTimer); _vadIdleTimer = null; }
+      _pcmBuf = []; _pcmBufLen = 0;
+      if (active) _vadState = 'idle';  // ready for next VAD activation
+    };
+  }
+
+  function _closeIdleWs() {
+    _vadIdleTimer = null;
+    if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; }
+    if (_stitchBuf.trim()) _flushStitch();
+    if (smWs) { try { smWs.close(); } catch(_) {} }
+    // state transition handled in onclose
+  }
+
   function _flushStitch() {
     _stitchTimer = null;
     let combined = _stitchBuf.trim();
     const speakers = _stitchSpeakers.filter(Boolean);
     _stitchBuf = ''; _stitchSpeakers = [];
     if (!combined) return;
-
-    // Determine majority speaker in this utterance
     const spkCounts = {};
     for (const s of speakers) spkCounts[s] = (spkCounts[s] || 0) + 1;
     const majoritySpeaker = Object.entries(spkCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-
-    // Auto-assign primary speaker (first majority speaker detected = admin)
     if (majoritySpeaker && !_smPrimarySpeaker) _smPrimarySpeaker = majoritySpeaker;
-
-    // Filter mode: drop utterances where majority speaker is not admin
-    if (spkFilter && _smPrimarySpeaker && majoritySpeaker && majoritySpeaker !== _smPrimarySpeaker) {
-      return;  // silently drop non-admin utterance
-    }
-
-    // Multi-speaker mode: prefix with majority speaker label
-    if (!spkFilter && majoritySpeaker) {
-      combined = majoritySpeaker + ': ' + combined;
-    }
+    if (spkFilter && _smPrimarySpeaker && majoritySpeaker && majoritySpeaker !== _smPrimarySpeaker) return;
+    if (!spkFilter && majoritySpeaker) combined = majoritySpeaker + ': ' + combined;
     onSttPartial(combined); onSttFinal(combined);
   }
   function _queueStitch(text, speaker) {
@@ -5243,6 +5135,7 @@ const _sm = (() => {
     if (_stitchTimer) clearTimeout(_stitchTimer);
     _stitchTimer = setTimeout(_flushStitch, STT_SM_STITCH_MS);
   }
+
   const WORKLET_CODE = `class PcmSm extends AudioWorkletProcessor {
     process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.buffer, [ch.buffer]); return true; }
   } registerProcessor('pcm-sm', PcmSm);`;
@@ -5251,7 +5144,7 @@ const _sm = (() => {
     active = true; onSttConnecting();
     try {
       audioCtxSm = new AudioContext();
-      if (audioCtxSm.state === 'suspended') try { await audioCtxSm.resume(); } catch(_) {}
+      if (audioCtxSm.state === 'suspended') { try { await audioCtxSm.resume(); } catch(_) {} }
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }, video: false });
@@ -5259,78 +5152,37 @@ const _sm = (() => {
         flashError('mic denied: ' + e.message.slice(0, 30));
         audioCtxSm.close().catch(() => {}); audioCtxSm = null; active = false; onSttStop(); return;
       }
-      const actualRate = audioCtxSm.sampleRate;
-      const params = new URLSearchParams({ sample_rate: actualRate, token: _apiKey });
-      if (micMode === 'sm-barge') params.set('barge', '1');
-      const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      smWs = new WebSocket(`${wsProto}//${location.host}/api/stt-speechmatics-proxy?${params}`);
-      smWs.binaryType = 'arraybuffer';
-
-      let _pcmBuf = [], _pcmBufLen = 0;
-      function sendPcm(f32) {
-        if (!smWs || smWs.readyState !== WebSocket.OPEN) return;
-        if (micMode !== 'sm-barge' && (isSpeaking || Date.now() < _sttCooldownUntil)) { _pcmBuf = []; _pcmBufLen = 0; return; }
-        _pcmBuf.push(f32); _pcmBufLen += f32.length;
-        const target = Math.round((audioCtxSm.sampleRate || 48000) * 0.08);
-        if (_pcmBufLen < target) return;
-        const merged = new Float32Array(_pcmBufLen);
-        let off = 0; for (const c of _pcmBuf) { merged.set(c, off); off += c.length; }
-        _pcmBuf = []; _pcmBufLen = 0;
-        const i16 = new Int16Array(merged.length);
-        for (let i = 0; i < merged.length; i++) i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
-        smWs.send(i16.buffer);
+      const source = audioCtxSm.createMediaStreamSource(mediaStream);
+      try {
+        const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        await audioCtxSm.audioWorklet.addModule(url); URL.revokeObjectURL(url);
+        workletNode = new AudioWorkletNode(audioCtxSm, 'pcm-sm');
+        workletNode.port.onmessage = (e) => _onWorkletChunk(new Float32Array(e.data));
+        source.connect(workletNode);
+      } catch (_) {
+        const spn = audioCtxSm.createScriptProcessor(4096, 1, 1);
+        spn.onaudioprocess = (ev) => _onWorkletChunk(ev.inputBuffer.getChannelData(0));
+        source.connect(spn); spn.connect(audioCtxSm.destination);
+        workletNode = spn;
       }
-
-      smWs.onopen = async () => {
-        onSttStart();
-        const source = audioCtxSm.createMediaStreamSource(mediaStream);
-        try {
-          const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-          const url = URL.createObjectURL(blob);
-          await audioCtxSm.audioWorklet.addModule(url); URL.revokeObjectURL(url);
-          workletNode = new AudioWorkletNode(audioCtxSm, 'pcm-sm');
-          workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
-          source.connect(workletNode);
-        } catch (_) {
-          const spn = audioCtxSm.createScriptProcessor(4096, 1, 1);
-          spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
-          source.connect(spn); spn.connect(audioCtxSm.destination);
-          workletNode = spn;
-        }
-      };
-
-      smWs.onmessage = (e) => {
-        let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
-        const t = msg.message || '';
-        if (t === 'AddPartialTranscript' || t === 'AddTranscript') {
-          const results = msg.results || [];
-          // Extract speaker from first result with a speaker label
-          const spk = results.find(r => r.alternatives?.[0]?.speaker)?.alternatives?.[0]?.speaker || null;
-
-          const tx = results.map(r => (r.alternatives?.[0]?.content) || '').join(' ').trim();
-          if (!tx) return;
-
-          if (t === 'AddPartialTranscript') {
-            // Partials: show with speaker prefix for preview only (no filtering — too noisy)
-            onSttPartial(!spkFilter && spk ? spk + ': ' + tx : tx);
-          } else {
-            // Finals: always stitch — filtering happens at flush time by majority speaker
-            _queueStitch(tx, spk);
-          }
-        } else if (t === 'EndOfUtterance') {
-          if (_stitchBuf.trim()) _flushStitch();
-        } else if (t === 'Error') {
-          flashError('SM: ' + (msg.reason || 'error'));
-        }
-      };
-      smWs.onerror = () => { flashError('SM WS error'); stop(); };
-      smWs.onclose = (ev) => { if (active) { active = false; stop(); } };
-    } catch (err) { flashError('SM: ' + String(err).slice(0, 40)); active = false; onSttStop(); }
+      // Mic is ready in idle state — VAD will open the WS when voice arrives.
+      _vadState = 'idle';
+      _clearRing();
+      _noiseFloor = 0.003;
+      onSttStart();
+    } catch (err) {
+      flashError('SM: ' + String(err).slice(0, 40)); active = false; onSttStop();
+    }
   }
 
   function stop() {
     active = false;
+    _vadState = 'idle';
+    if (_vadIdleTimer) { clearTimeout(_vadIdleTimer); _vadIdleTimer = null; }
     if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; _stitchBuf = ''; _stitchSpeakers = []; }
+    _clearRing();
+    _pcmBuf = []; _pcmBufLen = 0;
     if (workletNode) { try { workletNode.disconnect(); } catch(_) {} workletNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (audioCtxSm) { try { audioCtxSm.close(); } catch(_) {} audioCtxSm = null; }
@@ -5346,7 +5198,6 @@ const _sm = (() => {
 // diMode overlay forces nova-3 diarization regardless of mic mode
 function getActiveProvider() {
   if (diMode && micMode !== 'off') return _dgDi;
-  if (micMode === 'inworld') return _iw;
   if (micMode === 'speechmatics' || micMode === 'sm-barge') return _sm;
   return _dg;  // barge and speaker both use deepgram
 }
@@ -5463,14 +5314,10 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
     try {
       const saved = JSON.parse(savedJson);
       // Delay to let page fully initialise, then restore state.
+      // Note: TTS_PROVIDER was already restored synchronously at script load
+      // to avoid races with the first post-reload TTS dispatch — the UI is
+      // synced by updateVoiceProviderBtn inside the provider-button IIFE.
       setTimeout(() => {
-        // Restore TTS provider — click the button until we reach the saved provider.
-        // Using click() ensures destroy/prefetch side-effects fire correctly.
-        if (saved.ttsProvider && ttsProviders[saved.ttsProvider] && saved.ttsProvider !== TTS_PROVIDER) {
-          const order = ['inworld', 'deepgram', 'xai'];
-          const steps = (order.indexOf(saved.ttsProvider) - order.indexOf(TTS_PROVIDER) + order.length) % order.length;
-          for (let i = 0; i < steps; i++) voiceProviderBtn.click();
-        }
         // Restore fullVoiceMode
         if (saved.fullVoiceMode && !fullVoiceMode) {
           fullVoiceBtn.click();  // toggles fullVoiceMode + updates button

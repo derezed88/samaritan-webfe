@@ -271,7 +271,6 @@ Samaritan uses a pluggable TTS provider architecture. Switch at runtime via the 
 
 | Provider | Button | API Key | Audio Format | Notes |
 |----------|--------|---------|--------------|-------|
-| **Deepgram Aura** | `D` | `DEEPGRAM_API_KEY` | HTTP streaming PCM16-LE @ 24kHz | Server proxy at `/api/tts/deepgram`. Model: `aura-asteria-en` (configurable). |
 | **Inworld AI** | `I` | `INWORLD_API_KEY` | Streaming NDJSON, base64 WAV chunks | Server proxy at `/api/tts/inworld`. Voice: `Evelyn`. Model: `inworld-tts-1.5-mini`. 44-byte RIFF header stripped per chunk. |
 | **xAI Realtime** | `X` | `XAI_API_KEY` | Per-turn WebSocket | Ephemeral token minted server-side per response. Voices: Eve, Ara, Rex, Sal, Leo. Sentence-level streaming. |
 
@@ -280,8 +279,7 @@ All API keys are kept server-side — they are never sent to the browser.
 **Configurable constants** (top of JS in `index.html`):
 
 ```js
-let   TTS_PROVIDER            = 'inworld';            // default: 'deepgram' | 'inworld' | 'xai'
-const DEEPGRAM_TTS_MODEL      = 'aura-asteria-en';
+let   TTS_PROVIDER            = 'inworld';            // default: 'inworld' | 'xai'
 const XAI_VOICE               = 'ara';                // Eve | Ara | Rex | Sal | Leo
 const INWORLD_VOICE           = 'Evelyn';
 const INWORLD_MODEL           = 'inworld-tts-1.5-mini';
@@ -463,7 +461,6 @@ The project has two layers:
 |---------|--------------|-------------|
 | **llmem-gw** (LLM backend) | `samaritan.py` routes + `index.html` SSE parser | See [Swapping the LLM Backend](#swapping-the-llm-backend) below |
 | **Deepgram** (STT) | `samaritan.py` WebSocket proxy (`/api/stt-proxy`), `index.html` AudioWorklet | Replace proxy + browser WS client |
-| **Deepgram Aura** (TTS) | `samaritan.py` `/api/tts/deepgram`, `index.html` `ttsProviders.deepgram` | Implement new provider object + server route |
 | **xAI Realtime** (TTS) | `samaritan.py` `/api/tts/xai`, `index.html` `ttsProviders.xai` | Implement new provider object + server route |
 | **Inworld AI** (TTS) | `samaritan.py` `/api/tts/inworld`, `index.html` `ttsProviders.inworld` | Implement new provider object + server route |
 
