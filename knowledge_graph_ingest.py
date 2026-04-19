@@ -9,8 +9,8 @@ Run once manually, then re-run whenever beliefs change significantly:
   cd /home/markj/projects/samaritan-webfe && source venv/bin/activate
   python knowledge_graph_ingest.py
 
-Collection: samaritan_beliefs @ 10.0.0.101:6333
-Embedding:  nomic-embed-text @ 10.0.0.101:8000  (768 dims)
+Collection: samaritan_beliefs @ 192.168.10.101:6333
+Embedding:  nomic-embed-text @ 192.168.10.101:8000  (768 dims)
 """
 
 import os
@@ -28,9 +28,9 @@ MYSQL_PASS   = os.getenv("MYSQL_PASS", "")
 MYSQL_HOST   = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_DB     = "mymcp"
 
-QDRANT_HOST  = os.getenv("QDRANT_HOST", "10.0.0.101")
+QDRANT_HOST  = os.getenv("QDRANT_HOST", "192.168.10.101")
 QDRANT_PORT  = int(os.getenv("QDRANT_PORT", "6333"))
-EMBED_URL    = os.getenv("EMBED_URL", "http://10.0.0.101:8000/v1/embeddings")
+EMBED_URL    = os.getenv("EMBED_URL", "http://192.168.10.101:8000/v1/embeddings")
 EMBED_MODEL  = os.getenv("EMBED_MODEL", "nomic-embed-text")
 VECTOR_DIMS  = 768
 COLLECTION   = "samaritan_beliefs"

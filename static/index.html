@@ -820,6 +820,9 @@
     #mic-btn.speaker     { border-color: #f0a500;    color: #f0a500; }
     #mic-btn.inworld     { border-color: #00d4ff;    color: #00d4ff; }
     #mic-btn.sm-barge    { border-color: #ff6b6b;    color: #ff6b6b; }
+    /* Speechmatics speaker mode: dim = idle/disconnected, bright pulsing = connected+streaming */
+    #mic-btn.speechmatics            { border-color: #6a8fa0; color: #6a8fa0; }
+    #mic-btn.speechmatics.sm-streaming { border-color: #00d4ff; color: #00d4ff; box-shadow: 0 0 10px rgba(0,212,255,0.55); }
     @keyframes dg-di-pulse {
       from { border-color: #3b82f6; color: #3b82f6; box-shadow: 0 0 4px #3b82f6; }
       to   { border-color: var(--red); color: var(--red); box-shadow: 0 0 18px rgba(254,45,45,0.5); }
@@ -1933,8 +1936,9 @@ const MIC_MODES = ['off', 'barge', 'speaker', 'speechmatics', 'sm-barge'];
 const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW', speechmatics: 'SM', 'sm-barge': 'SMB' };
 
 // ── SM speaker filter ──────────────────────────────────────────
-// spkFilter=true (default): only S1 (first speaker = admin) text is submitted
-// spkFilter=false: all speakers' text submitted with "S1:/S2:" prefixes
+// smDiState 0=DI off (no diarization), 1=DI on+S1 filter, 2=DI on+all speakers
+let smDiState = 0;
+// spkFilter: true = filter to S1 only (state 0+1), false = all speakers with labels (state 2)
 let spkFilter = true;
 let _smPrimarySpeaker = null;  // speaker label assigned to admin (first speaker detected)
 
@@ -1943,9 +1947,13 @@ function _smIsSMMode() { return micMode === 'speechmatics' || micMode === 'sm-ba
 function _updateSpkFilterBtn() {
   const btn = document.getElementById('spk-filter-btn');
   if (!btn) return;
-  btn.style.display = _smIsSMMode() ? '' : 'none';
-  btn.textContent = spkFilter ? '1' : 'ALL';
-  btn.classList.toggle('active', !spkFilter);
+  if (!_smIsSMMode() || smDiState === 0) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  btn.textContent = smDiState === 1 ? '1' : 'ALL';
+  btn.classList.toggle('active', smDiState === 2);
 }
 
 function setMicMode(mode) {
@@ -4952,7 +4960,10 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
 // delay. Noise floor is learned continuously while idle so VAD calibrates
 // to the current mic profile (Peltor vs AirPods vs ambient cafe).
 const STT_SM_STITCH_MS = 3000;          // ms to hold SM finals before submitting
-const SM_VAD_IDLE_CLOSE_MS = 10000;     // ms of silence before closing WS
+// Speechmatics bills a 1-minute minimum per connection, so stay connected for
+// at least that long and only close on silence AFTER crossing the minute mark.
+const SM_VAD_MIN_CONN_MS = 60000;       // don't close before this much connection age
+const SM_VAD_SILENCE_GRACE_MS = 3000;   // silence required after min-conn before close
 const SM_VAD_NOISE_EMA_ALPHA = 0.05;    // EMA smoothing factor for idle noise floor
 const SM_VAD_ACTIVATION_MULT = 3;       // activation = noise_floor * N
 const SM_VAD_ACTIVATION_FLOOR = 0.012;  // absolute minimum activation RMS
@@ -4965,6 +4976,7 @@ const _sm = (() => {
   let active = false;                   // true while mic is "on" (independent of WS state)
   let _vadState = 'idle';               // 'idle' | 'connecting' | 'streaming'
   let _vadIdleTimer = null;
+  let _smConnStartTs = 0;               // ms timestamp of current WS open (0 when closed)
   let _noiseFloor = 0.003;              // EMA of RMS during idle (seeded low for initial activation)
   let _ringBuf = [];                    // array of { f32, durMs } chunks
   let _ringBufMs = 0;                   // current buffer duration
@@ -5047,7 +5059,12 @@ const _sm = (() => {
       if (rms > _holdThreshold() || bargeAndSpeaking) {
         if (_vadIdleTimer) { clearTimeout(_vadIdleTimer); _vadIdleTimer = null; }
       } else if (!_vadIdleTimer) {
-        _vadIdleTimer = setTimeout(_closeIdleWs, SM_VAD_IDLE_CLOSE_MS);
+        // Dynamic close delay — honor Speechmatics's paid minimum minute.
+        // If we haven't hit the minute mark, wait until we do before closing.
+        // If we're past it, close after a short silence grace window.
+        const remainingToMin = Math.max(0, (_smConnStartTs + SM_VAD_MIN_CONN_MS) - Date.now());
+        const closeDelay = Math.max(SM_VAD_SILENCE_GRACE_MS, remainingToMin);
+        _vadIdleTimer = setTimeout(_closeIdleWs, closeDelay);
       }
     }
   }
@@ -5058,6 +5075,7 @@ const _sm = (() => {
     const actualRate = audioCtxSm.sampleRate;
     const params = new URLSearchParams({ sample_rate: actualRate, token: _apiKey });
     if (micMode === 'sm-barge') params.set('barge', '1');
+    params.set('diarize', smDiState >= 1 ? '1' : '0');
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     try {
       smWs = new WebSocket(`${wsProto}//${location.host}/api/stt-speechmatics-proxy?${params}`);
@@ -5074,6 +5092,8 @@ const _sm = (() => {
       _handshakeDurations.push(dur);
       if (_handshakeDurations.length > 10) _handshakeDurations.shift();
       _vadState = 'streaming';
+      _smConnStartTs = Date.now();
+      try { micBtn.classList.add('sm-streaming'); } catch(_) {}
       _flushRingToWs();
       // onSttStart is NOT called here — the mic was already visually "listening"
       // from the user's POV. VAD cycling is invisible.
@@ -5103,6 +5123,8 @@ const _sm = (() => {
       smWs = null;
       if (_vadIdleTimer) { clearTimeout(_vadIdleTimer); _vadIdleTimer = null; }
       _pcmBuf = []; _pcmBufLen = 0;
+      _smConnStartTs = 0;
+      try { micBtn.classList.remove('sm-streaming'); } catch(_) {}
       if (active) _vadState = 'idle';  // ready for next VAD activation
     };
   }
@@ -5259,10 +5281,25 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   const diBtn = document.getElementById('di-btn');
   if (!diBtn) return;
   diBtn.addEventListener('click', () => {
+    // Speechmatics modes: 3-state DI cycle
+    // State 0: DI off, no diarization  →  State 1: DI on, S1 filter  →  State 2: DI on, all speakers
+    if (micMode === 'speechmatics' || micMode === 'sm-barge') {
+      const prevState = smDiState;
+      smDiState = (smDiState + 1) % 3;
+      spkFilter = smDiState !== 2;
+      _smPrimarySpeaker = null;
+      diBtn.classList.toggle('active', smDiState > 0);
+      _updateSpkFilterBtn();
+      const _sn = ['state0', 'state1', 'state2'];
+      const _sd = ['diarize=off', 'diarize=on filter=S1', 'diarize=on filter=ALL'];
+      console.log(`[DI] ${_sn[prevState]}→${_sn[smDiState]} ${_sd[smDiState]}`);
+      if (isListening) { _sm.stop(); setTimeout(() => { voiceMode = true; _sm.start(); }, 300); }
+      return;
+    }
+    // Non-SM modes: original Nova-3 diarization overlay behavior.
     diMode = !diMode;
     diBtn.classList.toggle('active', diMode);
     if (isListening) {
-      // Restart STT with new provider
       const oldProvider = diMode ? sttProviders[STT_PROVIDER] : _dgDi;
       const newProvider = getActiveProvider();
       if (oldProvider && oldProvider !== newProvider) {
@@ -5273,15 +5310,11 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   });
 })();
 
-// ── Speaker filter button (SM modes only) ────────────────────
+// ── Speaker filter button (SM modes only — display only, state driven by DI cycle) ──
 (function() {
   const spkBtn = document.getElementById('spk-filter-btn');
   if (!spkBtn) return;
-  spkBtn.addEventListener('click', () => {
-    spkFilter = !spkFilter;
-    _smPrimarySpeaker = null;  // reset speaker tracking on toggle
-    _updateSpkFilterBtn();
-  });
+  spkBtn.addEventListener('click', () => { /* no-op: click DI button to cycle states */ });
 })();
 
 // (iOS background/foreground recovery handled by mic-reconnect-overlay below)
@@ -5297,6 +5330,108 @@ resetIdleTimer();   // start idle countdown immediately on page load
 if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
   cmdLocation('on');
 }
+
+// ── Voice busy signal — audible cues during long tool calls ───────────────
+// Tick: 700Hz sine, 80ms, gain 0.15 — every 4s while busy
+// Speak: "working..." via active TTS provider — every 10s while busy
+// Only fires when fullVoiceMode is active. Polls /api/busy_signal every 2s.
+(function() {
+  let _busyActive = false;
+  let _busySinceTs = 0;
+  let _busyTickTimer = null;
+  let _busySpeakTimer = null;
+  let _busyCueTtsBusy = false;
+
+  function _playBusyTick() {
+    if (!audioCtx || audioCtx.state === 'closed') return;
+    try {
+      // Low double-beep at 220Hz — distinct from the higher voice-submit ping.
+      const t0 = audioCtx.currentTime;
+      [0.00, 0.16].forEach((offset) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 220;
+        const start = t0 + offset;
+        gain.gain.setValueAtTime(0.001, start);
+        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.09);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(start);
+        osc.stop(start + 0.10);
+      });
+    } catch (_) {}
+  }
+
+  function _playBusyCueTts() {
+    if (isSpeaking || _ttsBusy || _busyCueTtsBusy) return;
+    const provider = ttsProviders[TTS_PROVIDER];
+    if (!provider) return;
+    _busyCueTtsBusy = true;
+    isSpeaking = true;
+    provider.speak('working...', null,
+      () => { _busyCueTtsBusy = false; isSpeaking = false; },
+      () => { _busyCueTtsBusy = false; isSpeaking = false; }
+    );
+  }
+
+  function _busyCuesStop() {
+    if (_busyTickTimer)  { clearTimeout(_busyTickTimer);  _busyTickTimer = null; }
+    if (_busySpeakTimer) { clearTimeout(_busySpeakTimer); _busySpeakTimer = null; }
+    _busyActive = false;
+    _busySinceTs = 0;
+  }
+
+  function _busyCuesStart(sinceTs) {
+    if (_busyActive) return;
+    _busyActive = true;
+    _busySinceTs = sinceTs;
+    const elapsed = Date.now() / 1000 - sinceTs;
+
+    // Tick every 4s, aligned to sinceTs boundary
+    const msToFirstTick = Math.max(200, (4 - (elapsed % 4)) * 1000);
+    _busyTickTimer = setTimeout(function fireTick() {
+      if (!_busyActive) return;
+      const t = (Date.now() / 1000 - _busySinceTs).toFixed(1);
+      console.log(`[busy] tick at ${t}s`);
+      _playBusyTick();
+      _busyTickTimer = setTimeout(fireTick, 4000);
+    }, msToFirstTick);
+
+    // TTS "working..." every 10s, aligned to sinceTs boundary
+    const msToFirstSpeak = Math.max(200, (10 - (elapsed % 10)) * 1000);
+    _busySpeakTimer = setTimeout(function fireSpeak() {
+      if (!_busyActive) return;
+      const t = (Date.now() / 1000 - _busySinceTs).toFixed(1);
+      console.log(`[busy] speak at ${t}s`);
+      if (fullVoiceMode) _playBusyCueTts();
+      _busySpeakTimer = setTimeout(fireSpeak, 10000);
+    }, msToFirstSpeak);
+  }
+
+  async function _busyPoll() {
+    if (fullVoiceMode) {
+      try {
+        const resp = await fetch('/api/busy_signal', { headers: authHeaders() });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.active) {
+            if (!_busyActive) _busyCuesStart(data.since_ts);
+          } else {
+            if (_busyActive) _busyCuesStop();
+          }
+        }
+      } catch (_) {}
+    } else {
+      if (_busyActive) _busyCuesStop();
+    }
+    setTimeout(_busyPoll, 2000);
+  }
+
+  // Start poll loop after initial page load
+  setTimeout(_busyPoll, 3000);
+})();
 </script>
 
 <script>
@@ -5337,14 +5472,21 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
           if (saved.cameraState === 'front') cycleCamera();  // rear → front
           if (saved.autoCaptureActive) startAutoCapture();
         }
-        // Restore DI mode state
+        // Restore DI mode state (non-SM Deepgram overlay)
         if (saved.diMode) {
           diMode = true;
           const diBtn = document.getElementById('di-btn');
           if (diBtn) diBtn.classList.add('active');
         }
-        // Restore speaker filter state
-        if (saved.spkFilter !== undefined) {
+        // Restore SM DI 3-state
+        if (saved.smDiState !== undefined) {
+          smDiState = saved.smDiState;
+          spkFilter = smDiState !== 2;
+          const diBtn = document.getElementById('di-btn');
+          if (diBtn) diBtn.classList.toggle('active', smDiState > 0);
+          _updateSpkFilterBtn();
+        } else if (saved.spkFilter !== undefined) {
+          // Legacy restore (pre-3-state sessions)
           spkFilter = saved.spkFilter;
           _updateSpkFilterBtn();
         }
@@ -5372,6 +5514,7 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
     sessionStorage.setItem(RELOAD_KEY, JSON.stringify({
       micMode,
       diMode,
+      smDiState,
       spkFilter,
       ttsProvider: TTS_PROVIDER,
       fullVoiceMode: simliMode ? _fullVoiceModeBeforeSimli : fullVoiceMode,  // don't persist Simli-forced state

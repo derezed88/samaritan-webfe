@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Samaritan — Assistant Activity</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0f; color: #c8d0e0; font-family: 'Courier New', monospace; min-height: 100vh; display: flex; flex-direction: column; }
+
+  #top-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #111118; border-bottom: 1px solid #1e2230; flex-shrink: 0; }
+  #top-bar h1 { font-size: 11px; letter-spacing: 3px; color: #4a9eff; text-transform: uppercase; }
+  #back-btn { font-size: 10px; color: #4a9eff; cursor: pointer; text-decoration: none; padding: 3px 8px; border: 1px solid #1e3a5f; border-radius: 2px; }
+  #back-btn:hover { background: #1e3a5f; }
+
+  #filter-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #0d0d14; border-bottom: 1px solid #1e2230; flex-shrink: 0; flex-wrap: wrap; }
+  #filter-bar label { font-size: 10px; color: #556; letter-spacing: 1px; text-transform: uppercase; }
+  #filter-bar select, #filter-bar input { background: #111118; border: 1px solid #1e2230; color: #c8d0e0; padding: 4px 8px; font-family: inherit; font-size: 10px; border-radius: 2px; outline: none; }
+  #filter-bar select:focus, #filter-bar input:focus { border-color: #4a9eff; }
+  #filter-bar input { width: 200px; }
+  .bar-btn { font-size: 10px; letter-spacing: 1px; padding: 5px 12px; border: 1px solid #1e3a5f; background: transparent; color: #4a9eff; cursor: pointer; border-radius: 2px; font-family: inherit; }
+  .bar-btn:hover { background: #1e3a5f; }
+  #row-count { font-size: 10px; color: #556; margin-left: auto; }
+
+  #table-wrap { flex: 1; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  thead { position: sticky; top: 0; background: #111118; z-index: 10; }
+  th { padding: 8px 12px; text-align: left; font-size: 9px; letter-spacing: 2px; color: #4a9eff; text-transform: uppercase; border-bottom: 1px solid #1e2230; white-space: nowrap; }
+  td { padding: 8px 12px; border-bottom: 1px solid #141420; vertical-align: top; }
+  tr:hover td { background: #111118; }
+
+  .col-time      { white-space: nowrap; color: #556; font-size: 10px; width: 140px; }
+  .col-assistant { white-space: nowrap; color: #8a96a8; width: 150px; }
+  .col-topic     { color: #c8d0e0; width: 200px; word-break: break-word; }
+  .col-verdict   { width: 120px; }
+  .col-artifacts { color: #8a96a8; font-size: 10px; width: 180px; word-break: break-all; }
+  .col-summary   { color: #a0aab8; line-height: 1.5; }
+
+  .badge { display: inline-block; font-size: 9px; letter-spacing: 1px; padding: 2px 7px; border-radius: 2px; text-transform: uppercase; }
+  .badge-clean        { background: rgba(46,204,113,0.15);  color: #2ecc71; border: 1px solid rgba(46,204,113,0.4); }
+  .badge-patched      { background: rgba(52,152,219,0.15);  color: #3498db; border: 1px solid rgba(52,152,219,0.4); }
+  .badge-issues-found { background: rgba(231,76,60,0.15);   color: #e74c3c; border: 1px solid rgba(231,76,60,0.4); }
+  .badge-escalated    { background: rgba(243,156,18,0.15);  color: #f39c12; border: 1px solid rgba(243,156,18,0.4); }
+  .badge-bypassed     { background: rgba(127,140,141,0.15); color: #7f8c8d; border: 1px solid rgba(127,140,141,0.4); }
+  .badge-other        { background: rgba(127,140,141,0.15); color: #7f8c8d; border: 1px solid rgba(127,140,141,0.4); }
+
+  #empty-msg { text-align: center; color: #334; padding: 60px; font-size: 11px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <a href="/" id="back-btn">← SAMARITAN</a>
+  <h1>Assistant Activity</h1>
+</div>
+
+<div id="filter-bar">
+  <label>Assistant</label>
+  <select id="f-assistant">
+    <option value="">all</option>
+    <option value="samaritan-sonnet">samaritan-sonnet</option>
+    <option value="samaritan-codex">samaritan-codex</option>
+    <option value="opus-bypass">opus-bypass</option>
+    <option value="claude-code">claude-code</option>
+  </select>
+
+  <label>Topic</label>
+  <input id="f-topic" type="text" placeholder="filter by topic…">
+
+  <label>Limit</label>
+  <select id="f-limit">
+    <option value="25">25</option>
+    <option value="50" selected>50</option>
+    <option value="100">100</option>
+    <option value="200">200</option>
+  </select>
+
+  <button class="bar-btn" id="refresh-btn">↺ Refresh</button>
+  <span id="row-count"></span>
+</div>
+
+<div id="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Assistant</th>
+        <th>Topic</th>
+        <th>Verdict</th>
+        <th>Artifacts</th>
+        <th>Summary</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty-msg" style="display:none">No activity found.</div>
+</div>
+
+<script>
+const API_KEY = '%%SAMARITAN_API_KEY%%';
+
+const BADGE_CLASS = {
+  'clean':        'badge-clean',
+  'patched':      'badge-patched',
+  'issues-found': 'badge-issues-found',
+  'escalated':    'badge-escalated',
+  'bypassed':     'badge-bypassed',
+};
+
+function badgeClass(verdict) {
+  return BADGE_CLASS[verdict] || 'badge-other';
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function fmtArtifacts(list) {
+  if (!list || !list.length) return '—';
+  return list.map(p => {
+    const name = p.split('/').pop();
+    return `<span title="${p}">${name}</span>`;
+  }).join(', ');
+}
+
+async function load() {
+  const assistant = document.getElementById('f-assistant').value;
+  const topic     = document.getElementById('f-topic').value.trim();
+  const limit     = document.getElementById('f-limit').value;
+
+  const params = new URLSearchParams({ limit });
+  if (assistant) params.set('assistant', assistant);
+  if (topic)     params.set('topic', topic);
+
+  try {
+    const resp = await fetch('/api/assistant-activity?' + params.toString(), {
+      headers: { 'Authorization': 'Bearer ' + API_KEY }
+    });
+    if (!resp.ok) {
+      console.error('API error', resp.status);
+      return;
+    }
+    const data = await resp.json();
+    render(data.rows || []);
+  } catch (e) {
+    console.error('Fetch failed', e);
+  }
+}
+
+function render(rows) {
+  const tbody = document.getElementById('tbody');
+  const empty = document.getElementById('empty-msg');
+  tbody.innerHTML = '';
+
+  document.getElementById('row-count').textContent =
+    `Showing ${rows.length} row${rows.length !== 1 ? 's' : ''}`;
+
+  if (!rows.length) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="col-time">${fmtTime(r.created_at)}</td>
+      <td class="col-assistant">${r.assistant || '—'}</td>
+      <td class="col-topic">${r.topic || '—'}</td>
+      <td class="col-verdict"><span class="badge ${badgeClass(r.verdict)}">${r.verdict || '—'}</span></td>
+      <td class="col-artifacts">${fmtArtifacts(r.artifacts_touched)}</td>
+      <td class="col-summary">${r.summary || '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// Debounced topic input
+let _debounce;
+document.getElementById('f-topic').addEventListener('input', () => {
+  clearTimeout(_debounce);
+  _debounce = setTimeout(load, 300);
+});
+
+document.getElementById('f-assistant').addEventListener('change', load);
+document.getElementById('f-limit').addEventListener('change', load);
+document.getElementById('refresh-btn').addEventListener('click', load);
+
+load();
+</script>
+</body>
+</html>

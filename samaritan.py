@@ -75,9 +75,9 @@ async def _auto_embed_sources_loop():
     """Every 5 min: embed any samaritan_sources rows missing from Qdrant samaritan_sources collection."""
     import pymysql
     import pymysql.cursors
-    _EMBED_URL   = os.getenv("EMBED_URL",   "http://10.0.0.101:8000/v1/embeddings")
+    _EMBED_URL   = os.getenv("EMBED_URL",   "http://192.168.10.101:8000/v1/embeddings")
     _EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-    _QDRANT_HOST = os.getenv("QDRANT_HOST", "10.0.0.101")
+    _QDRANT_HOST = os.getenv("QDRANT_HOST", "192.168.10.101")
     _QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
     _COLL        = "samaritan_sources"
     _INTERVAL    = 300  # seconds
@@ -858,6 +858,7 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
     params.pop("token", None)
     sample_rate = int(params.get("sample_rate", 16000))
     barge_mode = params.get("barge") == "1"
+    diarize = params.get("diarize") == "1"
 
     # Speechmatics self-service pricing (connection-time billed, silence included):
     #   standard: $0.24/hr, enhanced: $0.56/hr. Keep this table in sync with whatever
@@ -869,7 +870,7 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
     _stt_start = time.time()
 
     sm_url = "wss://us.rt.speechmatics.com/v2"
-    logger.info("Speechmatics STT connect: rate=%d url=%s barge=%s tier=%s", sample_rate, sm_url, barge_mode, SM_TIER)
+    logger.info("Speechmatics STT connect: rate=%d url=%s barge=%s tier=%s diarize=%s", sample_rate, sm_url, barge_mode, SM_TIER, diarize)
 
     try:
         async with ws_lib.connect(
@@ -891,17 +892,14 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
                 transcription_config = {
                     "language": "en",
                     "operating_point": SM_TIER,
-                    "diarization": "speaker",
-                    "speaker_diarization_config": {
-                        "max_speakers": 5,
-                        "prefer_current_speaker": True,
-                    },
                     "enable_partials": True,
-                    "max_delay": 4.0,
+                    "max_delay": 2.0,
                     "conversation_config": {
                         "end_of_utterance_silence_trigger": 1.5,
                     },
                 }
+                if diarize:
+                    transcription_config["diarization"] = "speaker"
 
             # Send StartRecognition config message
             config_msg = json.dumps({
@@ -1009,6 +1007,89 @@ async def knowledge_graph(request: Request):
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
     })
+
+
+@app.get("/assistant-activity", response_class=HTMLResponse)
+async def assistant_activity_page(request: Request):
+    """Serve the assistant activity dashboard UI."""
+    if not _check_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    html_path = Path(__file__).parent / "static" / "assistant-activity.html"
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    return HTMLResponse(content=content, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+    })
+
+
+@app.get("/api/assistant-activity")
+async def assistant_activity_api(
+    request: Request,
+    assistant: str = "",
+    topic: str = "",
+    limit: int = 50,
+):
+    """Return assistant activity log entries."""
+    if not _check_auth(request):
+        return _auth_error()
+
+    import aiomysql
+    import json as _json
+
+    limit = min(max(1, limit), 200)
+    mysql_user = os.getenv("MYSQL_USER", "markj")
+    mysql_pass = os.getenv("MYSQL_PASS", "")
+
+    where_clauses: list = []
+    params: list = []
+    if assistant:
+        where_clauses.append("assistant = %s")
+        params.append(assistant)
+    if topic:
+        where_clauses.append("topic LIKE %s")
+        params.append(f"%{topic}%")
+
+    where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    sql = (
+        "SELECT id, assistant, topic, summary, artifacts_touched, verdict, created_at "
+        f"FROM samaritan_assistant_activity{where} "
+        "ORDER BY created_at DESC LIMIT %s"
+    )
+    params.append(limit)
+
+    try:
+        conn = await aiomysql.connect(
+            host="localhost", user=mysql_user, password=mysql_pass,
+            db="mymcp", charset="utf8mb4", autocommit=True,
+        )
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql, params)
+            rows = await cur.fetchall()
+        conn.close()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    result = []
+    for r in rows:
+        artifacts = r["artifacts_touched"]
+        if isinstance(artifacts, str):
+            try:
+                artifacts = _json.loads(artifacts)
+            except Exception:
+                artifacts = []
+        elif artifacts is None:
+            artifacts = []
+        result.append({
+            "id": r["id"],
+            "assistant": r["assistant"],
+            "topic": r["topic"],
+            "summary": r["summary"],
+            "artifacts_touched": artifacts,
+            "verdict": r["verdict"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+
+    return JSONResponse({"rows": result})
 
 
 @app.post("/api/knowledge-graph")
@@ -1324,7 +1405,7 @@ async def knowledge_graph_api(request: Request):
     _SUGGESTED_THRESHOLD  = 0.80
     try:
         from qdrant_client import QdrantClient
-        qdrant_host = os.getenv("QDRANT_HOST", "10.0.0.101")
+        qdrant_host = os.getenv("QDRANT_HOST", "192.168.10.101")
         qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
 
         # Build existing-edge set for dedup
@@ -1862,9 +1943,26 @@ async def claude_dispatch_submit(request: Request):
     if not _check_auth(request):
         return _auth_error()
     body = await request.json()
+    _msg = str(body.get("text") or "")
+    _s = _msg.strip()
+    _spk = _s[:3] if len(_s) > 3 and _s[0] == 'S' and _s[1:2].isdigit() and _s[2:3] == ':' else "none"
+    logger.debug("claude/submit: speaker_tag=%s msg_len=%d", _spk, len(_msg))
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"{MCP_DIRECT_URL}/claude/submit", json=body)
         return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+@app.get("/api/busy_signal")
+async def busy_signal_status_proxy(request: Request):
+    """Proxy busy signal status from llmem-gw for webfe voice cue polling."""
+    if not _check_auth(request):
+        return _auth_error()
+    try:
+        async with httpx.AsyncClient(timeout=2) as http:
+            resp = await http.get(f"{MCP_DIRECT_URL}/busy_signal/status")
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except Exception:
+        return JSONResponse({"active": False, "since_ts": 0, "tool_name": ""})
 
 
 @app.get("/api/claude/poll")
