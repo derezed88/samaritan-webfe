@@ -21,7 +21,7 @@ import pymysql
 import pymysql.cursors
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv("/home/markj/projects/.env", override=True)
 
 MYSQL_USER   = os.getenv("MYSQL_USER", "markj")
 MYSQL_PASS   = os.getenv("MYSQL_PASS", "")

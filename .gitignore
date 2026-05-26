@@ -26,3 +26,4 @@ pinggy_url.txt
 .DS_Store
 *.swp
 *~
+*.bak-cutover

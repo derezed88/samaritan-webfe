@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 import asyncio
 import uvicorn
 
-load_dotenv()
+load_dotenv("/home/markj/projects/.env", override=True)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -40,6 +40,7 @@ STT_DEBUG        = os.getenv("STT_DEBUG", "").lower() in ("1", "true", "yes")
 LOG_LEVEL        = os.getenv("LOG_LEVEL", "info").lower()   # set LOG_LEVEL=debug in .env to enable debug logs
 LLMEM_GW_URL     = os.getenv("LLMEM_GW_URL", "http://localhost:8767")
 MCP_DIRECT_URL   = os.getenv("MCP_DIRECT_URL", "http://localhost:8769")  # Claude Code MCP Direct
+MCP_BRIDGE_URL   = os.getenv("MCP_BRIDGE_URL", "http://localhost:8771")  # samaritan-work session-bridge proxy (Goal 669)
 SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 SIMLI_API_KEY    = os.getenv("SIMLI_API_KEY", "")       # Simli avatar API key
@@ -54,7 +55,7 @@ async def _log_cost(provider: str, service: str, cost_usd: float,
     try:
         import aiomysql
         conn = await aiomysql.connect(
-            host="localhost",
+            host=os.environ.get("MYSQL_HOST", "localhost"),
             user=os.getenv("MYSQL_USER", "markj"),
             password=os.getenv("MYSQL_PASS", ""),
             db="mymcp", charset="utf8mb4",
@@ -951,8 +952,25 @@ async def stt_speechmatics_proxy(websocket: WebSocket, token: str = ""):
                                 logger.warning("Speechmatics→browser send failed: %s", send_err)
                                 break
                             try:
-                                if msg_type in ("AddTranscript", "AddPartialTranscript"):
-                                    pass  # finals/partials forwarded to browser only — no server log
+                                if msg_type == "AddTranscript":
+                                    # Log speaker IDs + transcript for diarization diagnostics
+                                    results = sm_msg.get("results", [])
+                                    spk_set = set()
+                                    words = []
+                                    for r in results:
+                                        alts = r.get("alternatives") or []
+                                        if alts:
+                                            a = alts[0]
+                                            content = a.get("content", "")
+                                            spk = a.get("speaker", "?")
+                                            if content:
+                                                words.append(f"[{spk}]{content}")
+                                                spk_set.add(spk)
+                                    if words:
+                                        logger.info("SM AddTranscript speakers=%s text=%s",
+                                                    sorted(spk_set), " ".join(words)[:200])
+                                elif msg_type == "AddPartialTranscript":
+                                    pass  # partials skipped to reduce log noise
                                 elif msg_type == "EndOfUtterance":
                                     logger.info("Speechmatics EndOfUtterance at %.2fs", sm_msg.get("end_time", 0))
                                 elif msg_type == "Error":
@@ -1059,7 +1077,7 @@ async def assistant_activity_api(
 
     try:
         conn = await aiomysql.connect(
-            host="localhost", user=mysql_user, password=mysql_pass,
+            host=os.environ.get("MYSQL_HOST", "localhost"), user=mysql_user, password=mysql_pass,
             db="mymcp", charset="utf8mb4", autocommit=True,
         )
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -1134,7 +1152,7 @@ async def knowledge_graph_api(request: Request):
 
     try:
         conn = await aiomysql.connect(
-            host="localhost", user=mysql_user, password=mysql_pass,
+            host=os.environ.get("MYSQL_HOST", "localhost"), user=mysql_user, password=mysql_pass,
             db="mymcp", charset="utf8mb4", autocommit=True,
         )
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -1715,7 +1733,7 @@ Respond with ONLY valid JSON (no markdown):
             mysql_user = os.getenv("MYSQL_USER", "markj")
             mysql_pass = os.getenv("MYSQL_PASS", "")
             conn = await aiomysql.connect(
-                host="localhost", user=mysql_user, password=mysql_pass,
+                host=os.environ.get("MYSQL_HOST", "localhost"), user=mysql_user, password=mysql_pass,
                 db="mymcp", charset="utf8mb4", autocommit=True,
             )
             methods_label = "drive+xai+sonar" if is_drive_source else "url+xai+sonar+google"
@@ -1849,7 +1867,7 @@ async def cogn_costs(request: Request):
         mysql_user = os.getenv("MYSQL_USER", "markj")
         mysql_pass = os.getenv("MYSQL_PASS", "")
         conn = await aiomysql.connect(
-            host="localhost", user=mysql_user, password=mysql_pass,
+            host=os.environ.get("MYSQL_HOST", "localhost"), user=mysql_user, password=mysql_pass,
             db="mymcp", charset="utf8mb4",
             cursorclass=aiomysql.DictCursor,
         )
@@ -1946,7 +1964,7 @@ async def claude_dispatch_submit(request: Request):
     _msg = str(body.get("text") or "")
     _s = _msg.strip()
     _spk = _s[:3] if len(_s) > 3 and _s[0] == 'S' and _s[1:2].isdigit() and _s[2:3] == ':' else "none"
-    logger.debug("claude/submit: speaker_tag=%s msg_len=%d", _spk, len(_msg))
+    logger.info("claude/submit: speaker_tag=%s msg_len=%d preview=%r", _spk, len(_msg), _s[:80])
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"{MCP_DIRECT_URL}/claude/submit", json=body)
         return JSONResponse(resp.json(), status_code=resp.status_code)
@@ -2102,6 +2120,83 @@ async def chat_delete(request: Request):
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"{MCP_DIRECT_URL}/chat/delete", json=body)
         return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Remote-MCP proxy — /llmem/mcp → samaritan-work session-bridge (port 8771)
+# ═══════════════════════════════════════════════════════════════════════════
+# Used by remote Claude Code clients reaching nuc11 through the Pinggy tunnel
+# (Kali samaritan-work for travel context). Bridge maintains MCP session-state
+# continuity across llmem-gw restarts (Goal 669).
+
+@app.api_route(
+    "/llmem/mcp{path:path}",
+    methods=["GET", "POST", "DELETE"],
+    name="llmem_mcp_bridge_proxy",
+)
+async def llmem_mcp_bridge_proxy(path: str, request: Request):
+    """Proxy /llmem/mcp to the session-bridge at MCP_BRIDGE_URL.
+
+    Path allowlist: only "" or "/" — rejects sub-paths to block path traversal
+    (e.g. /llmem/mcp/../health would expose bridge internals)."""
+    if not _check_auth(request):
+        return _auth_error()
+    if path not in ("", "/"):
+        return JSONResponse(
+            {"error": "only /llmem/mcp is supported (no sub-paths)"},
+            status_code=404,
+        )
+    target = f"{MCP_BRIDGE_URL}/mcp"
+    body = await request.body()
+    _HOP_BY_HOP = {
+        "host", "content-length", "transfer-encoding", "connection",
+        "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailer", "trailers", "upgrade",
+    }
+    _conn_hdr = request.headers.get("connection", "")
+    if _conn_hdr:
+        for token in (t.strip().lower() for t in _conn_hdr.split(",")):
+            if token:
+                _HOP_BY_HOP.add(token)
+    upstream_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)
+    )
+    try:
+        req = client.build_request(
+            request.method, target,
+            content=body if body else None,
+            params=dict(request.query_params),
+            headers=upstream_headers,
+        )
+        upstream = await client.send(req, stream=True)
+    except (httpx.RequestError, httpx.HTTPError) as exc:
+        await client.aclose()
+        return JSONResponse(
+            {"error": f"bridge unreachable: {exc!r}"}, status_code=502
+        )
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
+
+    async def body_stream():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body_stream(),
+        status_code=upstream.status_code,
+        headers=resp_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 
 if __name__ == "__main__":

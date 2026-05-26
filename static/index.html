@@ -2213,8 +2213,8 @@ let simliSuspended  = false;  // feed cut due to idle (mode still on, client sto
 let simliIdleTimer  = null;
 let simliGeneration = 0;      // incremented each session; stale event handlers bail out
 let _fullVoiceModeBeforeSimli = false;  // saved so we can restore when Simli is disabled
-const SIMLI_AUDIO_OFFSET_S = 0.30;  // seconds to delay WebAudio so face catches up (~Simli render latency)
-const SIMLI_IDLE_SEC = 30;
+const SIMLI_AUDIO_OFFSET_S = 0.50;  // seconds to delay WebAudio so face catches up (~Simli render latency)
+const SIMLI_IDLE_SEC = 180;
 let fullResponse   = '';
 let idleTimer      = null;
 let activeEvtSource = null;  // current SSE stream — closed on each new submit
@@ -3557,7 +3557,12 @@ function suspendSimliFeed() {
 function resetSimliIdleTimer() {
   if (!simliMode || simliSuspended || !simliReady) return;  // only tick when fully connected
   clearTimeout(simliIdleTimer);
-  simliIdleTimer = setTimeout(suspendSimliFeed, SIMLI_IDLE_SEC * 1000);
+  // Defer idle countdown until after any pending TTS audio finishes playing,
+  // so the 30s window starts post-utterance (not mid-utterance).
+  const audioEndMs = (audioCtx && nextPlayAt > audioCtx.currentTime)
+    ? Math.max(0, (nextPlayAt - audioCtx.currentTime) * 1000)
+    : 0;
+  simliIdleTimer = setTimeout(suspendSimliFeed, audioEndMs + SIMLI_IDLE_SEC * 1000);
 }
 
 // Resolves when simliReady becomes true, or after timeoutMs (fallback: proceed without avatar)
@@ -4513,7 +4518,7 @@ const _ws = (() => {
 })();
 
 // ── Provider: Deepgram (browser WebSocket + AudioWorklet PCM) ─
-const STT_DG_STITCH_MS = 5000;  // ms to hold Deepgram EndOfTurn finals before submitting — merges rapid back-to-back utterances within the window into one submission
+const STT_DG_STITCH_MS = 3000;  // ms to hold Deepgram EndOfTurn finals before submitting — merges rapid back-to-back utterances within the window into one submission
 const _dg = (() => {
   let dgKey    = null;   // fetched once from /api/stt-token
   let dgWs     = null;
@@ -4806,7 +4811,7 @@ registerProcessor('pcm-capture-di', PcmCaptureDi);`;
         encoding:         'linear16',
         sample_rate:      actualRate,
         diarize:          'true',
-        utterance_end_ms: '3000',
+        utterance_end_ms: '1200',
         interim_results:  'true',
         smart_format:     'true',
         speech_threshold: '0.7',
@@ -5148,6 +5153,12 @@ const _sm = (() => {
     const majoritySpeaker = Object.entries(spkCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
     if (majoritySpeaker && !_smPrimarySpeaker) _smPrimarySpeaker = majoritySpeaker;
     if (spkFilter && _smPrimarySpeaker && majoritySpeaker && majoritySpeaker !== _smPrimarySpeaker) return;
+    // State 1 wake-word gate: reject utterances that don't contain "sam"/"samaritan"
+    // (defense against Speechmatics mis-diarizing ambient audio as S1)
+    if (smDiState === 1 && !/\bsam(aritan)?\b/i.test(combined)) {
+      console.log('[SM] dropped (no wake word, smDiState=1):', combined);
+      return;
+    }
     if (!spkFilter && majoritySpeaker) combined = majoritySpeaker + ': ' + combined;
     onSttPartial(combined); onSttFinal(combined);
   }
