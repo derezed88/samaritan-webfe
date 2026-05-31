@@ -72,6 +72,45 @@ async def _log_cost(provider: str, service: str, cost_usd: float,
     except Exception as e:
         logger.debug("_log_cost failed: %s", e)
 
+
+def _emit_latency(event_type, *, session_id="webfe-voice", duration_us=None,
+                  status="ok", metadata=None, component="webfe"):
+    """Fire-and-forget voice-pipeline latency probe → llmem-gw /latency_event
+    (Goal 678 / step 4690 — localize the downstream voice first-word latency).
+
+    Off-context telemetry only; never blocks the response path (scheduled on
+    the loop, same pattern as _log_cost). These webfe legs join the Claude-side
+    events (prompt_received / intent_classified / response_generated) by
+    time-ordering per turn, not by a shared correlation_id."""
+    _t = time.time()
+    payload = {
+        "correlation_id": f"webfe{int(_t * 1_000_000)}",
+        "session_id": str(session_id)[:64],
+        "component": component,
+        "event_type": event_type,
+        "event_at": (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(_t))
+                     + f".{int((_t % 1) * 1_000_000):06d}"),
+    }
+    if duration_us is not None:
+        payload["duration_us"] = int(duration_us)
+    if status:
+        payload["status"] = status
+    if metadata:
+        payload["metadata_json"] = json.dumps(metadata)
+
+    async def _send():
+        try:
+            async with httpx.AsyncClient(timeout=5) as http:
+                await http.post(f"{MCP_DIRECT_URL}/latency_event", json=payload)
+        except Exception:
+            pass
+
+    try:
+        asyncio.ensure_future(_send())
+    except RuntimeError:
+        pass
+
+
 async def _auto_embed_sources_loop():
     """Every 5 min: embed any samaritan_sources rows missing from Qdrant samaritan_sources collection."""
     import pymysql
@@ -585,6 +624,9 @@ async def tts_inworld(request: Request):
         unit="characters", unit_count=char_count,
         notes=f"voice={voice_id}",
     ))
+    _tts_t0 = time.time()
+    _emit_latency("tts_request_received", component="tts",
+                  metadata={"provider": "inworld", "chars": char_count})
 
     async def stream_chunks():
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=5)) as http:
@@ -608,9 +650,15 @@ async def tts_inworld(request: Request):
                     err = await resp.aread()
                     yield json.dumps({"error": err.decode()[:200]}) + "\n"
                     return
+                _first = True
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if line:
+                        if _first:
+                            _emit_latency("tts_first_audio", component="tts",
+                                          duration_us=int((time.time() - _tts_t0) * 1_000_000),
+                                          metadata={"provider": "inworld"})
+                            _first = False
                         yield line + "\n"
 
     return StreamingResponse(
@@ -646,6 +694,9 @@ async def tts_xai(request: Request):
         unit="characters", unit_count=char_count,
         notes=f"voice={voice_id}",
     ))
+    _tts_t0 = time.time()
+    _emit_latency("tts_request_received", component="tts",
+                  metadata={"provider": "xai", "chars": char_count})
 
     async def stream_audio():
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=5)) as http:
@@ -668,7 +719,13 @@ async def tts_xai(request: Request):
                     logger.warning("xAI TTS error %d: %s", resp.status_code, err.decode()[:200])
                     yield b""
                     return
+                _first = True
                 async for chunk in resp.aiter_bytes(4096):
+                    if _first and chunk:
+                        _emit_latency("tts_first_audio", component="tts",
+                                      duration_us=int((time.time() - _tts_t0) * 1_000_000),
+                                      metadata={"provider": "xai"})
+                        _first = False
                     yield chunk
 
     return StreamingResponse(
@@ -1965,6 +2022,9 @@ async def claude_dispatch_submit(request: Request):
     _s = _msg.strip()
     _spk = _s[:3] if len(_s) > 3 and _s[0] == 'S' and _s[1:2].isdigit() and _s[2:3] == ':' else "none"
     logger.info("claude/submit: speaker_tag=%s msg_len=%d preview=%r", _spk, len(_msg), _s[:80])
+    _emit_latency("voice_submit_received",
+                  session_id=str(body.get("channel") or body.get("session") or "webfe-voice"),
+                  metadata={"msg_len": len(_msg)})
     async with httpx.AsyncClient(timeout=10) as http:
         resp = await http.post(f"{MCP_DIRECT_URL}/claude/submit", json=body)
         return JSONResponse(resp.json(), status_code=resp.status_code)
@@ -2123,22 +2183,30 @@ async def chat_delete(request: Request):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Remote-MCP proxy — /llmem/mcp → samaritan-work session-bridge (port 8771)
+# Remote-MCP proxy — /llmem/mcp → llmem-gw DIRECT streamable-http (port 8769)
 # ═══════════════════════════════════════════════════════════════════════════
 # Used by remote Claude Code clients reaching nuc11 through the Pinggy tunnel
-# (Kali samaritan-work for travel context). Bridge maintains MCP session-state
-# continuity across llmem-gw restarts (Goal 669).
+# (Kali samaritan-work for travel context).
+#
+# Routes to llmem-gw's streamable-http MCP at :8769/mcp, NOT the SSE session-
+# bridge at :8771 — the bridge only mounts /sse (no /mcp route), and a long-
+# lived SSE stream over Pinggy/mobile is the fragile path. Streamable-http is
+# request/response and survives a flaky tunnel far better. Tradeoff: a remote
+# client here does NOT get Goal-669 bridge survival across llmem-gw restarts;
+# acceptable because the travel box cold-starts per trip anyway. Local always-on
+# sessions (nuc11 samaritan-work, GED) still ride the bridge via type:sse →
+# :8771/sse, where restart-survival matters. (Changed 2026-05-30, Option A.)
 
 @app.api_route(
     "/llmem/mcp{path:path}",
     methods=["GET", "POST", "DELETE"],
-    name="llmem_mcp_bridge_proxy",
+    name="llmem_mcp_direct_proxy",
 )
-async def llmem_mcp_bridge_proxy(path: str, request: Request):
-    """Proxy /llmem/mcp to the session-bridge at MCP_BRIDGE_URL.
+async def llmem_mcp_direct_proxy(path: str, request: Request):
+    """Proxy /llmem/mcp to llmem-gw direct streamable-http at MCP_DIRECT_URL.
 
     Path allowlist: only "" or "/" — rejects sub-paths to block path traversal
-    (e.g. /llmem/mcp/../health would expose bridge internals)."""
+    (e.g. /llmem/mcp/../health would expose backend internals)."""
     if not _check_auth(request):
         return _auth_error()
     if path not in ("", "/"):
@@ -2146,7 +2214,7 @@ async def llmem_mcp_bridge_proxy(path: str, request: Request):
             {"error": "only /llmem/mcp is supported (no sub-paths)"},
             status_code=404,
         )
-    target = f"{MCP_BRIDGE_URL}/mcp"
+    target = f"{MCP_DIRECT_URL}/mcp"
     body = await request.body()
     _HOP_BY_HOP = {
         "host", "content-length", "transfer-encoding", "connection",
