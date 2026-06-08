@@ -3,7 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>SAMARITAN</title>
+  <!-- iOS WKWebView (Add to Home Screen) ignores HTTP Cache-Control headers; meta tags help. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>SAMARITAN v2.6</title>
   <style>
     /* ─── Google Fonts fallback (closest free mono to FF Magda Clean Mono) ─── */
     @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Nova+Mono&display=swap');
@@ -863,7 +867,8 @@
       pointer-events: none;
     }
 
-    #voice-provider-btn {
+    #voice-provider-btn,
+    #stt-mode-btn {
       background: transparent;
       border: 1px solid rgba(255,255,255,0.2);
       color: rgba(255,255,255,0.4);
@@ -877,7 +882,8 @@
       height: 28px;
     }
     @media (hover: hover) {
-      #voice-provider-btn:hover {
+      #voice-provider-btn:hover,
+      #stt-mode-btn:hover {
         border-color: rgba(255,255,255,0.5);
         color: var(--bar-text);
       }
@@ -1694,7 +1700,7 @@
         <div id="status-dot"></div>
         <span id="status-text">STANDBY</span>
       </div>
-      <span>SAMARITAN // INTERFACE v2.0</span>
+      <span>SAMARITAN // INTERFACE v2.9</span>
       <div id="di-controls">
         <button id="di-btn" class="cam-btn" title="Speaker diarization (Nova-3) — for multi-person conversations">DI</button>
         <button id="spk-filter-btn" class="cam-btn" style="display:none" title="Speaker filter: 1=only you, ALL=everyone tagged">1</button>
@@ -1780,6 +1786,7 @@
       <span id="prompt-label">&#9654;</span>
       <span id="voice-preview">TAP MIC TO SPEAK</span>
       <button id="claude-mode-btn" title="Toggle Claude Code mode">C</button>
+      <button id="stt-mode-btn" title="STT: Flux English (low-latency) — tap for multilingual">EN</button>
       <button id="voice-provider-btn" title="TTS: inworld — tap to switch">I</button>
       <button id="full-voice-btn" title="Toggle full voice mode (Samaritan TTS)">
         <svg id="fv-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1910,6 +1917,7 @@ const fullVoiceBtn       = document.getElementById('full-voice-btn');
 const avBtn              = document.getElementById('av-btn');
 const claudeModeBtn      = document.getElementById('claude-mode-btn');
 const voiceProviderBtn   = document.getElementById('voice-provider-btn');
+const sttModeBtn         = document.getElementById('stt-mode-btn');
 const voicePreview   = document.getElementById('voice-preview');
 const statusText     = document.getElementById('status-text');
 const statusDot      = document.getElementById('status-dot');
@@ -1932,6 +1940,9 @@ let fullVoiceMode = false; // true when Samaritan TTS is active
 let micMode = 'off';
 let diMode  = false;  // true = nova-3 diarization overlay active
 let _sttRestartAttempted = false;  // prevents restart-without-cycling trap
+let _needsGestureResume = false;   // iOS owes a single user-gesture tap to restart the mic after a background return
+let _simliActiveAtBackground = false;  // captured when app backgrounds: was the avatar on?
+let _pendingSimliRearm = false;        // re-arm the avatar on the next resume gesture (iOS kills Simli's WebSocket on background; only a fresh session recovers)
 const MIC_MODES = ['off', 'barge', 'speaker', 'speechmatics', 'sm-barge'];
 const MIC_MODE_LABELS = { off: '🎤', barge: 'B', speaker: 'S', inworld: 'IW', speechmatics: 'SM', 'sm-barge': 'SMB' };
 
@@ -2068,9 +2079,26 @@ const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 
 // ── STT config ───────────────────────────────────────────────
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
-const DG_MODEL                = 'flux-general-en';  // flux-general-en | nova-3 | nova-2 | enhanced
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
-const DG_EOT_THRESHOLD        = 0.8;                // flux eot_threshold (0.5–0.9): EndOfTurn confidence
+const DG_EOT_THRESHOLD        = 0.65;               // flux eot_threshold (0.5–0.9): EndOfTurn confidence
+                                                     // 2026-06-07: 0.8 → 0.65 for faster speaker-mode response.
+                                                     // Risk: occasional premature submit on mid-thought pauses.
+
+// ── STT mode registry — selectable via #stt-mode-btn ─────────────────────────
+// This chip selects the DEEPGRAM model (consulted on the Deepgram capture path):
+//  - flux-en : Deepgram Flux English-only, model-native turn detection.
+// English-only by design — optimized for clean, low-latency English performance.
+const STT_MODES = {
+  'flux-en': {
+    model: 'flux-general-en',
+    extra: { eot_threshold: DG_EOT_THRESHOLD },
+    label: 'EN',
+    title: 'Deepgram model: Flux English (low-latency)',
+  },
+};
+let STT_MODE = 'flux-en';  // default; cycled by #stt-mode-btn
+// Back-compat alias for any legacy reference.
+let DG_MODEL  = STT_MODES[STT_MODE].model;
 const STT_CONFIRM_BEEP        = true;               // audible beep on STT prompt received
 const STT_BEEP_FREQ_HZ        = 880;                // beep pitch in Hz (440=A4, 880=A5)
 const STT_BEEP_DURATION_MS    = 80;                 // beep length in ms
@@ -2079,7 +2107,8 @@ const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 const STT_NOISE_GATE             = 0;                // RMS threshold: 0=disabled. (0.01–0.05 to gate ambient noise, but can break Flux EndOfTurn)
 const STT_MIN_WORDS              = 3;               // global: ignore finals with fewer words in ALL modes (filters ambient noise)
 const STT_BARGE_MIN_WORDS        = 1;               // barge mode: minimum words to trigger barge-in
-const STT_SPEAKER_COOLDOWN_MS    = 1500;            // ms after TTS ends before accepting STT finals
+const STT_SPEAKER_COOLDOWN_MS    = 3000;            // ms after TTS ends before accepting STT finals
+                                                     // 2026-06-07: 1500 → 2000 → 3000 for echo-settle.
 const STT_SPEAKER_MIN_WORDS      = 3;               // ignore finals with fewer words during cooldown
 const STT_READY_CHIME            = true;            // play ascending two-tone chime when cooldown clears
 const STT_READY_CHIME_FREQ_LO    = 523;             // low note Hz  (C5)
@@ -2303,7 +2332,7 @@ function cmdLocation(arg) {
 const CAM_MAX_DIM = 1280;  // max pixel dimension for captured frames
 const CAM_JPEG_QUALITY = 0.85;
 const AUTO_CAP_INTERVAL = 8000;
-const DRIVE_PHOTOS_FOLDER = '<DRIVE_FOLDER_ID>';
+const DRIVE_PHOTOS_FOLDER = '%%DRIVE_PHOTOS_FOLDER%%';  // photos subfolder (same as SMS photos); injected server-side
 
 let _camZoom = 1, _camZoomMin = 1, _camZoomMax = 1;
 
@@ -2695,11 +2724,14 @@ async function enterClaudeMode() {
   // Visual indicator — change status bar
   const statusEl = document.getElementById('status-dot');
   if (statusEl) statusEl.style.background = '#a855f7';  // purple for Claude
-  setStatus('CLAUDE MODE', true);
+  if (!_needsGestureResume) setStatus('CLAUDE MODE', true);
   flashCmd('Claude mode active — all input routes to Claude Code');
 
-  // Swap the voice preview label
-  voicePreview.textContent = 'CLAUDE CODE ACTIVE';
+  // Swap the voice preview label — but don't clobber a pending tap-to-resume
+  // affordance. On a background-return reload, claude mode restores via an async
+  // call that resolves after showTapToResume() has painted "TAP MIC TO RESUME";
+  // overwriting it here would hide the one cue the user needs to tap.
+  if (!_needsGestureResume) voicePreview.textContent = 'CLAUDE CODE ACTIVE';
 }
 
 function exitClaudeMode() {
@@ -2744,7 +2776,7 @@ async function _startBgPoller() {
       continue;
     }
     try {
-      const resp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=5', {
+      const resp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=5&client_id=' + encodeURIComponent(SESSION_ID), {
         headers: authHeaders(),
       });
       if (resp.status === 503) {
@@ -2885,7 +2917,9 @@ async function claudeSubmit(text) {
     }
 
     // 1. Submit to Claude via tmux dispatch (include location metadata)
-    const submitBody = { text: claudeText, source: 'voice' };
+    // client_id scopes response delivery to THIS frontend so a second tab/device
+    // on the same channel can't steal the reply (multi-frontend routing fix).
+    const submitBody = { text: claudeText, source: 'voice', client_id: SESSION_ID };
     // Attach voice profile emotion for samaritan_emotions storage
     if (claudeText.startsWith('[voice|emotion:')) {
       const emoMatch = claudeText.match(/emotion:(\w+)\(([\d.]+)\)/);
@@ -2926,10 +2960,12 @@ async function claudeSubmit(text) {
     setStatus('CLAUDE RESPONDING', true);
     showLoader(false);
     let response = null;
-    const deadline = Date.now() + 60000;
+    // 180s: a reply that needs tool calls can take >60s. If it still misses
+    // this window, _startBgPoller picks up the orphaned response and speaks it.
+    const deadline = Date.now() + 180000;
     while (!response && Date.now() < deadline && !signal.aborted) {
       try {
-        const pollResp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=10', {
+        const pollResp = await fetch(CLAUDE_DISPATCH_URL + '/poll?wait=10&client_id=' + encodeURIComponent(SESSION_ID), {
           headers: authHeaders(),
           signal,
         });
@@ -3478,7 +3514,15 @@ async function enableSimliMode() {
     if (!r.ok) throw new Error('session http ' + r.status);
     const { session_token, iceServers } = await r.json();
     if (!session_token || session_token === 'FAIL TOKEN') throw new Error('bad token');
-    if (!window.SimliClientClass) throw new Error('Simli SDK not loaded yet — retry in a moment');
+    // The Simli SDK is imported async from a CDN; right after a reload (e.g. the
+    // auto-re-arm on resume) it may not be ready yet. Wait for it instead of bailing.
+    if (!window.SimliClientClass) {
+      for (let i = 0; i < 40 && !window.SimliClientClass; i++) {
+        await new Promise(res => setTimeout(res, 250));
+        if (simliGeneration !== gen) return;  // superseded while waiting
+      }
+      if (!window.SimliClientClass) throw new Error('Simli SDK failed to load');
+    }
     if (simliGeneration !== gen) return;  // superseded by a newer session attempt
     simliClient = new window.SimliClientClass(
       session_token,
@@ -3493,7 +3537,7 @@ async function enableSimliMode() {
     );
     simliClient.on('start',         () => { if (simliGeneration === gen) { simliReady = true; console.info('[Simli] connected (gen=%d)', gen); resetSimliIdleTimer(); } });
     simliClient.on('stop',          () => { if (simliGeneration !== gen) return; simliReady = false; console.info('[Simli] stopped externally (gen=%d) — idle timer will handle suspend', gen); });
-    simliClient.on('error',         () => { if (simliGeneration === gen) { simliReady = false; console.info('[Simli] error (gen=%d)', gen); } });
+    simliClient.on('error',         (e) => { if (simliGeneration === gen) { simliReady = false; console.info('[Simli] error (gen=%d)', gen); } });
     simliClient.on('startup_error', (msg) => {
       if (simliGeneration !== gen) return;
       console.error('[Simli] startup_error:', msg);
@@ -3818,6 +3862,35 @@ const ttsProviders = {
   });
 })();
 
+// ── Wire STT mode button ─────────────────────────────────────────────────────
+// English-only now (Flux EN). Cycles STT_MODE and restarts the live Deepgram
+// socket (if voice mode is open) so a model change takes effect immediately.
+(function() {
+  if (!sttModeBtn) return;
+  const sttOrder = ['flux-en'];
+  function updateSttModeBtn() {
+    const cfg = STT_MODES[STT_MODE] || STT_MODES['flux-en'];
+    sttModeBtn.textContent = cfg.label;
+    sttModeBtn.title = cfg.title;
+  }
+  updateSttModeBtn();
+  sttModeBtn.addEventListener('click', () => {
+    const idx = sttOrder.indexOf(STT_MODE);
+    STT_MODE = sttOrder[(idx + 1) % sttOrder.length];
+    DG_MODEL = STT_MODES[STT_MODE].model;  // keep legacy alias in sync
+    updateSttModeBtn();
+    // Restart Deepgram with the new model if we're currently listening so the
+    // user doesn't have to manually toggle the mic off and on.
+    try {
+      if (typeof _dg !== 'undefined' && _dg && _dg.stop && _dg.start
+          && fullVoiceMode && micMode !== 'off' && !diMode) {
+        _dg.stop();
+        setTimeout(() => { try { _dg.start(); } catch(_){} }, 100);
+      }
+    } catch(_) {}
+  });
+})();
+
 // ── Simli AV button ────────────────────────────────────────────
 avBtn.addEventListener('click', () => {
   if (simliMode) {
@@ -3851,7 +3924,8 @@ function ttsClean(t) {
     .replace(/['']/g, "'")                 // smart single quotes → straight apostrophe
     .replace(/&[a-z]+;/gi, ' ')            // HTML entities
     .replace(/[<>]/g, ' ')                 // angle brackets
-    .replace(/[^\x20-\x7E\s]/g, ' ')      // strip remaining non-ASCII
+    // Strip non-ASCII — xAI and Inworld are English-only voices here.
+    .replace(/[^\x20-\x7E\s]/g, ' ')
     .replace(/\n+/g, ' ')
     .replace(/\s{2,}/g, ' ')               // collapse multiple spaces
     .trim();
@@ -3876,6 +3950,14 @@ function _ttsFlush() {
   const gen = _ttsGeneration;        // capture generation for stale-callback guard
   _ttsBusy = true;
   isSpeaking = true;
+  // Immediately mute STT mic — don't wait for the watcher's 100ms tick.
+  // The watcher continues to handle the gated/ungated state during cooldown.
+  try {
+    if (typeof getActiveProvider === 'function') {
+      const stt = getActiveProvider();
+      if (stt && stt.gate) stt.gate(true);
+    }
+  } catch (_) {}
   console.log(`[TTS-DIAG] dispatch via ${TTS_PROVIDER}: "${sentence.slice(0, 60)}${sentence.length > 60 ? '...' : ''}"`);
   provider.speak(
     sentence,
@@ -3987,9 +4069,12 @@ async function submit(textOverride) {
   }
 
   resetIdleTimer();   // user is active — reset idle countdown
-  // Resume Simli feed if it was suspended due to idle (full toggle: clean disable then fresh enable)
-  // Must happen before claudeMode check since claudeMode has an early return
-  if (simliMode && simliSuspended) {
+  // Hands-free avatar recovery: if avatar mode is on (button purple) but the face
+  // isn't actually live, speaking re-arms a fresh session — no manual toggle needed.
+  // !simliReady covers BOTH a clean idle-suspend AND a dead session (background kill,
+  // WebSocket failure, startup error) that left simliReady=false without simliSuspended.
+  // Must happen before claudeMode check since claudeMode has an early return.
+  if (simliMode && !simliReady) {
     disableSimliMode();
     enableSimliMode();
     setStatus('RECONNECTING AVATAR', true);
@@ -4002,6 +4087,10 @@ async function submit(textOverride) {
   // Claude mode — route to voice relay instead of llmem-gw
   if (claudeMode) {
     textInput.value = '';
+    // Reset the preview line — claudeSubmit returns early below, before the
+    // non-claude path's voicePreview reset, so the recognized phrase would
+    // otherwise linger painted in the buffer after submit.
+    voicePreview.textContent = fullVoiceMode ? 'SAMARITAN VOICE ACTIVE' : 'TAP MIC TO SPEAK';
     claudeSubmit(text);
     return;
   }
@@ -4367,7 +4456,13 @@ function onSttPartial(text) {
 function beepConfirm() {
   if (!STT_CONFIRM_BEEP) return;
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Reuse the shared, gesture-unlocked AudioContext. A fresh context here
+    // starts suspended after a background-return (iOS suspends the audio engine)
+    // and never plays. The shared ctx was unlocked by the mic tap and auto-resumes.
+    initAudioCtx();
+    const ctx = audioCtx;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -4378,7 +4473,7 @@ function beepConfirm() {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + STT_BEEP_DURATION_MS / 1000);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + STT_BEEP_DURATION_MS / 1000);
-    osc.onended = () => ctx.close();
+    // Do NOT close — it's the shared context used by TTS too.
   } catch (_) {}
 }
 
@@ -4407,12 +4502,19 @@ function beepReady() {
 }
 
 function startSpeakerCooldown() {
-  // Called whenever TTS ends in speaker mode — sets cooldown and schedules ready chime
+  // Called whenever TTS ends in speaker mode — sets cooldown and schedules ready chime.
+  // The chime itself (~200ms of 523Hz + 784Hz tones) bleeds through the speakers
+  // into an open mic if it plays after cooldown ends. Fire it midway through the
+  // cooldown window so it plays out WHILE the mic is still hardware-muted, then
+  // mic re-enables at full cooldown expiry into silence. (2026-06-07 fix.)
   _sttCooldownUntil = Date.now() + STT_SPEAKER_COOLDOWN_MS;
   // Reset SM speaker tracking after TTS — diarization may reassign speaker IDs
   // when the audio profile changes (e.g. TTS output heard, AirPods removed)
   _smPrimarySpeaker = null;
-  setTimeout(beepReady, STT_SPEAKER_COOLDOWN_MS);
+  // Beep duration: 2 notes × NOTE_MS + 1 gap = ~200ms. Pad 150ms for echo settle.
+  const beepTotalMs = (STT_READY_CHIME_NOTE_MS * 2) + STT_READY_CHIME_GAP_MS;
+  const beepDelayMs = Math.max(0, STT_SPEAKER_COOLDOWN_MS - beepTotalMs - 150);
+  setTimeout(beepReady, beepDelayMs);
 }
 
 // Strip leading wake-name ("Samaritan" or common Flux mishear "American") from voice input.
@@ -4518,13 +4620,27 @@ const _ws = (() => {
 })();
 
 // ── Provider: Deepgram (browser WebSocket + AudioWorklet PCM) ─
-const STT_DG_STITCH_MS = 3000;  // ms to hold Deepgram EndOfTurn finals before submitting — merges rapid back-to-back utterances within the window into one submission
+// Mode-aware stitch window: barge keeps the wide 3000ms merge so quick back-
+// and-forth utterances aren't sliced; speaker (non-barge) drops to 800ms so
+// the perceived "you said X → I started thinking" gap collapses from ~3s to ~0.8s.
+// 2026-06-07: split from a single 3000ms constant after admin's voice-pipeline
+// optimization pass.
+const STT_DG_STITCH_MS_BARGE   = 3000;
+const STT_DG_STITCH_MS_SPEAKER = 800;
+function _dgStitchMs() {
+  return (micMode === 'barge') ? STT_DG_STITCH_MS_BARGE : STT_DG_STITCH_MS_SPEAKER;
+}
+const STT_DG_STITCH_MS = STT_DG_STITCH_MS_BARGE;  // back-compat alias (legacy refs)
 const _dg = (() => {
   let dgKey    = null;   // fetched once from /api/stt-token
   let dgWs     = null;
   let audioCtxDg = null;
   let workletNode = null;
   let mediaStream = null;
+  let micSourceNode = null;   // MediaStreamSource — promoted to module scope for
+                              // L3 worklet-disconnect: severing source→worklet
+                              // during isSpeaking is more local than track.enabled
+                              // and reliably stops audio frames on iOS Safari.
   let active   = false;
   // Auto-reconnect state: Deepgram closes idle WebSockets in speaker mode
   // (when the client stops sending PCM during TTS playback) and real-world
@@ -4535,12 +4651,77 @@ const _dg = (() => {
   let _explicitStop = false;
   let _reconnectAttempts = 0;
   let _reconnectTimer = null;
-  const DG_MAX_RECONNECT = 3;
+  // Generation id + single-flight guard. Every start bumps _dgRunId; async
+  // callbacks capture their runId and bail if a newer start (or a stop) has
+  // superseded them. _starting blocks overlapping start calls. Together these
+  // guarantee exactly one live socket — no "zombie" duplicate streams.
+  let _dgRunId = 0;
+  let _starting = false;
+  const DG_MAX_RECONNECT = 6;          // v2.6: 3 → 6 for stuck-state recovery
   const DG_RECONNECT_BACKOFF_MS = 500;
   // Stitch state — mirrors the Speechmatics pattern. Rapid back-to-back
   // EndOfTurn events get merged into one submission via a rolling timeout.
   let _stitchBuf = '';
   let _stitchTimer = null;
+  // Keepalive timer — Deepgram closes idle WebSockets after ~10s with code
+  // 1011 (net0001). In speaker mode, mic audio is gated OFF while Sam speaks,
+  // so the socket goes silent during the entire TTS reply. Heartbeat with
+  // {"type":"KeepAlive"} during gated periods to hold the socket open. Added
+  // 2026-06-07 after admin's "stuck connecting" report on Nova-3 (Flux had
+  // the same vulnerability but hit it less often with shorter turns).
+  let _keepaliveTimer = null;
+  function _stopKeepalive() {
+    if (_keepaliveTimer) { clearInterval(_keepaliveTimer); _keepaliveTimer = null; }
+  }
+  // Multi-layer mic gating — applies WHILE Sam is speaking or in cooldown:
+  //  (a) MediaStreamTrack.enabled = false — OS-level mute (modern Safari)
+  //  (b) source.disconnect(workletNode) — severs the AudioContext graph edge,
+  //      stopping audio frames from reaching the worklet regardless of whether
+  //      the track is truly silent. On iOS Safari + Pinggy this is the most
+  //      reliable defense — verified after track.enabled alone left intermittent
+  //      bleed-through (admin field report 2026-06-07 ~07:15 PDT).
+  // The watcher runs every 100ms and POSTs telemetry on each transition so we
+  // can verify in samaritan.log that mute is actually firing.
+  let _micGatedState = false;  // true when graph edge is severed + track disabled
+  function _setMicGated(gated) {
+    if (gated === _micGatedState) return;
+    _micGatedState = gated;
+    try {
+      if (mediaStream) {
+        const tracks = mediaStream.getAudioTracks();
+        if (tracks && tracks.length) tracks[0].enabled = !gated;
+      }
+    } catch (_) {}
+    try {
+      if (micSourceNode && workletNode) {
+        if (gated) micSourceNode.disconnect(workletNode);
+        else       micSourceNode.connect(workletNode);
+      }
+    } catch (_) {}
+    // v2.6 — push gate state into the worklet so its process() loop drops
+    // frames on the audio thread itself. The graph disconnect above and
+    // this inline gate are redundant by design; either alone should stop
+    // audio reaching the JS thread, both together close any race window.
+    try {
+      if (workletNode && workletNode.port && workletNode.port.postMessage) {
+        workletNode.port.postMessage({ gated });
+      }
+    } catch (_) {}
+    // Server-side telemetry — fire-and-forget, lets us grep samaritan.log
+    // for "stt-mute" transitions and confirm gating actually fires.
+    try {
+      fetch('/api/log-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ event: 'stt-mute', gated, ts: Date.now() }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  }
+  let _micWatcherTimer = null;
+  function _stopMicWatcher() {
+    if (_micWatcherTimer) { clearInterval(_micWatcherTimer); _micWatcherTimer = null; }
+  }
   function _flushStitch() {
     _stitchTimer = null;
     const combined = _stitchBuf.trim();
@@ -4552,13 +4733,31 @@ const _dg = (() => {
   function _queueStitch(text) {
     _stitchBuf = _stitchBuf ? _stitchBuf + ' ' + text : text;
     if (_stitchTimer) clearTimeout(_stitchTimer);
-    _stitchTimer = setTimeout(_flushStitch, STT_DG_STITCH_MS);
+    // Read mode-aware window each call so a mid-utterance mode flip (rare)
+    // picks up the new value on the next stitch.
+    _stitchTimer = setTimeout(_flushStitch, _dgStitchMs());
   }
 
   // Inline AudioWorklet processor as a Blob URL — sends 256-sample PCM chunks
+  // Audio worklet runs on a separate audio thread. Inline gate (v2.6) checks
+  // a worklet-local _gated flag per process() call and discards the frame
+  // entirely when set — no postMessage to sendPcm, no PCM into the WebSocket.
+  // Gate state is pushed to the worklet via port.postMessage from the main
+  // thread's _setMicGated() path. Airtight defense against any JS-thread race
+  // between isSpeaking-flip and audio capture.
   const WORKLET_CODE = `
 class PcmCapture extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._gated = false;
+    this.port.onmessage = (e) => {
+      if (e.data && typeof e.data.gated === 'boolean') {
+        this._gated = e.data.gated;
+      }
+    };
+  }
   process(inputs) {
+    if (this._gated) return true;  // discard frame — never reach the JS thread
     const ch = inputs[0][0];
     if (ch) this.port.postMessage(ch.buffer, [ch.buffer]);
     return true;
@@ -4566,85 +4765,192 @@ class PcmCapture extends AudioWorkletProcessor {
 }
 registerProcessor('pcm-capture', PcmCapture);`;
 
+  // Idempotent teardown of the socket + audio graph. Safe to call when nothing
+  // is open. Used by both startDg (close-old-before-open) and stopDg.
+  function _teardownDgResources() {
+    _stopKeepalive();
+    _stopMicWatcher();
+    // Reset L3 mute state — without this, a socket close mid-gated leaves
+    // _micGatedState=true, so the next watcher run sees state-already-matches
+    // and never re-enables the mic, leaving the UI stuck on "connecting".
+    // Also restore mediaStream track + source connection so a stale teardown
+    // doesn't leave the mic in a half-muted state.
+    try {
+      if (mediaStream) {
+        const tracks = mediaStream.getAudioTracks();
+        if (tracks && tracks.length) tracks[0].enabled = true;
+      }
+    } catch (_) {}
+    try {
+      if (micSourceNode && workletNode) micSourceNode.connect(workletNode);
+    } catch (_) {}
+    _micGatedState = false;
+    micSourceNode = null;
+    if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
+    if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtxDg) { try { const p = audioCtxDg.close(); if (p && p.catch) p.catch(()=>{}); } catch (_) {} audioCtxDg = null; }
+    if (dgWs) {
+      const old = dgWs;
+      dgWs = null;
+      try {
+        if (old.readyState === WebSocket.OPEN) old.send(JSON.stringify({ type: 'CloseStream' }));
+        old.close();
+      } catch (_) {}
+    }
+  }
+
   async function startDg() {
+    // Single-flight: the restore-after-reload path, a manual mic tap, and the
+    // reconnect timer can all race to start. Without this guard, overlapping
+    // starts open two Deepgram sockets that both stream audio through the
+    // tunnel — the "zombie" duplicate that chokes transcription latency.
+    if (_starting) return;
+    _starting = true;
+    // Close any prior socket / audio graph BEFORE opening a new one.
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    _teardownDgResources();
+    const runId = ++_dgRunId;   // this generation; stale callbacks compare against _dgRunId
     active = true;
     _explicitStop = false;
-    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     onSttConnecting();
     try {
 
       // Create AudioContext FIRST (synchronously in user-gesture context) so iOS
       // doesn't suspend it. getUserMedia is async and may expire the gesture.
       audioCtxDg = new AudioContext();
-      if (audioCtxDg.state === 'suspended') {
-        try { await audioCtxDg.resume(); } catch(_) {}
+      const ctx = audioCtxDg;   // capture for this generation
+      if (ctx.state === 'suspended') {
+        try { await ctx.resume(); } catch(_) {}
       }
-      const actualRate = audioCtxDg.sampleRate;
+      // A stop() during connecting bumps _dgRunId — abort and clean up our ctx.
+      if (runId !== _dgRunId) {
+        try { ctx.close(); } catch(_){} if (audioCtxDg === ctx) audioCtxDg = null;
+        _starting = false; return;
+      }
+      const actualRate = ctx.sampleRate;
 
+      // Keep the stream LOCAL until we've confirmed this generation is still
+      // live, so a superseded run can't clobber or leak the global mediaStream.
+      let stream;
       try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
           video: false,
         });
       } catch (e) {
+        // A stale rejection (stop()/new start landed during the prompt) must not
+        // flash an error or stop the live run — just clean up our own ctx.
+        if (runId !== _dgRunId) {
+          try { ctx.close(); } catch(_){} if (audioCtxDg === ctx) audioCtxDg = null;
+          _starting = false; return;
+        }
         flashError('mic denied: ' + e.message.slice(0, 30));
-        audioCtxDg.close().catch(() => {}); audioCtxDg = null;
-        active = false; onSttStop(); return;
+        try { ctx.close(); } catch(_){} if (audioCtxDg === ctx) audioCtxDg = null;
+        active = false; _starting = false; onSttStop(); return;
       }
+      // Superseded while awaiting the mic — drop the LOCAL stream/ctx, never the globals.
+      if (runId !== _dgRunId) {
+        stream.getTracks().forEach(t => t.stop());
+        try { ctx.close(); } catch(_){} if (audioCtxDg === ctx) audioCtxDg = null;
+        _starting = false; return;
+      }
+      mediaStream = stream;  // commit to the global only once confirmed live
 
       // Route through server proxy — Deepgram requires Authorization header
       // which browsers can't set on WebSocket; proxy injects it server-side.
+      // Model + per-model params come from STT_MODES (Flux English).
+      const _sttCfg = STT_MODES[STT_MODE] || STT_MODES['flux-en'];
       const params = new URLSearchParams({
-        model:              DG_MODEL,
-        encoding:           DG_ENCODING,
-        sample_rate:        actualRate,
-        eot_threshold:      DG_EOT_THRESHOLD,
-        token:              _apiKey,
+        model:       _sttCfg.model,
+        encoding:    DG_ENCODING,
+        sample_rate: actualRate,
+        token:       _apiKey,
+        ..._sttCfg.extra,
       });
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      dgWs = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
-      dgWs.binaryType = 'arraybuffer';
-      dgWs.onopen = async () => {
+      const ws = new WebSocket(`${wsProto}//${location.host}/api/stt-proxy?${params}`);
+      dgWs = ws;
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = async () => {
+        if (runId !== _dgRunId || ws !== dgWs) { try { ws.close(); } catch(_){} return; }
         _reconnectAttempts = 0;  // healthy connection — clear retry counter
         onSttStart();
-        const source = audioCtxDg.createMediaStreamSource(mediaStream);
+        // Start the keepalive heartbeat. Fires every 5s and sends a KeepAlive
+        // JSON whenever mic audio is being gated (TTS playing or cooldown) —
+        // otherwise Deepgram closes the socket on ~10s of silence with code
+        // 1011, leaving the UI stuck on "connecting" after a failed reconnect.
+        // KeepAlive is only valid on Nova-3 streaming Listen API. Flux uses
+        // model-native EndOfTurn and REJECTS the {"type":"KeepAlive"} JSON
+        // message as a protocol error — Deepgram closes the socket. This is
+        // why a v2.6 Flux EN socket closed exactly 6s after open (first
+        // 5s KeepAlive tick + ~1s for Deepgram close round-trip).
+        _stopKeepalive();
+        const _modelSupportsKeepAlive = /^nova-/i.test(_sttCfg.model);
+        if (_modelSupportsKeepAlive) {
+          _keepaliveTimer = setInterval(() => {
+            if (runId !== _dgRunId || ws !== dgWs) { _stopKeepalive(); return; }
+            if (ws.readyState !== WebSocket.OPEN) return;
+            // Send every 5s while socket open — Deepgram closes Nova-3 sockets
+            // after ~10s of no audio AND no keepalive. Always-on (not gated-
+            // only) covers admin's silent thinking pauses.
+            try { ws.send(JSON.stringify({ type: 'KeepAlive' })); } catch (_) {}
+          }, 5000);
+        }
+        // Hardware mic-mute watcher: every 100ms, sync the mic track's
+        // enabled flag to follow `!gated`. In speaker mode while Sam speaks,
+        // the track gets disabled at the OS layer — no audio reaches AEC,
+        // worklet, or Deepgram. Cooldown extension keeps it muted through
+        // echo settle. Switching to barge mode flips track back on.
+        // (L4 socket-close approach was attempted 2026-06-07 then reverted —
+        // closing the WS during TTS caused Deepgram to flush buffered audio
+        // as final transcripts on CloseStream, making the bleed WORSE.)
+        _stopMicWatcher();
+        _micWatcherTimer = setInterval(() => {
+          if (runId !== _dgRunId || ws !== dgWs) { _stopMicWatcher(); return; }
+          const gated = (micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil);
+          _setMicGated(gated);
+        }, 100);
+        const source = ctx.createMediaStreamSource(mediaStream);
+        micSourceNode = source;   // module-scope handle for L3 disconnect/connect
 
         // Try AudioWorklet first; fall back to ScriptProcessorNode for iOS Safari
         let usedWorklet = false;
         try {
           const blob    = new Blob([WORKLET_CODE], { type: 'application/javascript' });
           const blobUrl = URL.createObjectURL(blob);
-          await audioCtxDg.audioWorklet.addModule(blobUrl);
+          await ctx.audioWorklet.addModule(blobUrl);
           URL.revokeObjectURL(blobUrl);
-          workletNode = new AudioWorkletNode(audioCtxDg, 'pcm-capture');
+          if (runId !== _dgRunId || ws !== dgWs) { try { ws.close(); } catch(_){} return; }
+          workletNode = new AudioWorkletNode(ctx, 'pcm-capture');
           workletNode.port.onmessage = (e) => sendPcm(new Float32Array(e.data));
           source.connect(workletNode);
           usedWorklet = true;
         } catch (_) {}
         if (!usedWorklet) {
           // ScriptProcessorNode fallback for browsers without AudioWorklet support
-          const spn = audioCtxDg.createScriptProcessor(4096, 1, 1);
+          const spn = ctx.createScriptProcessor(4096, 1, 1);
           spn.onaudioprocess = (ev) => sendPcm(ev.inputBuffer.getChannelData(0));
           source.connect(spn);
-          spn.connect(audioCtxDg.destination); // required to keep spn alive (silent output)
+          spn.connect(ctx.destination); // required to keep spn alive (silent output)
           workletNode = spn;
         }
         // After all async setup, resume if iOS suspended the context.
-        if (audioCtxDg && audioCtxDg.state === 'suspended') {
-          audioCtxDg.resume().catch(() => {});
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
         }
         // Silent primer: send ~200ms of silence to warm up the Deepgram decoder
         // and the local audio pipeline before the user's first word arrives.
-        const primerSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.2);
+        const primerSamples = Math.round((ctx.sampleRate || 48000) * 0.2);
         const primerPcm16 = new Int16Array(primerSamples);
-        if (dgWs.readyState === WebSocket.OPEN) dgWs.send(primerPcm16.buffer);
+        if (ws.readyState === WebSocket.OPEN) ws.send(primerPcm16.buffer);
       };
 
       // Flux requires ~80ms chunks for optimal performance.
       let _pcmBuf = [];
       let _pcmBufLen = 0;
       function sendPcm(f32) {
-        if (!dgWs || dgWs.readyState !== WebSocket.OPEN) return;
+        if (runId !== _dgRunId || ws !== dgWs) return;  // stale worklet — never feed the live socket
+        if (ws.readyState !== WebSocket.OPEN) return;
         // In speaker mode, drop mic audio while TTS is playing or cooldown is active.
         if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
           _pcmBuf = []; _pcmBufLen = 0;
@@ -4652,7 +4958,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
         }
         _pcmBuf.push(f32);
         _pcmBufLen += f32.length;
-        const targetSamples = Math.round((audioCtxDg.sampleRate || 48000) * 0.08);
+        const targetSamples = Math.round((ctx.sampleRate || 48000) * 0.08);
         if (_pcmBufLen < targetSamples) return;
         const merged = new Float32Array(_pcmBufLen);
         let offset = 0;
@@ -4667,29 +4973,79 @@ registerProcessor('pcm-capture', PcmCapture);`;
         const i16 = new Int16Array(merged.length);
         for (let i = 0; i < merged.length; i++)
           i16[i] = Math.max(-32768, Math.min(32767, merged[i] * 32768));
-        dgWs.send(i16.buffer);
+        ws.send(i16.buffer);
       }
 
-      dgWs.onmessage = (e) => {
+      ws.onmessage = (e) => {
+        if (runId !== _dgRunId || ws !== dgWs) return;
         let msg;
         try { msg = JSON.parse(e.data); } catch (_) { return; }
-        if (msg.type !== 'TurnInfo') return;
-        const transcript = (msg.transcript || '').trim();
-        if (msg.event === 'StartOfTurn') {
-          onSttPartial('');
-        } else if (msg.event === 'Update') {
-          if (transcript) onSttPartial(transcript);
-        } else if (msg.event === 'EndOfTurn') {
-          // Queue into the stitch buffer so rapid back-to-back finals merge
-          // into one submission (3s rolling window). A short follow-up within
-          // the window extends the timer and gets appended to the previous text.
-          if (transcript) { onSttPartial(transcript); _queueStitch(transcript); }
+
+        // Echo guard — drop ANY transcript that arrives while Sam is speaking
+        // or in the post-TTS cooldown. The PCM gate at sendPcm() should already
+        // be stopping mic input, but Deepgram can finalize buffered audio or
+        // catch acoustic echo bleed (TTS-through-speaker leaking past the
+        // browser's echo cancellation). Added 2026-06-07.
+        if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+          return;
+        }
+
+        // Flux format (model-native turn detection):
+        //   { type: 'TurnInfo', event: 'StartOfTurn'|'Update'|'EndOfTurn', transcript }
+        if (msg.type === 'TurnInfo') {
+          const transcript = (msg.transcript || '').trim();
+          if (msg.event === 'StartOfTurn') {
+            onSttPartial('');
+          } else if (msg.event === 'Update') {
+            if (transcript) onSttPartial(transcript);
+          } else if (msg.event === 'EndOfTurn') {
+            // Queue into the stitch buffer so rapid back-to-back finals merge
+            // into one submission. A short follow-up within the window extends
+            // the timer and gets appended to the previous text.
+            if (transcript) { onSttPartial(transcript); _queueStitch(transcript); }
+          }
+          return;
+        }
+
+        // Nova-3 format (classical endpointing, multilingual incl. Thai):
+        //   { type: 'Results', channel: { alternatives: [{transcript}] },
+        //     is_final, speech_final, ... }
+        //   { type: 'UtteranceEnd', last_word_end, ... }
+        // 2026-06-07: added when the new M (multilingual) STT mode lit up the
+        // socket but no text reached the UI — the prior handler early-returned
+        // on `type !== 'TurnInfo'`, silently dropping every Nova-3 message.
+        if (msg.type === 'Results') {
+          const alt = msg.channel && msg.channel.alternatives && msg.channel.alternatives[0];
+          const transcript = ((alt && alt.transcript) || '').trim();
+          if (!transcript) return;
+          // Interim and is_final both update the live partial display so the
+          // user sees what's transcribed in real time.
+          onSttPartial(transcript);
+          // Only commit to the stitch buffer on finalized segments; otherwise
+          // interim drafts would queue + cause spurious submissions.
+          if (msg.is_final) {
+            _queueStitch(transcript);
+          }
+          // speech_final = endpoint detected. Force-flush so we don't wait the
+          // full stitch window when Deepgram already confirmed end-of-speech.
+          if (msg.speech_final && _stitchBuf.trim()) {
+            _flushStitch();
+          }
+          return;
+        }
+
+        // UtteranceEnd = utterance_end_ms of silence after last word; flush
+        // anything queued so the submission goes regardless of stitch timer.
+        if (msg.type === 'UtteranceEnd') {
+          if (_stitchBuf.trim()) _flushStitch();
+          return;
         }
       };
-      dgWs.onerror = (ev) => {
+      ws.onerror = (ev) => {
         console.warn('[DG] WS error', ev);
       };
-      dgWs.onclose = (ev) => {
+      ws.onclose = (ev) => {
+        if (runId !== _dgRunId || ws !== dgWs) return;  // stale socket — already superseded, ignore
         dgWs = null;
         if (_explicitStop || !active) {
           if (active) { active = false; stopDg(); }
@@ -4703,9 +5059,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
           return;
         }
         console.warn('[DG] WS closed (code=' + ev.code + '), reconnect ' + _reconnectAttempts + '/' + DG_MAX_RECONNECT);
-        if (workletNode) { try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
-        if (audioCtxDg) { try { audioCtxDg.close(); } catch (_) {} audioCtxDg = null; }
-        if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+        _teardownDgResources();
         _reconnectTimer = setTimeout(() => {
           _reconnectTimer = null;
           if (!_explicitStop && voiceMode && micMode !== 'off') {
@@ -4713,9 +5067,11 @@ registerProcessor('pcm-capture', PcmCapture);`;
           }
         }, DG_RECONNECT_BACKOFF_MS);
       };
+      _starting = false;  // socket created + handlers wired; future starts allowed
     } catch (err) {
       flashError('DG catch: ' + String(err).slice(0, 40));
       active = false;
+      _starting = false;
       onSttStop();
     }
   }
@@ -4723,23 +5079,21 @@ registerProcessor('pcm-capture', PcmCapture);`;
   function stopDg() {
     active = false;
     _explicitStop = true;
+    _starting = false;
+    _dgRunId++;  // invalidate any in-flight generation's async callbacks
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; _stitchBuf = ''; }
     _reconnectAttempts = 0;
-    if (workletNode){ try { workletNode.disconnect(); } catch (_) {} workletNode = null; }
-    if (mediaStream){ mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-    if (audioCtxDg) { try { audioCtxDg.close(); }  catch (_) {} audioCtxDg = null; }
-    if (dgWs) {
-      try {
-        if (dgWs.readyState === WebSocket.OPEN) dgWs.send(JSON.stringify({ type: 'CloseStream' }));
-        dgWs.close();
-      } catch (_) {}
-      dgWs = null;
-    }
+    _teardownDgResources();
     onSttStop();
   }
 
-  return { start: startDg, stop: stopDg };
+  // Expose gate(bool) so the TTS path can immediately mute the mic when
+  // isSpeaking flips true, without waiting the 100ms watcher tick. Closes the
+  // ~50-80ms bleed window where TTS audio is already playing but the watcher
+  // hasn't fired its first sync yet. (2026-06-07 echo-bleed fix v2.6.)
+  function gate(g) { try { _setMicGated(!!g); } catch (_) {} }
+  return { start: startDg, stop: stopDg, gate };
 })();
 
 // ── Provider: Deepgram Diarization (nova-3 + diarize=true) ───
@@ -5235,6 +5589,17 @@ function getActiveProvider() {
   return _dg;  // barge and speaker both use deepgram
 }
 
+// Surface a single "tap to resume" affordance. iOS forbids restarting the mic
+// without a user gesture, so after a background return we wait for one tap
+// instead of silently calling start() (which would hang on "connecting").
+function showTapToResume() {
+  if (micBtn.classList.contains('unsupported')) return;
+  micBtn.classList.add('listening');
+  micIcon.textContent = '◌';
+  voicePreview.textContent = 'TAP MIC TO RESUME';
+  setStatus('TAP TO RESUME', true);
+}
+
 // ── Mic button ───────────────────────────────────────────────
 if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   micBtn.classList.add('unsupported');
@@ -5245,6 +5610,26 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     if (micBtn.classList.contains('unsupported')) return;
     resetIdleTimer();
     initAudioCtx();  // re-unlock AudioContext after iOS audio interruption
+
+    // Tap-to-resume after a background return: THIS click is the user gesture
+    // iOS requires to legally restart the mic / AudioContext. One tap, no mode
+    // cycling, straight back to listening.
+    if (_needsGestureResume) {
+      _needsGestureResume = false;
+      _sttRestartAttempted = false;
+      const provider = getActiveProvider();
+      if (!provider) { flashError('STT provider unavailable'); return; }
+      voiceMode = true;
+      provider.start();
+      // Re-arm the avatar on this same legal gesture. iOS killed Simli's control
+      // WebSocket during suspension, so the old session is dead ("Websocket Failed");
+      // a fresh enableSimliMode is the only thing that recovers it.
+      if (_pendingSimliRearm) {
+        _pendingSimliRearm = false;
+        if (!simliMode) enableSimliMode();
+      }
+      return;
+    }
 
     // If already in an active mode and currently listening, tap means cycle.
     // If STT dropped (iOS notification, WS close), try ONE restart before cycling.
@@ -5501,26 +5886,50 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
           spkFilter = saved.spkFilter;
           _updateSpkFilterBtn();
         }
-        // Restore mic mode + start STT (extra delay so async TTS init settles first)
+        // Restore mic mode, but DON'T silently auto-start: this reload happened
+        // because we returned from background, and iOS won't restart the mic
+        // without a user gesture. A silent start() would hang on "connecting"
+        // (the old bug). Surface a single tap-to-resume instead.
         if (!micBtn.classList.contains('unsupported') && saved.micMode && saved.micMode !== 'off') {
           setMicMode(saved.micMode);
-          const provider = getActiveProvider();
-          if (provider) {
-            setTimeout(() => {
-              voiceMode = true;
-              provider.start();
-            }, 400);
-          }
+          _needsGestureResume = true;
+          // If the avatar was live before backgrounding, re-arm it on the resume
+          // gesture — its WebSocket died in suspension and only a fresh session recovers.
+          if (saved.simliActive) _pendingSimliRearm = true;
+          showTapToResume();
         }
       }, 800);
     } catch (_) {}
   }
 
-  // On return from background with mic active: save state and reload.
+  // On background: proactively close the STT socket. iOS freezes the page and
+  // suspends the audio engine, but the socket can linger frozen-open and then
+  // collide with the fresh socket we open on return — the zombie. Closing it
+  // here guarantees a clean slate.
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      // Capture whether the avatar was live — iOS will kill its WebSocket while
+      // suspended, so we re-arm a fresh session on return rather than reviving the
+      // dead one.
+      _simliActiveAtBackground = simliMode;
+      if (micMode !== 'off' && voiceMode) {
+        const provider = getActiveProvider();
+        if (provider && provider.stop) provider.stop();
+      }
+      return;
+    }
     if (document.visibilityState !== 'visible') return;
     initAudioCtx();  // always resume TTS AudioContext
-    if (micMode === 'off' || isStreaming) return;
+    if (micMode === 'off') return;
+    // We tore the mic down on background. If a response is still streaming, don't
+    // reload mid-stream — but DO surface tap-to-resume so the user isn't left
+    // silently stopped (the old iOS "stuck" failure). One tap restarts cleanly.
+    if (isStreaming) {
+      _needsGestureResume = true;
+      if (_simliActiveAtBackground) _pendingSimliRearm = true;
+      showTapToResume();
+      return;
+    }
     // Save current state so it's restored after reload.
     sessionStorage.setItem(RELOAD_KEY, JSON.stringify({
       micMode,
@@ -5529,6 +5938,7 @@ if (/iPhone/.test(navigator.userAgent) && navigator.geolocation) {
       spkFilter,
       ttsProvider: TTS_PROVIDER,
       fullVoiceMode: simliMode ? _fullVoiceModeBeforeSimli : fullVoiceMode,  // don't persist Simli-forced state
+      simliActive: _simliActiveAtBackground,  // re-arm avatar on the post-reload resume gesture
       claudeMode,
       locationEnabled,
       cameraState,

@@ -11,11 +11,11 @@ Auth: Set SAMARITAN_API_KEY in .env (or environment).
       The same key is forwarded to llmem-gw if LLMEM_GW_API_KEY is also set.
 """
 
-import base64
 import hashlib
 import hmac
 import json
 import logging
+import uuid
 from contextlib import asynccontextmanager
 import os
 import time
@@ -26,7 +26,7 @@ import websockets as ws_lib
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import asyncio
 import uvicorn
@@ -44,6 +44,7 @@ MCP_BRIDGE_URL   = os.getenv("MCP_BRIDGE_URL", "http://localhost:8771")  # samar
 SAMARITAN_API_KEY = os.getenv("SAMARITAN_API_KEY", "")   # gate for this app
 LLMEM_GW_API_KEY = os.getenv("LLMEM_GW_API_KEY", "")   # forwarded to llmem-gw
 SIMLI_API_KEY    = os.getenv("SIMLI_API_KEY", "")       # Simli avatar API key
+DRIVE_PHOTOS_FOLDER_ID = os.getenv("DRIVE_PHOTOS_FOLDER_ID", "")  # Drive photos subfolder for snap uploads (injected into index.html)
 SIMLI_FACE_ID    = os.getenv("SIMLI_FACE_ID", "")       # Simli avatar face ID
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")      # Gemini fallback for GED tutor
 
@@ -380,11 +381,30 @@ async def index(request: Request):
     if not _check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "index.html"
-    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY).replace("%%DRIVE_PHOTOS_FOLDER%%", DRIVE_PHOTOS_FOLDER_ID)
     return HTMLResponse(content=content, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
     })
+
+
+@app.post("/api/log-event")
+async def log_event(request: Request):
+    """Frontend → server diagnostic log endpoint. Lets the browser POST small
+    events (e.g. stt-mute transitions, L3 gating state) so we can grep
+    samaritan.log to verify defensive layers are firing as intended.
+    Added 2026-06-07 for echo-bleed debugging on M+C+speaker combo.
+    """
+    if not _check_auth(request):
+        return _auth_error()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    evt = str(body.get("event", "unknown"))[:64]
+    extra = {k: v for k, v in body.items() if k != "event"}
+    logger.info("[fe-event] %s %s", evt, extra)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -393,7 +413,7 @@ async def chat(request: Request):
     if not _check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "chat.html"
-    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY).replace("%%DRIVE_PHOTOS_FOLDER%%", DRIVE_PHOTOS_FOLDER_ID)
     return HTMLResponse(content=content, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
@@ -406,7 +426,7 @@ async def chat_ged(request: Request):
     if not _check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "chat-ged.html"
-    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY).replace("%%DRIVE_PHOTOS_FOLDER%%", DRIVE_PHOTOS_FOLDER_ID)
     return HTMLResponse(content=content, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
@@ -748,12 +768,24 @@ async def simli_session(request: Request):
         return JSONResponse({"error": "SIMLI_FACE_ID not configured"}, status_code=503)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=5)) as http:
-        # Fetch ICE/TURN servers
-        ice_resp = await http.get(
-            "https://api.simli.ai/compose/ice",
-            headers={"x-simli-api-key": SIMLI_API_KEY},
-        )
-        ice_servers = ice_resp.json() if ice_resp.is_success else []
+        # Fetch ICE/TURN servers. Simli's /compose/ice 500s intermittently; an empty
+        # list dooms WebRTC over the tunnel (no STUN/TURN relay candidates), so retry
+        # rather than silently degrade to []. The success payload carries Cloudflare
+        # TURN (udp/tcp/turns), which is what makes the avatar hold over the tunnel.
+        ice_servers = []
+        for attempt in range(3):
+            ice_resp = await http.get(
+                "https://api.simli.ai/compose/ice",
+                headers={"x-simli-api-key": SIMLI_API_KEY},
+            )
+            if ice_resp.is_success:
+                ice_servers = ice_resp.json()
+                break
+            logger.warning("Simli /compose/ice failed (attempt %d/3): http %d", attempt + 1, ice_resp.status_code)
+            await asyncio.sleep(0.4)
+        if not ice_servers:
+            logger.error("Simli /compose/ice gave no ICE servers after retries — refusing to start a doomed session")
+            return JSONResponse({"error": "Simli ICE servers unavailable — retry"}, status_code=502)
 
         # Create session token
         tok_resp = await http.post(
@@ -1077,7 +1109,7 @@ async def knowledge_graph(request: Request):
     if not _check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "knowledge-graph.html"
-    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY).replace("%%DRIVE_PHOTOS_FOLDER%%", DRIVE_PHOTOS_FOLDER_ID)
     return HTMLResponse(content=content, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
@@ -1090,7 +1122,7 @@ async def assistant_activity_page(request: Request):
     if not _check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     html_path = Path(__file__).parent / "static" / "assistant-activity.html"
-    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY)
+    content = html_path.read_text().replace("%%SAMARITAN_API_KEY%%", SAMARITAN_API_KEY).replace("%%DRIVE_PHOTOS_FOLDER%%", DRIVE_PHOTOS_FOLDER_ID)
     return HTMLResponse(content=content, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
@@ -2183,19 +2215,96 @@ async def chat_delete(request: Request):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Remote-MCP proxy — /llmem/mcp → llmem-gw DIRECT streamable-http (port 8769)
+# Remote-MCP proxy — /llmem/mcp → llmem-gw streamable-http (port 8769) with a
+# RECONNECTING SHIM that survives llmem-gw restarts.
 # ═══════════════════════════════════════════════════════════════════════════
 # Used by remote Claude Code clients reaching nuc11 through the Pinggy tunnel
-# (Kali samaritan-work for travel context).
+# (Kali samaritan-work for travel + simultaneous home use).
 #
-# Routes to llmem-gw's streamable-http MCP at :8769/mcp, NOT the SSE session-
-# bridge at :8771 — the bridge only mounts /sse (no /mcp route), and a long-
-# lived SSE stream over Pinggy/mobile is the fragile path. Streamable-http is
-# request/response and survives a flaky tunnel far better. Tradeoff: a remote
-# client here does NOT get Goal-669 bridge survival across llmem-gw restarts;
-# acceptable because the travel box cold-starts per trip anyway. Local always-on
-# sessions (nuc11 samaritan-work, GED) still ride the bridge via type:sse →
-# :8771/sse, where restart-survival matters. (Changed 2026-05-30, Option A.)
+# Routes to llmem-gw's streamable-http MCP at :8769/mcp (request/response, which
+# survives a flaky tunnel far better than the :8771 SSE bridge). The old Option-A
+# tradeoff (2026-05-30) was that a remote client did NOT survive an llmem-gw
+# restart — its in-memory Mcp-Session-Id vanished, the next call 404'd, and Claude
+# Code surfaced a dead connection requiring a manual session restart.
+#
+# This shim closes that gap WITHOUT moving to the fragile SSE path. It mints a
+# STABLE client-facing session id, maps it to the live upstream session id, and
+# caches the client's `initialize` request. When an upstream call 404s (the
+# signature of a restart that wiped the session manager) the shim transparently
+# re-runs the cached initialize against the fresh llmem-gw, replays
+# notifications/initialized, remaps to the new upstream session id, and retries
+# the original request ONCE. The client's session id never changes, so Kali
+# self-heals across a backend restart instead of needing a cold start.
+# (Reconnecting shim added 2026-06-06; supersedes Option A's accepted tradeoff.)
+
+# proxy_session_id -> {"upstream_sid", "init_body", "init_headers", "lock"}
+_MCP_PROXY_SESSIONS: dict = {}
+
+_MCP_HOP_BY_HOP = {
+    "host", "content-length", "transfer-encoding", "connection",
+    "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "trailers", "upgrade",
+}
+
+
+def _mcp_filter_headers(headers, extra_drop=None) -> dict:
+    drop = set(_MCP_HOP_BY_HOP)
+    if extra_drop:
+        drop |= {h.lower() for h in extra_drop}
+    conn = headers.get("connection", "")
+    if conn:
+        for tok in (t.strip().lower() for t in conn.split(",")):
+            if tok:
+                drop.add(tok)
+    return {k: v for k, v in headers.items() if k.lower() not in drop}
+
+
+def _mcp_is_initialize(body: bytes) -> bool:
+    """True if the POST body is a JSON-RPC `initialize` request."""
+    if not body:
+        return False
+    try:
+        msg = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    msgs = msg if isinstance(msg, list) else [msg]
+    return any(
+        isinstance(m, dict) and m.get("method") == "initialize" for m in msgs
+    )
+
+
+async def _mcp_establish_upstream(init_body: bytes, init_headers: dict) -> str:
+    """Re-run a cached `initialize` against llmem-gw and return the new
+    upstream Mcp-Session-Id. Replays notifications/initialized so the fresh
+    session is ready for tool calls. Raises on failure."""
+    target = f"{MCP_DIRECT_URL}/mcp"
+    # initialize must not carry a stale session id
+    hdrs = {k: v for k, v in init_headers.items()
+            if k.lower() != "mcp-session-id"}
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)
+    ) as client:
+        resp = await client.post(target, content=init_body, headers=hdrs)
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"re-initialize failed: {resp.status_code} {resp.text[:200]}"
+            )
+        new_sid = resp.headers.get("mcp-session-id")
+        if not new_sid:
+            raise RuntimeError("re-initialize returned no Mcp-Session-Id")
+        # Replay the initialized notification so the session accepts tool calls.
+        init_note = json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/initialized"
+        }).encode()
+        note_hdrs = dict(hdrs)
+        note_hdrs["mcp-session-id"] = new_sid
+        note_hdrs["content-type"] = "application/json"
+        try:
+            await client.post(target, content=init_note, headers=note_hdrs)
+        except (httpx.RequestError, httpx.HTTPError):
+            pass  # best-effort; many servers accept calls without it
+    return new_sid
+
 
 @app.api_route(
     "/llmem/mcp{path:path}",
@@ -2203,7 +2312,7 @@ async def chat_delete(request: Request):
     name="llmem_mcp_direct_proxy",
 )
 async def llmem_mcp_direct_proxy(path: str, request: Request):
-    """Proxy /llmem/mcp to llmem-gw direct streamable-http at MCP_DIRECT_URL.
+    """Reconnecting proxy: /llmem/mcp → llmem-gw streamable-http at MCP_DIRECT_URL.
 
     Path allowlist: only "" or "/" — rejects sub-paths to block path traversal
     (e.g. /llmem/mcp/../health would expose backend internals)."""
@@ -2216,40 +2325,112 @@ async def llmem_mcp_direct_proxy(path: str, request: Request):
         )
     target = f"{MCP_DIRECT_URL}/mcp"
     body = await request.body()
-    _HOP_BY_HOP = {
-        "host", "content-length", "transfer-encoding", "connection",
-        "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailer", "trailers", "upgrade",
-    }
-    _conn_hdr = request.headers.get("connection", "")
-    if _conn_hdr:
-        for token in (t.strip().lower() for t in _conn_hdr.split(",")):
-            if token:
-                _HOP_BY_HOP.add(token)
-    upstream_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in _HOP_BY_HOP
-    }
+    client_sid = request.headers.get("mcp-session-id")
+    is_init = request.method == "POST" and _mcp_is_initialize(body)
+
+    # ── initialize: forward fresh, mint a stable client-facing session id ──
+    if is_init:
+        fwd_headers = _mcp_filter_headers(request.headers,
+                                          extra_drop={"mcp-session-id"})
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)
+            ) as c:
+                up = await c.post(target, content=body, headers=fwd_headers)
+                up_body = up.content
+                upstream_sid = up.headers.get("mcp-session-id")
+        except (httpx.RequestError, httpx.HTTPError) as exc:
+            return JSONResponse(
+                {"error": f"bridge unreachable: {exc!r}"}, status_code=502
+            )
+        resp_headers = _mcp_filter_headers(up.headers,
+                                           extra_drop={"mcp-session-id"})
+        if upstream_sid:
+            proxy_sid = uuid.uuid4().hex
+            _MCP_PROXY_SESSIONS[proxy_sid] = {
+                "upstream_sid": upstream_sid,
+                "init_body": body,
+                "init_headers": dict(fwd_headers),
+                "lock": asyncio.Lock(),
+            }
+            resp_headers["mcp-session-id"] = proxy_sid
+            logger.info(f"mcp-shim: new session {proxy_sid[:8]} "
+                        f"-> upstream {upstream_sid[:8]}")
+        return Response(
+            content=up_body, status_code=up.status_code,
+            headers=resp_headers,
+            media_type=up.headers.get("content-type"),
+        )
+
+    # ── known session: map proxy sid -> upstream sid, retry once on 404 ──
+    sess = _MCP_PROXY_SESSIONS.get(client_sid) if client_sid else None
+
+    if request.method == "DELETE" and sess is not None:
+        _MCP_PROXY_SESSIONS.pop(client_sid, None)
+
+    async def _send(stream_client, upstream_sid):
+        fwd_headers = _mcp_filter_headers(request.headers,
+                                          extra_drop={"mcp-session-id"})
+        if upstream_sid:
+            fwd_headers["mcp-session-id"] = upstream_sid
+        req = stream_client.build_request(
+            request.method, target,
+            content=body if body else None,
+            params=dict(request.query_params),
+            headers=fwd_headers,
+        )
+        return await stream_client.send(req, stream=True)
+
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)
     )
     try:
-        req = client.build_request(
-            request.method, target,
-            content=body if body else None,
-            params=dict(request.query_params),
-            headers=upstream_headers,
-        )
-        upstream = await client.send(req, stream=True)
-    except (httpx.RequestError, httpx.HTTPError) as exc:
+        upstream_sid = sess["upstream_sid"] if sess else client_sid
+        try:
+            upstream = await _send(client, upstream_sid)
+        except (httpx.RequestError, httpx.HTTPError) as exc:
+            await client.aclose()
+            return JSONResponse(
+                {"error": f"bridge unreachable: {exc!r}"}, status_code=502
+            )
+
+        # 404 from a known session == llmem-gw restarted and lost the session.
+        # Re-establish transparently and retry once.
+        if (upstream.status_code == 404 and sess is not None
+                and request.method != "DELETE"):
+            await upstream.aclose()
+            async with sess["lock"]:
+                # Another coroutine may have already refreshed under the lock.
+                if sess["upstream_sid"] == upstream_sid:
+                    try:
+                        sess["upstream_sid"] = await _mcp_establish_upstream(
+                            sess["init_body"], sess["init_headers"]
+                        )
+                        logger.info(f"mcp-shim: re-established {client_sid[:8]} "
+                                    f"-> upstream {sess['upstream_sid'][:8]} "
+                                    f"after restart")
+                    except Exception as exc:  # noqa: BLE001
+                        await client.aclose()
+                        logger.warning(f"mcp-shim: re-establish failed: {exc!r}")
+                        return JSONResponse(
+                            {"error": f"re-establish failed: {exc!r}"},
+                            status_code=502,
+                        )
+            try:
+                upstream = await _send(client, sess["upstream_sid"])
+            except (httpx.RequestError, httpx.HTTPError) as exc:
+                await client.aclose()
+                return JSONResponse(
+                    {"error": f"bridge unreachable: {exc!r}"}, status_code=502
+                )
+    except BaseException:
         await client.aclose()
-        return JSONResponse(
-            {"error": f"bridge unreachable: {exc!r}"}, status_code=502
-        )
-    resp_headers = {
-        k: v for k, v in upstream.headers.items()
-        if k.lower() not in _HOP_BY_HOP
-    }
+        raise
+
+    resp_headers = _mcp_filter_headers(upstream.headers,
+                                       extra_drop={"mcp-session-id"})
+    if client_sid:
+        resp_headers["mcp-session-id"] = client_sid
 
     async def body_stream():
         try:
