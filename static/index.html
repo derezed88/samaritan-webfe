@@ -1665,7 +1665,10 @@
   </style>
 </head>
 <script type="module">
-  import { SimliClient } from 'https://esm.sh/simli-client@latest';
+  // Pinned (2026-06-09): '@latest' let simli-client's floating ^2.15.15 dep pull
+  // livekit-client 2.19.2 (published 06-08), which broke avatar startup. Pin both
+  // layers so a CDN-side dependency release can't silently break the avatar again.
+  import { SimliClient } from 'https://esm.sh/simli-client@3.0.1?deps=livekit-client@2.19.1';
   window.SimliClientClass = SimliClient;
 </script>
 <body>
@@ -1700,7 +1703,7 @@
         <div id="status-dot"></div>
         <span id="status-text">STANDBY</span>
       </div>
-      <span>SAMARITAN // INTERFACE v2.9</span>
+      <span>SAMARITAN // INTERFACE v2.13</span>
       <div id="di-controls">
         <button id="di-btn" class="cam-btn" title="Speaker diarization (Nova-3) — for multi-person conversations">DI</button>
         <button id="spk-filter-btn" class="cam-btn" style="display:none" title="Speaker filter: 1=only you, ALL=everyone tagged">1</button>
@@ -2106,6 +2109,11 @@ const STT_BEEP_GAIN           = 0.15;               // beep volume 0–1
 // Ambient noise guards
 const STT_NOISE_GATE             = 0;                // RMS threshold: 0=disabled. (0.01–0.05 to gate ambient noise, but can break Flux EndOfTurn)
 const STT_MIN_WORDS              = 3;               // global: ignore finals with fewer words in ALL modes (filters ambient noise)
+// Short control utterances exempt from STT_MIN_WORDS (2026-06-09): bare "yes"
+// to an SMS-send confirmation was eaten by the noise filter. Tight whitelist —
+// affirmations/negations/control verbs only; deliberately excludes "thank you"
+// and similar phrases Flux hallucinates from ambient noise.
+const STT_SHORT_COMMAND_RE = /^(yes|yeah|yep|yup|no|nope|ok|okay|sure|stop|cancel|wait|correct|confirm(?:ed)?|affirmative|negative|proceed|go ahead|do it|send it)[,.!\s]*$/i;
 const STT_BARGE_MIN_WORDS        = 1;               // barge mode: minimum words to trigger barge-in
 const STT_SPEAKER_COOLDOWN_MS    = 3000;            // ms after TTS ends before accepting STT finals
                                                      // 2026-06-07: 1500 → 2000 → 3000 for echo-settle.
@@ -3541,6 +3549,7 @@ async function enableSimliMode() {
     simliClient.on('startup_error', (msg) => {
       if (simliGeneration !== gen) return;
       console.error('[Simli] startup_error:', msg);
+      _simliLogFail('startup_error', msg, gen);
       simliReady = false;
       disableSimliMode();
     });
@@ -3550,8 +3559,22 @@ async function enableSimliMode() {
   } catch(e) {
     if (simliGeneration !== gen) return;
     console.error('[Simli] failed to start:', e);
+    _simliLogFail('start_failed', String(e && e.message || e), gen);
     disableSimliMode();
   }
+}
+
+// Server-side telemetry for avatar startup failures — browser console isn't
+// visible after the fact, samaritan.log is (2026-06-09, livekit dep breakage).
+function _simliLogFail(stage, detail, gen) {
+  try {
+    fetch('/api/log-event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ event: 'simli-fail', stage, detail, gen, ts: Date.now() }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 function disableSimliMode() {
@@ -4058,7 +4081,12 @@ async function submit(textOverride) {
   if (!text) return;
   // If a prior stream is still open (e.g. after barge-in), force-close it now
   if (activeEvtSource) { activeEvtSource.close(); activeEvtSource = null; isStreaming = false; }
-  if (isStreaming) return;
+  // Claude mode is exempt: claudeSubmit() aborts the in-flight poll and
+  // re-submits internally. Without the exemption, a voice final arriving
+  // while a claude turn is in flight beeped (onSttFinal) then died here —
+  // the user heard a registration but the text never reached Claude
+  // (2026-06-09 dropped-continuation fix).
+  if (isStreaming && !claudeMode) return;
 
   // Intercept #commands — handle locally, never forward to llmem-gw
   if (text.startsWith('#')) {
@@ -4532,7 +4560,7 @@ function onSttFinal(text) {
       console.log('[STT] barge skip (too few words):', query);
       return;
     }
-  } else if (wordCount < STT_MIN_WORDS) {
+  } else if (wordCount < STT_MIN_WORDS && !STT_SHORT_COMMAND_RE.test(query)) {
     console.log('[STT] noise skip (< ' + STT_MIN_WORDS + ' words):', query);
     return;
   }
@@ -4663,6 +4691,17 @@ const _dg = (() => {
   // EndOfTurn events get merged into one submission via a rolling timeout.
   let _stitchBuf = '';
   let _stitchTimer = null;
+  // Turn-open hold (2026-06-09): Flux fires EndOfTurn on mid-speech pauses,
+  // then immediately sends StartOfTurn when the user resumes. The old flush
+  // path submitted the first fragment anyway, and the continuation was then
+  // silently dropped by submit()'s isStreaming guard (admin field report:
+  // "everything after the first beep never reaches Sam"). While a turn is
+  // open, defer the flush so the continuation merges into ONE submission.
+  // _stitchHoldDeadline is the safety backstop so a missed EndOfTurn (e.g.
+  // echo-gate swallowing it) can't hold the buffer hostage forever.
+  let _turnOpen = false;
+  let _stitchHoldDeadline = 0;
+  const STT_DG_STITCH_MAX_HOLD_MS = 45000;
   // Keepalive timer — Deepgram closes idle WebSockets after ~10s with code
   // 1011 (net0001). In speaker mode, mic audio is gated OFF while Sam speaks,
   // so the socket goes silent during the entire TTS reply. Heartbeat with
@@ -4724,6 +4763,13 @@ const _dg = (() => {
   }
   function _flushStitch() {
     _stitchTimer = null;
+    // User resumed talking (Flux StartOfTurn after the queued EndOfTurn) —
+    // hold the buffer and re-check until the turn closes, so the continuation
+    // appends instead of the fragment submitting prematurely.
+    if (_turnOpen && Date.now() < _stitchHoldDeadline) {
+      _stitchTimer = setTimeout(_flushStitch, 250);
+      return;
+    }
     const combined = _stitchBuf.trim();
     _stitchBuf = '';
     if (!combined) return;
@@ -4731,6 +4777,7 @@ const _dg = (() => {
     onSttFinal(combined);
   }
   function _queueStitch(text) {
+    if (!_stitchBuf) _stitchHoldDeadline = Date.now() + STT_DG_STITCH_MAX_HOLD_MS;
     _stitchBuf = _stitchBuf ? _stitchBuf + ' ' + text : text;
     if (_stitchTimer) clearTimeout(_stitchTimer);
     // Read mode-aware window each call so a mid-utterance mode flip (rare)
@@ -4987,6 +5034,9 @@ registerProcessor('pcm-capture', PcmCapture);`;
         // catch acoustic echo bleed (TTS-through-speaker leaking past the
         // browser's echo cancellation). Added 2026-06-07.
         if ((micMode !== 'barge') && (isSpeaking || Date.now() < _sttCooldownUntil)) {
+          // Gated messages are discarded — don't let a swallowed EndOfTurn
+          // leave _turnOpen stuck true and hold the stitch buffer hostage.
+          _turnOpen = false;
           return;
         }
 
@@ -4995,10 +5045,12 @@ registerProcessor('pcm-capture', PcmCapture);`;
         if (msg.type === 'TurnInfo') {
           const transcript = (msg.transcript || '').trim();
           if (msg.event === 'StartOfTurn') {
+            _turnOpen = true;
             onSttPartial('');
           } else if (msg.event === 'Update') {
             if (transcript) onSttPartial(transcript);
           } else if (msg.event === 'EndOfTurn') {
+            _turnOpen = false;
             // Queue into the stitch buffer so rapid back-to-back finals merge
             // into one submission. A short follow-up within the window extends
             // the timer and gets appended to the previous text.
@@ -5059,6 +5111,13 @@ registerProcessor('pcm-capture', PcmCapture);`;
           return;
         }
         console.warn('[DG] WS closed (code=' + ev.code + '), reconnect ' + _reconnectAttempts + '/' + DG_MAX_RECONNECT);
+        // Socket died mid-turn — this turn can't complete on the old connection.
+        // Clear the hold and flush any buffered speech now, rather than holding
+        // it until the 45s deadline or merging it into a post-reconnect
+        // utterance (Codex review 2026-06-09).
+        _turnOpen = false;
+        if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; }
+        if (_stitchBuf.trim()) _flushStitch();
         _teardownDgResources();
         _reconnectTimer = setTimeout(() => {
           _reconnectTimer = null;
@@ -5083,6 +5142,7 @@ registerProcessor('pcm-capture', PcmCapture);`;
     _dgRunId++;  // invalidate any in-flight generation's async callbacks
     if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
     if (_stitchTimer) { clearTimeout(_stitchTimer); _stitchTimer = null; _stitchBuf = ''; }
+    _turnOpen = false;
     _reconnectAttempts = 0;
     _teardownDgResources();
     onSttStop();
