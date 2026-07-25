@@ -2083,9 +2083,9 @@ const INWORLD_TEMPERATURE     = 2.0;                // 0–2; expressiveness
 // ── STT config ───────────────────────────────────────────────
 let   STT_PROVIDER            = 'deepgram';        // 'webspeech' | 'deepgram'
 const DG_ENCODING             = 'linear16';         // linear16 (raw PCM from AudioWorklet)
-const DG_EOT_THRESHOLD        = 0.65;               // flux eot_threshold (0.5–0.9): EndOfTurn confidence
-                                                     // 2026-06-07: 0.8 → 0.65 for faster speaker-mode response.
-                                                     // Risk: occasional premature submit on mid-thought pauses.
+const DG_EOT_THRESHOLD        = 0.80;               // flux eot_threshold (0.5–0.9): EndOfTurn confidence
+                                                     // 2026-07-24: 0.65 → 0.80 — admin's long reflective
+                                                     // paragraphs were being cut at natural mid-thought pauses.
 
 // ── STT mode registry — selectable via #stt-mode-btn ─────────────────────────
 // This chip selects the DEEPGRAM model (consulted on the Deepgram capture path):
@@ -2844,9 +2844,18 @@ async function claudeSubmit(text) {
   // Submit to Claude Code via voice relay, poll for response, speak it
   _submitActive = true;
   isStreaming = true;
-  resetTtsPipeline();   // clear stale _ttsBusy state from prior cycle
-  nextPlayAt = 0;       // reset audio scheduling baseline
-  isSpeaking = false;   // clear stale speaking flag
+  // Only reset the TTS pipeline when nothing is actively playing. In speaker
+  // mode a submit that lands mid-playback is a stitch-split artifact (Flux
+  // EndOfTurn on a natural pause), NOT an intentional interrupt — resetting
+  // here called provider.stop() → stopAllAudio() and cut Sam off mid-utterance
+  // (2026-06-10). Intentional barge-in has its own kill path (barge handler).
+  // The new response's sentences append to _ttsSentenceQueue behind the
+  // current speech, so playback stays serialized.
+  if (!_ttsBusy && _ttsSentenceQueue.length === 0 && activeSrcs.size === 0) {
+    resetTtsPipeline();   // clear stale _ttsBusy state from prior cycle
+    nextPlayAt = 0;       // reset audio scheduling baseline
+    isSpeaking = false;   // clear stale speaking flag
+  }
   wordQueue = [];
   fullResponse = '';
   showLoader(true);
@@ -3038,7 +3047,14 @@ async function claudeSubmit(text) {
   } finally {
     _submitActive = false;
     isStreaming = false;
-    isSpeaking = false;  // clear in case TTS path didn't complete cleanly
+    // Do NOT clear isSpeaking here — speakWithSamaritan is fire-and-forget, so
+    // this finally runs while TTS is still playing. Clearing the flag dropped
+    // the speaker-mode mic gate + echo guard mid-playback (22ms gate flap seen
+    // 2026-06-10), letting the next stitched fragment submit and kill the audio.
+    // _ttsFlush owns the flag and clears it on drain/error.
+    if (!_ttsBusy && _ttsSentenceQueue.length === 0 && activeSrcs.size === 0) {
+      isSpeaking = false;  // no TTS in flight (error path / silent response)
+    }
     showLoader(false);
     setStatus(claudeMode ? 'CLAUDE MODE' : 'IDLE', claudeMode);
     sendBtn.disabled = false;
@@ -4649,12 +4665,16 @@ const _ws = (() => {
 
 // ── Provider: Deepgram (browser WebSocket + AudioWorklet PCM) ─
 // Mode-aware stitch window: barge keeps the wide 3000ms merge so quick back-
-// and-forth utterances aren't sliced; speaker (non-barge) drops to 800ms so
-// the perceived "you said X → I started thinking" gap collapses from ~3s to ~0.8s.
+// and-forth utterances aren't sliced; speaker (non-barge) uses a tighter window
+// so the perceived "you said X → I started thinking" gap stays short.
 // 2026-06-07: split from a single 3000ms constant after admin's voice-pipeline
-// optimization pass.
+// optimization pass. 2026-06-10: speaker 800→1500ms — Flux fires EndOfTurn on
+// natural ~1s mid-sentence pauses, and at 800ms the flush timer beat the resume
+// StartOfTurn twice in one session (utterances split into multiple submits).
+// 2026-07-24: speaker 1500→3000ms — 1500ms still truncated long reflective
+// paragraphs; only the final clause reached the model. Now matches barge.
 const STT_DG_STITCH_MS_BARGE   = 3000;
-const STT_DG_STITCH_MS_SPEAKER = 800;
+const STT_DG_STITCH_MS_SPEAKER = 3000;
 function _dgStitchMs() {
   return (micMode === 'barge') ? STT_DG_STITCH_MS_BARGE : STT_DG_STITCH_MS_SPEAKER;
 }
